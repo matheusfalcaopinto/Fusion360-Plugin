@@ -1,0 +1,46 @@
+# Local Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches and build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Runtime logs, traces, and local artifacts
+logs/
+outputs/
+artifacts/
+sessions/
+journals/
+traces/
+*.log
+*.tmp
+
+# Local Fusion/Codex scratch state
+.fusion-agent/
+.codex-local/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Keep the bundled plugin wheel in version control.
+!wheels/
+!wheels/*.whl

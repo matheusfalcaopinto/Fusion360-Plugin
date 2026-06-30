@@ -1,0 +1,36 @@
+{
+  "name": "fusion-agent-codex",
+  "version": "0.1.0",
+  "description": "Safe Codex plugin for the Fusion Agent CAD harness.",
+  "author": {
+    "name": "Local developer"
+  },
+  "license": "MIT",
+  "keywords": [
+    "autodesk",
+    "fusion",
+    "fusion360",
+    "cad",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Fusion Agent Codex",
+    "shortDescription": "Use the safe Fusion Agent CAD harness from Codex.",
+    "longDescription": "Fusion Agent Codex exposes the memory-backed, mock-first Fusion Agent harness through one safe MCP server. It routes all CAD work through the harness facade, planner, verifier, repair loop, journals, memory, and benchmarks instead of exposing raw Autodesk Fusion MCP tools.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "MCP",
+      "CAD automation",
+      "Local harness"
+    ],
+    "defaultPrompt": [
+      "Inspect the Fusion harness state.",
+      "Dry-run a parametric CAD model.",
+      "Run a mock Fusion benchmark."
+    ]
+  }
+}

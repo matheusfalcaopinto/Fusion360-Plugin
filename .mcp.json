@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "fusion_agent": {
+      "command": "python",
+      "args": [
+        "scripts/fusion_agent_codex_mcp_launcher.py"
+      ],
+      "env": {
+        "FUSION_AGENT_CODEX": "1"
+      }
+    }
+  }
+}

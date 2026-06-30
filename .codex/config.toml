@@ -1,0 +1,6 @@
+[mcp_servers.fusion_agent]
+command = "python"
+args = ["scripts/fusion_agent_codex_mcp_launcher.py"]
+
+[mcp_servers.fusion_agent.env]
+FUSION_AGENT_CODEX = "1"
