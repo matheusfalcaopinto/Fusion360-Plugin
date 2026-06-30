@@ -48,6 +48,12 @@ O Fusion Agent Codex conecta o Codex a um servidor MCP local chamado
 - executar sessoes mock ou reais por uma fachada segura;
 - executar escrita real em sandbox descartavel com fechamento sem salvar;
 - extrair geometria read-only do design ativo;
+- analisar projetos existentes como companion CAD: estrutura da montagem,
+  mapa espacial, BOM, sketches, folgas, interferencias e readiness;
+- inserir/gerar componentes padrao, mover/alinha-los, criar joints/grupos
+  rigidos e aplicar materiais/aparencias por modificacao controlada;
+- gerar desenhos planejados, exploded views, PDF/DXF de trabalho, design review
+  e relatorios de projeto;
 - verificar corpos, parametros, bounding boxes, features, exports e screenshots;
 - capturar evidencias visuais do viewport;
 - ler artefatos e traces de sessoes;
@@ -247,15 +253,26 @@ Fluxo recomendado em qualquer trabalho CAD:
 1. Comece com `fusion_agent_doctor`, `fusion_agent_capabilities` e
    `fusion_agent_inspect`.
 2. Busque memoria relevante com `fusion_agent_memory_search`.
-3. Gere plano/spec com `fusion_agent_plan_spec`.
-4. Rode `fusion_agent_dry_run_session`.
-5. Execute `fusion_agent_run_session` real somente com `dry_run_session_id` e
+3. Em projetos existentes, rode `fusion_agent_analyze_project`,
+   `fusion_agent_spatial_map` e `fusion_agent_generate_bom`.
+4. Gere plano/spec com `fusion_agent_plan_spec`.
+5. Rode `fusion_agent_dry_run_session`.
+6. Execute `fusion_agent_run_session` real somente com `dry_run_session_id` e
    `allow_existing_document_write=true`.
-6. Use `fusion_agent_run_sandbox_session` para validar escrita real em documento
+7. Use `fusion_agent_preview_modification` antes de mover, inserir, apagar,
+   organizar, reparar, materializar ou desenhar.
+8. Use `fusion_agent_apply_controlled_modification` somente quando o preview
+   estiver correto e `allow_apply=true` for explicito.
+9. Use `fusion_agent_run_sandbox_session` para validar escrita real em documento
    temporario fechado sem salvar.
-7. Valide com `fusion_agent_verify_active_design`.
-8. Capture evidencia visual com `fusion_agent_capture_viewport`.
-9. Leia artefatos e traces com `fusion_agent_read_session_artifact` e
+10. Valide com `fusion_agent_verify_active_design`.
+11. Capture evidencia visual com `fusion_agent_capture_viewport`.
+12. Gere deliverables com `fusion_agent_create_exploded_view`,
+   `fusion_agent_create_part_drawing`,
+   `fusion_agent_create_assembly_drawing`, `fusion_agent_export_pdf`,
+   `fusion_agent_export_dxf`, `fusion_agent_generate_design_review` e
+   `fusion_agent_generate_project_report`.
+13. Leia artefatos e traces com `fusion_agent_read_session_artifact` e
    `fusion_agent_read_trace`.
 
 As respostas MCP incluem `schema_version`, `tool`, `ok` e `artifacts`, alem dos
@@ -274,6 +291,43 @@ Evite:
 ```text
 Crie uma placa 120 x 80 x 6 com quatro furos.
 ```
+
+## Project Companion v0.2/v1
+
+A superficie v0.2/v1 adiciona ferramentas de assistente de projeto para uso
+pessoal/profissional com Fusion real. O foco e entender uma montagem ativa,
+criar um mapa espacial, gerar BOM, encontrar problemas, preparar modificacoes
+controladas e produzir relatorios/drawings de trabalho.
+
+Principais blocos:
+
+- inteligencia de projeto: `fusion_agent_analyze_project`,
+  `fusion_agent_explain_assembly`, `fusion_agent_spatial_map`,
+  `fusion_agent_find_root_bodies`, `fusion_agent_find_loose_components`,
+  `fusion_agent_find_alignment_issues`;
+- documentos e API Fusion: `fusion_agent_list_projects`,
+  `fusion_agent_search_documents`, `fusion_agent_list_open_documents`,
+  `fusion_agent_list_recent_documents`, `fusion_agent_open_document`,
+  `fusion_agent_search_fusion_api_docs`;
+- modificacao controlada: `fusion_agent_preview_modification`,
+  `fusion_agent_apply_controlled_modification`, `fusion_agent_create_checkpoint`,
+  `fusion_agent_undo`, `fusion_agent_redo`;
+- componentes/montagem: `fusion_agent_find_library_components`,
+  `fusion_agent_insert_existing_component`,
+  `fusion_agent_generate_standard_component`, `fusion_agent_move_component`,
+  `fusion_agent_create_rigid_group`, `fusion_agent_create_joint`,
+  `fusion_agent_add_fasteners_to_holes`;
+- materiais, sketches e documentacao: `fusion_agent_apply_material`,
+  `fusion_agent_apply_appearance`, `fusion_agent_analyze_sketches`,
+  `fusion_agent_create_part_drawing`,
+  `fusion_agent_create_assembly_drawing`,
+  `fusion_agent_create_exploded_view`, `fusion_agent_generate_bom`,
+  `fusion_agent_generate_design_review`,
+  `fusion_agent_generate_project_report`.
+
+As operacoes de escrita novas geram preview por padrao. Para aplicar no Fusion
+real, use `allow_apply=true` apenas depois de revisar o preview e os artefatos
+before/after.
 
 ## Modos de execucao
 

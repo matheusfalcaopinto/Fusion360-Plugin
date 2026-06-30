@@ -11,11 +11,12 @@ from typing import Any
 import pytest
 
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
+from agent_core.project_companion import companion_tool_specs
 from cad_spec.models import CadSpec
 from fusion_agent_mcp.server import execute_tool, list_tool_definitions
 
 
-EXPECTED_PUBLIC_TOOLS = {
+BASE_PUBLIC_TOOLS = {
     "fusion_agent_doctor",
     "fusion_agent_capabilities",
     "fusion_agent_self_test",
@@ -46,6 +47,8 @@ EXPECTED_PUBLIC_TOOLS = {
     "fusion_agent_skills_get",
     "fusion_agent_skills_rank",
 }
+COMPANION_PUBLIC_TOOLS = {spec["name"] for spec in companion_tool_specs()}
+EXPECTED_PUBLIC_TOOLS = BASE_PUBLIC_TOOLS | COMPANION_PUBLIC_TOOLS
 
 RAW_TOOL_PREFIXES = ("fusion360_", "autodesk_fusion_", "fusion_mcp_")
 PLATE_PROMPT = "Create a 40 mm x 20 mm x 6 mm mounting plate with four 3 mm holes, 8 mm from each edge."
@@ -143,6 +146,12 @@ async def test_mcp_tool_surface_is_complete_safe_schemaed_and_self_describing() 
     assert "dry_run_session_id" in tools["fusion_agent_run_session"].inputSchema["properties"]
     assert "allow_existing_document_write" in tools["fusion_agent_run_session"].inputSchema["properties"]
     assert tools["fusion_agent_run_sandbox_session"].inputSchema["required"] == ["prompt"]
+    assert tools["fusion_agent_execute_approved_script"].inputSchema["required"] == [
+        "purpose",
+        "script",
+        "approval_token",
+    ]
+    assert tools["fusion_agent_delete_unused_parts"].inputSchema["required"] == ["allowed_names"]
 
     capabilities = await execute_tool("fusion_agent_capabilities", {})
     assert capabilities["ok"] is True
@@ -151,6 +160,7 @@ async def test_mcp_tool_surface_is_complete_safe_schemaed_and_self_describing() 
     assert set(capabilities["tools"]) == EXPECTED_PUBLIC_TOOLS
     assert capabilities["raw_tool_prefixes_not_exposed"] == ["fusion360_", "autodesk_fusion_", "fusion_mcp_"]
     assert capabilities["real_write_policy"]["sandbox_closes_without_saving"] is True
+    assert "project_report.md" in capabilities["project_companion_artifacts"]
 
 
 @pytest.mark.asyncio
@@ -255,6 +265,145 @@ async def test_mock_readonly_extract_verify_and_capture_tools(project_name: str,
     assert capture["status"] == "success"
     assert Path(capture["path"]).is_relative_to(harness_paths.outputs)
     assert Path(capture["path"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@pytest.mark.asyncio
+async def test_project_companion_mock_intelligence_reports_and_spatial_tools(project_name: str) -> None:
+    common = {"mode": "mock", "project": project_name}
+
+    analysis = await execute_tool("fusion_agent_analyze_project", common)
+    assert analysis["status"] == "success"
+    assert analysis["project_snapshot"]["counts"]["components"] >= 1
+    assert Path(analysis["snapshot_path"]).is_file()
+
+    explanation = await execute_tool("fusion_agent_explain_assembly", common)
+    assert "Assembly Explanation" in explanation["explanation"]
+    assert Path(explanation["explanation_path"]).is_file()
+
+    spatial = await execute_tool("fusion_agent_spatial_map", common)
+    assert spatial["status"] == "success"
+    assert Path(spatial["spatial_map_path"]).is_file()
+    assert "assembly_envelope_mm" in spatial["spatial_map"]
+
+    for tool_name in (
+        "fusion_agent_find_root_bodies",
+        "fusion_agent_find_loose_components",
+        "fusion_agent_find_unused_parts",
+        "fusion_agent_find_alignment_issues",
+        "fusion_agent_find_interferences",
+        "fusion_agent_measure_clearances",
+        "fusion_agent_motion_envelope_check",
+        "fusion_agent_analyze_sketches",
+    ):
+        payload = await execute_tool(tool_name, common)
+        assert payload["ok"] is True
+        assert payload["status"] == "success"
+
+    bom = await execute_tool("fusion_agent_generate_bom", common)
+    assert bom["status"] == "success"
+    assert Path(bom["bom_path"]).is_file()
+    assert Path(bom["bom_markdown_path"]).is_file()
+
+    review = await execute_tool("fusion_agent_generate_design_review", common)
+    assert "Design Review" in review["review"]
+    assert Path(review["review_path"]).is_file()
+
+    report = await execute_tool("fusion_agent_generate_project_report", common)
+    assert "Fusion Agent Project Report" in report["report"]
+    assert Path(report["report_path"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_project_companion_mock_document_library_material_and_export_wrappers(project_name: str) -> None:
+    assert (await execute_tool("fusion_agent_list_projects", {"mode": "mock"}))["projects"]
+    assert (await execute_tool("fusion_agent_search_documents", {"mode": "mock", "name": "motor"}))["results"]
+    assert (await execute_tool("fusion_agent_list_open_documents", {"mode": "mock"}))["results"]
+    assert (await execute_tool("fusion_agent_list_recent_documents", {"mode": "mock"}))["results"]
+    assert (await execute_tool("fusion_agent_search_fusion_api_docs", {"mode": "mock", "search_pattern": "Sketch"}))["members"]
+
+    library = await execute_tool("fusion_agent_find_library_components", {"mode": "mock", "query": "nema motor"})
+    assert any(item["family"] == "nema17_stepper" for item in library["standard_components"])
+
+    materials = await execute_tool("fusion_agent_list_materials", {"mode": "mock"})
+    appearances = await execute_tool("fusion_agent_list_appearances", {"mode": "mock"})
+    assert materials["materials"]
+    assert appearances["appearances"]
+
+    drawing = await execute_tool(
+        "fusion_agent_create_part_drawing",
+        {"mode": "mock", "project": project_name, "target_name": "mounting_plate"},
+    )
+    assert drawing["status"] == "planned"
+    assert Path(drawing["drawing_plan_path"]).is_file()
+
+    exploded = await execute_tool("fusion_agent_create_exploded_view", {"mode": "mock", "project": project_name})
+    assert exploded["status"] == "planned"
+    assert Path(exploded["exploded_view_plan_path"]).is_file()
+
+    pdf = await execute_tool("fusion_agent_export_pdf", {"mode": "mock", "project": project_name})
+    dxf = await execute_tool("fusion_agent_export_dxf", {"mode": "mock", "project": project_name})
+    assert Path(pdf["export_path"]).is_file()
+    assert Path(dxf["export_path"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_project_companion_controlled_modification_tools_preview_and_guards(project_name: str) -> None:
+    preview = await execute_tool(
+        "fusion_agent_preview_modification",
+        {"mode": "mock", "project": project_name, "operation": "move_component", "arguments": {"component_name": "motor"}},
+    )
+    assert preview["status"] == "preview"
+    assert Path(preview["preview_path"]).is_file()
+
+    controlled_tools = {
+        "fusion_agent_insert_existing_component": {"file_id": "mock.file", "component_name": "motor"},
+        "fusion_agent_generate_standard_component": {"component_type": "nema17_stepper", "component_name": "motor"},
+        "fusion_agent_place_component": {"component_name": "motor", "position_mm": [1, 2, 3]},
+        "fusion_agent_move_component": {"component_name": "motor", "delta_mm": [10, 0, 0]},
+        "fusion_agent_align_component": {"component_name": "motor", "target_name": "plate"},
+        "fusion_agent_pattern_component": {"component_name": "bolt", "count": 4, "spacing_mm": 20},
+        "fusion_agent_create_rigid_group": {"group_name": "gantry", "component_name": "motor"},
+        "fusion_agent_create_joint": {"joint_name": "motor_joint", "parent": "plate", "child": "motor"},
+        "fusion_agent_set_joint_limits": {"joint_name": "slide_joint", "limits": {"min": "0 mm", "max": "100 mm"}},
+        "fusion_agent_add_fasteners_to_holes": {"target_component": "plate"},
+        "fusion_agent_organize_component_tree": {},
+        "fusion_agent_delete_unused_parts": {"allowed_names": ["old_part"]},
+        "fusion_agent_apply_material": {"target_name": "motor", "material": "Steel"},
+        "fusion_agent_apply_appearance": {"target_name": "motor", "appearance": "Matte Black"},
+        "fusion_agent_set_part_metadata": {"target_name": "motor", "metadata": {"part_number": "MTR-001"}},
+        "fusion_agent_repair_sketch": {"sketch_name": "base_sketch"},
+        "fusion_agent_constrain_sketch": {"sketch_name": "base_sketch"},
+        "fusion_agent_create_parametric_part": {"prompt": "Create a 20 mm x 10 mm x 3 mm adapter plate."},
+        "fusion_agent_modify_parametric_feature": {"target_name": "plate_length", "metadata": {"expression": "120 mm"}},
+        "fusion_agent_create_adapter_part": {"purpose": "mount motor to plate", "interface_a": "motor", "interface_b": "plate"},
+    }
+    for tool_name, args in controlled_tools.items():
+        payload = await execute_tool(tool_name, {"mode": "mock", "project": project_name, **args})
+        assert payload["ok"] is True
+        assert payload["status"] == "preview", tool_name
+        assert Path(payload["preview_path"]).is_file()
+
+    with pytest.raises(ValueError, match="user_confirmed_save"):
+        await execute_tool("fusion_agent_save_document", {"mode": "mock", "user_confirmed_save": False})
+    with pytest.raises(ValueError, match="choose exactly one"):
+        await execute_tool("fusion_agent_close_document", {"mode": "mock"})
+    with pytest.raises(ValueError, match="approval_token"):
+        await execute_tool(
+            "fusion_agent_execute_approved_script",
+            {"mode": "mock", "purpose": "test", "script": "def run(_context): pass", "approval_token": "bad"},
+        )
+
+    script = await execute_tool(
+        "fusion_agent_execute_approved_script",
+        {
+            "mode": "mock",
+            "purpose": "record explicit approval",
+            "script": "def run(_context):\n    print('ok')\n",
+            "approval_token": "APPROVED_SAFE_SCRIPT",
+        },
+    )
+    assert script["status"] == "preview"
+    assert Path(script["script_plan_path"]).is_file()
 
 
 @pytest.mark.asyncio
@@ -413,9 +562,36 @@ async def test_real_fusion_endpoint_discovery_and_sandbox_are_mandatory(project_
         proposal["facade_operation"] for proposal in mapping["proposals"] if proposal["available"]
     }
 
+    open_documents = await execute_tool("fusion_agent_list_open_documents", {"mode": "real"})
+    assert open_documents["ok"] is True
+    assert "results" in open_documents or "error" in open_documents
+
+    recent_documents = await execute_tool("fusion_agent_list_recent_documents", {"mode": "real"})
+    assert recent_documents["ok"] is True
+    assert "results" in recent_documents or "error" in recent_documents
+
+    api_docs = await execute_tool(
+        "fusion_agent_search_fusion_api_docs",
+        {"mode": "real", "search_pattern": "Sketch", "api_category": "all"},
+    )
+    assert api_docs["ok"] is True
+    assert "classes" in api_docs or "members" in api_docs or "error" in api_docs
+
     real_inspection = await execute_tool("fusion_agent_inspect", {"mode": "real"})
     assert real_inspection["state"]["active_document"] is True
     assert real_inspection["state"]["units"] == "mm"
+
+    real_analysis = await execute_tool("fusion_agent_analyze_project", {"mode": "real", "project": project_name})
+    assert real_analysis["status"] == "success"
+    assert Path(real_analysis["snapshot_path"]).is_file()
+
+    real_bom = await execute_tool("fusion_agent_generate_bom", {"mode": "real", "project": project_name})
+    assert real_bom["status"] == "success"
+    assert Path(real_bom["bom_path"]).is_file()
+
+    real_report = await execute_tool("fusion_agent_generate_project_report", {"mode": "real", "project": project_name})
+    assert real_report["status"] == "success"
+    assert Path(real_report["report_path"]).is_file()
 
     real_extraction = await execute_tool(
         "fusion_agent_extract_geometry",
