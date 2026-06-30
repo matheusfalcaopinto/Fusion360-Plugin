@@ -42,9 +42,12 @@ O Fusion Agent Codex conecta o Codex a um servidor MCP local chamado
 `fusion_agent`. Esse servidor oferece ferramentas de CAD de alto nivel para:
 
 - inspecionar o estado do ambiente e da sessao Fusion;
+- descobrir capacidades e contratos agenticos com `fusion_agent_capabilities`;
 - validar especificacoes CAD com unidades explicitas;
 - fazer dry-runs antes de executar alteracoes reais;
 - executar sessoes mock ou reais por uma fachada segura;
+- executar escrita real em sandbox descartavel com fechamento sem salvar;
+- extrair geometria read-only do design ativo;
 - verificar corpos, parametros, bounding boxes, features, exports e screenshots;
 - capturar evidencias visuais do viewport;
 - ler artefatos e traces de sessoes;
@@ -67,6 +70,8 @@ Este plugin foi empacotado para ser conservador por padrao.
    `45 deg` ou parametros nomeados.
 4. **Planejamento antes da escrita**: prefira `fusion_agent_plan_spec` ou
    `fusion_agent_dry_run_session` antes de `fusion_agent_run_session`.
+   Em `mode=real`, `fusion_agent_run_session` exige `dry_run_session_id` e
+   `allow_existing_document_write=true`.
 5. **Verificacao programatica**: screenshots ajudam, mas a validacao primaria e
    por contagens, nomes, parametros, bounding boxes, integridade de corpos,
    features, exports, juntas e propriedades fisicas.
@@ -239,15 +244,23 @@ Quando o plugin estiver ativo, o Codex tera acesso a skill
 
 Fluxo recomendado em qualquer trabalho CAD:
 
-1. Comece com `fusion_agent_doctor` e `fusion_agent_inspect`.
+1. Comece com `fusion_agent_doctor`, `fusion_agent_capabilities` e
+   `fusion_agent_inspect`.
 2. Busque memoria relevante com `fusion_agent_memory_search`.
 3. Gere plano/spec com `fusion_agent_plan_spec`.
 4. Rode `fusion_agent_dry_run_session`.
-5. Execute `fusion_agent_run_session` somente quando o contexto estiver claro.
-6. Valide com `fusion_agent_verify_active_design`.
-7. Capture evidencia visual com `fusion_agent_capture_viewport`.
-8. Leia artefatos e traces com `fusion_agent_read_session_artifact` e
+5. Execute `fusion_agent_run_session` real somente com `dry_run_session_id` e
+   `allow_existing_document_write=true`.
+6. Use `fusion_agent_run_sandbox_session` para validar escrita real em documento
+   temporario fechado sem salvar.
+7. Valide com `fusion_agent_verify_active_design`.
+8. Capture evidencia visual com `fusion_agent_capture_viewport`.
+9. Leia artefatos e traces com `fusion_agent_read_session_artifact` e
    `fusion_agent_read_trace`.
+
+As respostas MCP incluem `schema_version`, `tool`, `ok` e `artifacts`, alem dos
+campos especificos da ferramenta. Isso permite que o Codex descubra arquivos
+gerados e trate erros de forma uniforme.
 
 O Codex deve rejeitar pedidos com unidades ambiguas. Por exemplo, prefira:
 
@@ -304,6 +317,16 @@ Linux conectando a um host Windows:
 export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 ```
 
+Para escrever em documento existente, o agente deve primeiro rodar
+`fusion_agent_dry_run_session` com o mesmo prompt. A execucao real so e aceita
+quando `fusion_agent_run_session` recebe o `dry_run_session_id` correspondente e
+`allow_existing_document_write=true`.
+
+Para validar escrita real sem tocar no documento ativo, use
+`fusion_agent_run_sandbox_session`. Essa ferramenta cria um documento scratch
+com token, executa o modelo, verifica a geometria, pode capturar PNG, escreve
+`scratch_document.json` e fecha o scratch sem salvar.
+
 ## Variaveis de ambiente
 
 | Variavel | Uso |
@@ -320,7 +343,8 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 
 1. Execute `scripts/setup.ps1` ou `scripts/setup.sh`.
 2. Rode o launcher com `--check`.
-3. No Codex, peça para inspecionar o harness.
+3. No Codex, peca para rodar `fusion_agent_doctor` e
+   `fusion_agent_capabilities`.
 4. Rode uma sessao mock simples.
 
 ### Criar uma peca simples
@@ -330,7 +354,8 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 3. Revise nomes de parametros e features.
 4. Execute em mock.
 5. Se precisar de Fusion real, configure endpoint e rode nova inspecao.
-6. Execute em documento descartavel ou com checkpoint.
+6. Execute em sandbox descartavel ou em documento existente apenas com
+   `dry_run_session_id` e permissao explicita.
 7. Verifique o design ativo.
 
 ### Trabalhar com montagens
@@ -444,6 +469,17 @@ Reescreva a especificacao com unidades explicitas:
 - tolerancias e offsets nomeados quando aplicavel.
 
 ## Desenvolvimento
+
+Os testes do repositorio validam manifesto, launcher, CLI, superficie MCP,
+contratos de schema, planner/spec, sessoes, artefatos, memoria, skills,
+benchmarks e integracao real obrigatoria com Autodesk Fusion.
+
+```powershell
+python -m pytest -q
+```
+
+Sem um endpoint Fusion real disponivel, a suite completa deve falhar na etapa
+real obrigatoria.
 
 Este repositorio e uma distribuicao pronta do plugin. Para desenvolvimento do
 harness a partir de um checkout fonte, defina:

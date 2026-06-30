@@ -20,28 +20,34 @@ session journals through the Fusion Agent harness.
 
 ## Required Workflow
 
-1. Start with `fusion_agent_doctor` and `fusion_agent_inspect`.
+1. Start with `fusion_agent_doctor`, `fusion_agent_capabilities`, and
+   `fusion_agent_inspect`.
 2. Retrieve relevant memory with `fusion_agent_memory_search`.
 3. Plan with `fusion_agent_plan_spec` or run `fusion_agent_dry_run_session`
    before real execution.
 4. Reject ambiguous numeric units. CAD specs must use expressions such as
    `10 mm`, `45 deg`, or named parameters.
-5. Use `fusion_agent_run_session` only after the dry-run or session context is
-   clear.
-6. Use `fusion_agent_verify_active_design` for verifier-only checks against
+5. Use `fusion_agent_run_session` in `mode=real` only with a matching
+   `dry_run_session_id` and `allow_existing_document_write=true`.
+6. Use `fusion_agent_run_sandbox_session` for real write validation in a
+   disposable scratch document that is closed without saving.
+7. Use `fusion_agent_verify_active_design` for verifier-only checks against
    the active design.
-7. Use `fusion_agent_capture_viewport` for safe viewport evidence captures.
-8. Review artifacts with `fusion_agent_read_session_artifact`.
-9. Review traces with `fusion_agent_read_trace`.
-10. Use `fusion_agent_memory_write` only for factual project memory, repair
+8. Use `fusion_agent_capture_viewport` for safe viewport evidence captures.
+9. Review artifacts with `fusion_agent_read_session_artifact`.
+10. Review traces with `fusion_agent_read_trace`.
+11. Use `fusion_agent_memory_write` only for factual project memory, repair
    findings, or design decisions.
 
 ## Safe Tool Groups
 
-- Session and environment: `fusion_agent_doctor`, `fusion_agent_probe`,
-  `fusion_agent_inspect`, `fusion_agent_verify_active_design`,
-  `fusion_agent_capture_viewport`, `fusion_agent_run_session`,
-  `fusion_agent_dry_run_session`, `fusion_agent_list_sessions`.
+- Session and environment: `fusion_agent_doctor`,
+  `fusion_agent_capabilities`, `fusion_agent_self_test`,
+  `fusion_agent_probe`, `fusion_agent_inspect`,
+  `fusion_agent_verify_active_design`, `fusion_agent_capture_viewport`,
+  `fusion_agent_run_session`, `fusion_agent_dry_run_session`,
+  `fusion_agent_run_sandbox_session`, `fusion_agent_list_sessions`.
+- Read-only geometry: `fusion_agent_extract_geometry`.
 - Artifacts and traces: `fusion_agent_read_session_artifact`,
   `fusion_agent_read_trace`.
 - Planning and validation: `fusion_agent_plan_spec`,
@@ -70,3 +76,5 @@ session journals through the Fusion Agent harness.
 - Real Autodesk Fusion generally runs on Windows. Linux real-Fusion usage should
   connect to a reachable Windows VM or host through `FUSION_MCP_ENDPOINT`.
 - If no real Fusion endpoint is available, stay in `mock` or `dry_run` mode.
+- Every MCP response includes `schema_version`, `tool`, `ok`, and `artifacts`.
+  Read those fields before assuming a session result is safe to use.

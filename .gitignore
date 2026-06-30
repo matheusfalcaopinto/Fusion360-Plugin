@@ -16,6 +16,8 @@ coverage.xml
 htmlcov/
 build/
 dist/
+work/
+work_unpacked_wheel/
 *.egg-info/
 
 # Runtime logs, traces, and local artifacts
