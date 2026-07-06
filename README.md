@@ -55,6 +55,9 @@ ambiente esta claro.
 | Capacidade | O que entrega |
 | --- | --- |
 | Planejamento CAD | Converte pedidos em CAD Specs com nomes, unidades e parametros claros. |
+| Guardrail de planner | Bloqueia prompts de auditoria, hub, reorg e delete para evitar specs genericas. |
+| Snapshots compactos | Coleta ocorrencias, corpos visiveis, bboxes e duplicidades como evidencia primaria. |
+| Mudancas seguras | Exige preview, baseline, lotes pequenos e aborta em regressao visivel. |
 | Mock-first | Permite testar sem Autodesk Fusion aberto ou instalado. |
 | Dry-run | Valida intencao antes de qualquer escrita real. |
 | Verificacao | Confere corpos, parametros, bounding boxes, features, exports e screenshots. |
@@ -72,6 +75,7 @@ ambiente esta claro.
 | Launcher | `scripts/fusion_agent_codex_mcp_launcher.py` | Resolve Python, ambiente e inicia `fusion_agent_mcp.server`. |
 | Setup Windows | `scripts/setup.ps1` | Cria `.venv`, instala o wheel e roda checagens. |
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
+| Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
 | Runtime Python | `wheels/fusion_agent_harness-0.1.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
@@ -135,10 +139,11 @@ O plugin foi desenhado para falhar fechado.
 
 | Regra | Motivo |
 | --- | --- |
-| Comece em mock ou dry-run | Evita alteracoes involuntarias em documentos reais. |
+| Comece com doctor, probe, health e inspect | Diferencia launcher, endpoint real, manifest e superficie anexada. |
 | Exija unidades explicitas | CAD nao deve inferir se `10` significa mm, cm ou polegadas. |
-| Planeje antes de executar | O usuario consegue revisar intencao, nomes e parametros. |
-| Verifique por dados | Screenshots ajudam, mas nao substituem checks programaticos. |
+| Planeje somente criacao CAD conhecida | Auditoria, hub, reorg e cleanup usam ferramentas proprias. |
+| Verifique por dados | Snapshots e checks programaticos sao prova primaria; screenshots sao secundarios. |
+| Proteja delete por baseline | `allow_delete=false` por padrao, confirmacao destrutiva e primeiro lote `<=5`. |
 | Repare com limite | Falhas devem ser classificadas, nao mascaradas por repeticao infinita. |
 | Proteja documentos existentes | Inspecao e checkpoint reduzem risco de perda de trabalho. |
 
@@ -204,6 +209,8 @@ do launcher.
 > [!TIP]
 > Se `python` nao estiver no `PATH`, defina `FUSION_AGENT_PYTHON` com o caminho
 > absoluto do interpretador antes de rodar o setup.
+> No Windows instalado pelo Codex, prefira o Python explicito da `.venv` do
+> plugin quando diagnosticar cache ou anexo de ferramentas.
 
 ## Instalacao No Codex
 
@@ -284,7 +291,7 @@ nao consegue importar `fusion_agent_mcp.server`.
 Quando o plugin estiver ativo, o Codex deve carregar a skill
 `fusion-cad-harness` e usar o servidor MCP `fusion_agent`.
 
-Fluxo recomendado:
+Fluxo recomendado para criacao/modelagem CAD:
 
 ```mermaid
 sequenceDiagram
@@ -294,7 +301,7 @@ sequenceDiagram
   participant F as Fusion real ou mock
 
   U->>C: Descreve a peca ou montagem
-  C->>H: doctor + inspect
+  C->>H: doctor + probe + session_health + inspect
   C->>H: memory_search
   C->>H: plan_spec
   C->>H: dry_run_session
@@ -308,13 +315,18 @@ sequenceDiagram
 
 Checklist de uso:
 
-- rode `fusion_agent_doctor` e `fusion_agent_inspect`;
+- rode `fusion_agent_doctor`, `fusion_agent_probe`,
+  `fusion_agent_session_health` e `fusion_agent_inspect`;
 - busque memoria com `fusion_agent_memory_search`;
-- gere plano com `fusion_agent_plan_spec`;
+- para criacao CAD conhecida, gere plano com `fusion_agent_plan_spec`;
+- para auditoria, inventario de hub, reorg, cleanup ou delete, nao use o
+  planner; use `fusion_agent_compact_snapshot`,
+  `fusion_agent_hub_inventory` e `fusion_agent_safe_change_preview`;
 - rode `fusion_agent_dry_run_session`;
 - execute `fusion_agent_run_session` apenas quando o contexto estiver claro;
 - valide com `fusion_agent_verify_active_design`;
-- capture evidencia visual com `fusion_agent_capture_viewport`;
+- capture evidencia visual com `fusion_agent_capture_viewport` somente como
+  evidencia secundaria e exija `evidence_quality=verified_file`;
 - leia artefatos e traces quando houver divergencias.
 
 > [!NOTE]
@@ -361,6 +373,8 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_PYTHON` | Opcional | Caminho explicito para o Python que hospeda o MCP server. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
 | `FUSION_MCP_ENDPOINT` | Real Fusion | Endpoint HTTP de um servidor MCP/Fusion real. |
+| `FUSION_AGENT_REQUIRE_REAL` | Opcional | Forca modo real e bloqueia mock quando definido como `1`. |
+| `FUSION_AGENT_ALLOW_DRY_RUN` | Opcional | Quando `0`, bloqueia dry-run no ambiente instalado real-first. |
 | `PYTHONPATH` | Automatico | Ajustado pelo launcher quando `FUSION_AGENT_HARNESS_ROOT` esta definido. |
 
 ## Ferramentas MCP
@@ -369,8 +383,10 @@ A skill agrupa as ferramentas seguras em familias:
 
 | Grupo | Ferramentas |
 | --- | --- |
-| Sessao e ambiente | `fusion_agent_doctor`, `fusion_agent_probe`, `fusion_agent_inspect`, `fusion_agent_run_session`, `fusion_agent_dry_run_session`, `fusion_agent_list_sessions` |
-| Verificacao e evidencia | `fusion_agent_verify_active_design`, `fusion_agent_capture_viewport` |
+| Sessao e ambiente | `fusion_agent_doctor`, `fusion_agent_readiness_report`, `fusion_agent_probe`, `fusion_agent_session_health`, `fusion_agent_inspect`, `fusion_agent_run_session`, `fusion_agent_dry_run_session`, `fusion_agent_list_sessions` |
+| Verificacao e evidencia | `fusion_agent_verify_active_design`, `fusion_agent_compact_snapshot`, `fusion_agent_capture_viewport` |
+| Inventario de hub | `fusion_agent_hub_inventory` |
+| Mudancas seguras | `fusion_agent_safe_change_preview`, `fusion_agent_safe_change_apply` |
 | Artefatos e traces | `fusion_agent_read_session_artifact`, `fusion_agent_read_trace` |
 | Planejamento | `fusion_agent_plan_spec`, `fusion_agent_validate_spec`, `fusion_agent_export_spec_json` |
 | Benchmarks | `fusion_agent_list_benchmarks`, `fusion_agent_run_benchmark`, `fusion_agent_read_benchmark_report` |
@@ -383,8 +399,32 @@ A skill agrupa as ferramentas seguras em familias:
 ### Inspecionar ambiente
 
 ```text
-Use o Fusion Agent Harness para rodar doctor e inspect. Quero saber se estou em
-mock, dry-run ou conectado a um Fusion real.
+Use o Fusion Agent Harness para rodar doctor, probe, session_health e inspect.
+Quero saber se estou em mock, dry-run ou conectado a um Fusion real.
+```
+
+### Inventariar Personal Library
+
+```text
+Use o Fusion Agent Harness para inventariar minha Personal Library com
+hub_inventory. Nao abra nem modifique designs; quero somente metadados e
+enriquecimento por findFileById quando disponivel.
+```
+
+### Auditar montagem grande
+
+```text
+Use compact_snapshot no Fusion real para auditar a montagem ativa. Quero
+ocorrencias visiveis, corpos visiveis, bboxes, nomes duplicados e limites de
+payload. Screenshots sao apenas evidencia secundaria.
+```
+
+### Preparar cleanup destrutivo
+
+```text
+Crie um safe_change_preview para revisar alvos ocultos. Nao aplique nada ainda.
+Delete deve ficar bloqueado por padrao se houver risco de definicao
+compartilhada ou perda visivel.
 ```
 
 ### Planejar peca com unidades explicitas

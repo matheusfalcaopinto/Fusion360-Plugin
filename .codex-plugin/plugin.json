@@ -1,6 +1,6 @@
 {
   "name": "fusion-agent-codex",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260706164939",
   "description": "Safe Codex plugin for the Fusion Agent CAD harness.",
   "author": {
     "name": "Local developer"
@@ -19,16 +19,20 @@
   "interface": {
     "displayName": "Fusion Agent Codex",
     "shortDescription": "Use the safe Fusion Agent CAD harness from Codex.",
-    "longDescription": "Fusion Agent Codex exposes the memory-backed, mock-first Fusion Agent harness through one safe MCP server. It routes all CAD work through the harness facade, planner, verifier, repair loop, journals, memory, and benchmarks instead of exposing raw Autodesk Fusion MCP tools.",
+    "longDescription": "Fusion Agent Codex exposes the memory-backed, real-safe Fusion Agent harness through one safe MCP server. It routes CAD creation through the planner/verifier path, and routes diagnosis, hub inventory, compact snapshots, and risky changes through explicit guardrail tools instead of exposing raw Autodesk Fusion MCP tools.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [
       "MCP",
       "CAD automation",
-      "Local harness"
+      "Local harness",
+      "Fusion diagnostics",
+      "Safe change previews"
     ],
     "defaultPrompt": [
       "Inspect the Fusion harness state.",
+      "Create a compact snapshot of the active Fusion design.",
+      "Preview a safe Fusion cleanup batch.",
       "Dry-run a parametric CAD model.",
       "Run a mock Fusion benchmark."
     ]

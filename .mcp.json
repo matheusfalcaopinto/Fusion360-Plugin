@@ -6,7 +6,11 @@
         "scripts/fusion_agent_codex_mcp_launcher.py"
       ],
       "env": {
-        "FUSION_AGENT_CODEX": "1"
+        "FUSION_AGENT_CODEX": "1",
+        "FUSION_MCP_ENDPOINT": "http://127.0.0.1:27182/mcp",
+        "FUSION_AGENT_DEFAULT_MODE": "real",
+        "FUSION_AGENT_REQUIRE_REAL": "1",
+        "FUSION_AGENT_ALLOW_DRY_RUN": "0"
       }
     }
   }

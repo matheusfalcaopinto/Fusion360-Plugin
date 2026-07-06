@@ -30,4 +30,5 @@ else
   exit 1
 fi
 "$PYTHON" "$PLUGIN_ROOT/scripts/fusion_agent_codex_mcp_launcher.py" --check
+"$PYTHON" "$PLUGIN_ROOT/scripts/validate_plugin.py"
 "$PYTHON" -c "from fusion_agent_mcp.server import tool_specs; print(f'fusion_agent MCP tools: {len(tool_specs())}')"

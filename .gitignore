@@ -25,6 +25,12 @@ artifacts/
 sessions/
 journals/
 traces/
+manifests/
+workspace/
+fusion_captures/
+fusion_visibility_restore/
+work_unpacked_wheel/
+.tmp/
 *.log
 *.tmp
 

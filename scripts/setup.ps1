@@ -37,6 +37,7 @@ try {
     }
 
     & $Python $Launcher --check
+    & $Python (Join-Path $PluginRoot "scripts\validate_plugin.py")
     & $Python -c "from fusion_agent_mcp.server import tool_specs; print(f'fusion_agent MCP tools: {len(tool_specs())}')"
 }
 finally {
