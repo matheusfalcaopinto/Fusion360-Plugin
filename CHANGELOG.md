@@ -23,6 +23,9 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   global limitada e lookup direto por token em montagem grande.
 - Preserva as 35 ferramentas `fusion_agent_*`, Fast Path `read_only`, schemas
   anteriores e o fallback `legacy` durante toda a serie 0.2.x.
+- Corrige o round-trip de `entity_token` para retornos Python e colecoes
+  Autodesk de `Design.findEntityByToken`; falhas da API agora produzem
+  evidencia incompleta e bloqueiam o fluxo em vez de parecer zero matches exato.
 
 ## 0.2.0 - 2026-07-13
 

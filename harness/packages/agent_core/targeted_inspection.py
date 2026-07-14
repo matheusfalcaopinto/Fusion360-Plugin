@@ -126,6 +126,7 @@ _VISITED = 0
 _ESTIMATED_BYTES = 512
 _STOP_REASON = ""
 _COUNTS_EXACT = True
+_WARNINGS = []
 
 
 def _safe(callable_obj, default=None):
@@ -329,20 +330,95 @@ def _global_entities(design, entity_type):
             return
 
 
-def _token_entities(design, token, entity_type):
+def _token_lookup_failed(exception=None, reason=None):
+    warning = {"code": "ENTITY_TOKEN_LOOKUP_FAILED"}
+    if exception is not None:
+        warning["exception_type"] = type(exception).__name__
+    if reason:
+        warning["reason"] = reason
+    _WARNINGS.append(warning)
+    _stop("entity_token_lookup_failed")
+    return [], False
+
+
+def _token_entities(design, token, entity_type, cap):
     if not _consume_entity():
-        return []
-    found = _safe(lambda: design.findEntityByToken(token), [])
+        return [], False
+    try:
+        found = design.findEntityByToken(token)
+    except BaseException as exc:
+        return _token_lookup_failed(exception=exc)
+    if _elapsed_ms() >= _DEADLINE_MS:
+        _stop("deadline_ms")
+        return [], False
     if isinstance(found, tuple) and len(found) == 2 and isinstance(found[1], bool):
+        if not found[1]:
+            return _token_lookup_failed(reason="lookup_status_false")
         found = found[0]
     if found is None:
-        return []
-    count = _safe(lambda: found.count, None)
-    if count is None:
-        items = list(found) if isinstance(found, (list, tuple)) else [found]
+        return _token_lookup_failed(reason="invalid_result_shape")
+    iterator = None
+    if isinstance(found, (list, tuple)):
+        count = len(found)
+
+        def item_at(index):
+            return found[index]
     else:
-        items = [_safe(lambda i=index: found.item(i)) for index in range(int(count or 0))]
-    return [item for item in items if item is not None and _matches_entity_type(item, entity_type)]
+        count = _safe(lambda: found.count, None)
+        item_method = _safe(lambda: found.item, None)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0 and callable(item_method):
+
+            def item_at(index):
+                return item_method(index)
+        else:
+            if isinstance(found, (str, bytes, bytearray, dict)):
+                return _token_lookup_failed(reason="invalid_result_shape")
+            try:
+                iterator = iter(found)
+            except BaseException:
+                return _token_lookup_failed(reason="invalid_result_shape")
+            count = None
+    if _elapsed_ms() >= _DEADLINE_MS:
+        _stop("deadline_ms")
+        return [], False
+
+    matches = []
+    exact = True
+    index = 0
+    while count is None or index < count:
+        if index > 0 and not _consume_entity():
+            exact = False
+            break
+        try:
+            if iterator is None:
+                item = item_at(index)
+            else:
+                item = next(iterator)
+        except StopIteration as exc:
+            if iterator is None:
+                return _token_lookup_failed(exception=exc, reason="item_access_failed")
+            if _elapsed_ms() >= _DEADLINE_MS:
+                _stop("deadline_ms")
+                return matches, False
+            break
+        except BaseException as exc:
+            return _token_lookup_failed(exception=exc, reason="item_access_failed")
+        if _elapsed_ms() >= _DEADLINE_MS:
+            _stop("deadline_ms")
+            return matches, False
+        if item is None:
+            return _token_lookup_failed(reason="invalid_result_item")
+        object_type = _safe(lambda i=item: i.objectType, "")
+        if not isinstance(object_type, str) or not object_type:
+            return _token_lookup_failed(reason="invalid_result_item")
+        if _matches_entity_type(item, entity_type):
+            matches.append(item)
+            if len(matches) >= cap:
+                if count is None or index + 1 < count:
+                    exact = False
+                break
+        index += 1
+    return matches, exact
 
 
 def _walk_occurrences(collection):
@@ -526,8 +602,12 @@ def run(_context: str):
         selector = query.get("selector") or {}
         token = selector.get("entity_token")
         if token:
-            for entity in _token_entities(design, token, query["entity_type"]):
-                _append_match(query_matches[query["id"]], entity, query["entity_type"], query.get("fields") or [], "", limit + 1)
+            entities, exact = _token_entities(design, token, query["entity_type"], limit + 1)
+            query_exact[query["id"]] = exact
+            for entity in entities:
+                if not _append_match(query_matches[query["id"]], entity, query["entity_type"], query.get("fields") or [], "", limit + 1):
+                    query_exact[query["id"]] = False
+                    break
 
     direct_queries = [
         query for query in queries
@@ -636,6 +716,6 @@ def run(_context: str):
         "state_fingerprint_truncated": fingerprint_truncated if include_fingerprint else False,
         "state_fingerprint_items": fingerprint_count,
     }
-    payload = {"success": True, "document": document, "summary": summary, "results": results, "warnings": []}
+    payload = {"success": True, "document": document, "summary": summary, "results": results, "warnings": _WARNINGS}
     print(_finalize_payload(payload))
 '''
