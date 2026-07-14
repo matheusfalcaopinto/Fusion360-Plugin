@@ -1,0 +1,41 @@
+Using the Autodesk Fusion integration available to you, autonomously create a new unsaved parametric assembly named Split_Parametric_Pillow_Block. Do not modify, save, close, or otherwise alter any pre-existing document.
+
+The root component must remain an assembly container with no bodies. It may contain one fully constrained construction-only datum sketch named SK00_Assembly_Reference. Create exactly two new internal components and one occurrence of each at the root, both at the identity transform:
+
+- CMP01_Lower_Block, containing one solid body named B01_Lower_Block
+- CMP02_Upper_Cap, containing one solid body named B02_Upper_Cap
+
+Create these 17 named user parameters and use them, or expressions based on them, for all corresponding geometry:
+
+- BlockLength = 90 mm
+- BlockWidth = 50 mm
+- BlockHeight = 44 mm
+- SplitCenterZ = 22 mm
+- SplitGap = 0.5 mm
+- LowerHeight = SplitCenterZ - SplitGap / 2
+- UpperHeight = BlockHeight - SplitCenterZ - SplitGap / 2
+- BoreDiameter = 24 mm
+- BoreCenterZ = SplitCenterZ
+- ClampPitchX = 56 mm
+- ClampPitchY = 30 mm
+- ClampHoleDiameter = 5.5 mm
+- CounterboreDiameter = 10 mm
+- CounterboreDepth = 4 mm
+- MountingPitchY = 36 mm
+- MountingHoleDiameter = 7 mm
+- ToolOvertravel = 2 mm
+
+Requirements:
+
+1. The assembled global envelope must be exactly 90 mm in X, 50 mm in Y, and 44 mm in Z, with minimum corner (-45, -25, 0) mm and maximum corner (45, 25, 44) mm.
+2. The split is horizontal and centered on Z=22 mm. The lower body ends at Z=21.75 mm and the upper cap begins at Z=22.25 mm, producing an exact 0.5 mm gap.
+3. Prefer fully constrained YZ profile sketches extruded symmetrically in X for both primary bodies. The bore axis is horizontal and parallel to X.
+4. Cut one coaxial through bore of diameter 24 mm through both bodies, centered at Y=0 and Z=22 mm. Each component must retain its corresponding half of the cylindrical bore.
+5. Create four vertically aligned clamp through-holes in both components. Their centers are X=plus or minus 28 mm and Y=plus or minus 15 mm. Diameter is 5.5 mm. In each component, use one seed tool plus a named 2 x 2 rectangular feature pattern; do not sketch four independent circles.
+6. Add 10 mm diameter, 4 mm deep counterbores from the top face of the upper cap at those same four clamp-hole centers. Use a separate named 2 x 2 feature pattern. Do not counterbore the lower body.
+7. Add exactly two 7 mm vertical mounting through-holes to the lower body only. Their centers are X=0 and Y=plus or minus 18 mm. Use one seed plus a named two-instance feature pattern. These holes must not appear in the cap.
+8. Prefer NewBody tool solids followed by Combine/Cut for bores and holes. Consume all tool bodies so each component finishes with exactly one visible solid body and one lump.
+9. Name all sketches and timeline features with stable SK, EX, CB, and CP prefixes. Every sketch must be valid and fully constrained; all eight consumed component sketches must be hidden. Every feature must be healthy.
+10. Do not save the document. Programmatically verify the marker and unsaved state, component and occurrence counts, root body count, one body/lump per component, exact parameters, global and per-body bounding boxes, split gap, coaxial bore, clamp-hole alignment, cap-only counterbores, lower-only mounting holes, feature health, and sketch constraints before reporting completion.
+
+Do not merge the two bodies, create detached solids, simplify the requested hole topology, or leave manual cleanup for the user.

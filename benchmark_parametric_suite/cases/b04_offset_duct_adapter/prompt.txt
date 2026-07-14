@@ -1,0 +1,49 @@
+Using the Autodesk Fusion integration available to you, autonomously create a new unsaved parametric design whose single root body is named Offset_Duct_Adapter. Do not modify, save, close, or otherwise alter any pre-existing document.
+
+Use millimeters. Keep all geometry in the root component with no occurrences. The base flange is centered on the origin in X and Y, its lower face is Z=0, and the duct rises in +Z.
+
+Create these named user parameters with the exact values shown:
+
+- BaseWidth = 100 mm
+- BaseDepth = 70 mm
+- BaseThickness = 5 mm
+- InletWidth = 80 mm
+- InletDepth = 50 mm
+- WallThickness = 3 mm
+- TransitionHeight = 90 mm
+- OutletInnerDiameter = 54 mm
+- OutletOuterDiameter = 60 mm
+- OutletOffsetX = 14 mm
+- OutletOffsetY = 8 mm
+- TopFlangeDiameter = 82 mm
+- TopFlangeThickness = 5 mm
+- BottomBoltPitchX = 84 mm
+- BottomBoltPitchY = 54 mm
+- BottomBoltDiameter = 5 mm
+- TopBoltCircleDiameter = 72 mm
+- TopBoltDiameter = 4.5 mm
+- TopBoltCount = 6
+
+Required geometry:
+
+1. Create a 100 x 70 x 5 mm rectangular bottom flange. It must have an open centered rectangular inlet 80 x 50 mm.
+2. At the top of the bottom flange, the transition outside section is a centered rectangle derived as InletWidth + 2 * WallThickness by InletDepth + 2 * WallThickness, therefore 86 x 56 mm.
+3. Loft the outer transition from that lower rectangle to a circular OutletOuterDiameter section. The upper section is TransitionHeight = 90 mm above the top of the bottom flange and its axis is offset by OutletOffsetX = +14 mm and OutletOffsetY = +8 mm.
+4. Create a continuous hollow passage by lofting the inner 80 x 50 mm inlet to the circular OutletInnerDiameter outlet. Prefer a separate solid tool body followed by Combine Cut if that is more robust than a direct cut loft.
+5. Add a concentric circular top flange, TopFlangeDiameter x TopFlangeThickness, above the transition. The final global height is 100 mm.
+6. Cut four BottomBoltDiameter through-holes in the bottom flange on a rectangular 2 x 2 grid of BottomBoltPitchX by BottomBoltPitchY. Create a named rectangular feature pattern; do not draw four independent holes.
+7. Cut six TopBoltDiameter through-holes in the top flange on a TopBoltCircleDiameter bolt circle around the offset outlet axis. Create a named circular feature pattern around a real offset construction axis; do not draw six independent holes.
+8. The final result must contain exactly one connected visible solid body, one lump, no surface bodies, and a passage that is open from the rectangular inlet through the offset circular outlet.
+
+Design-quality requirements:
+
+- Use 19 named parameters and parameter expressions rather than duplicated final dimensions.
+- Keep every sketch valid, fully constrained, meaningfully named, and hidden after use.
+- Name both loft features, both pattern features, combines, construction planes, and the offset outlet axis.
+- All features must remain valid and healthy.
+- Hide all user construction geometry in the final state.
+- The expected global bounding box is approximately X=[-50, 55], Y=[-35, 49], Z=[0, 100] mm.
+- Do not save the document.
+- Verify programmatically before reporting completion: marker/unsaved state, root-only topology, one body/lump, parameter values, bounding box, open-passage probes, rectangular and circular port signatures, outlet offset/coaxiality, four bottom holes, six top holes, feature health, constrained/hidden sketches, and the named loft and pattern definitions.
+
+You have at most two autonomous repair passes after the first construction attempt. If any requirement remains incomplete, report it exactly rather than claiming success.

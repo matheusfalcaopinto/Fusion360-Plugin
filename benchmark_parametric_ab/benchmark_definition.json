@@ -1,0 +1,22 @@
+{
+  "schema_version": "fusion_parametric_ab.v1",
+  "submitted_prompt_sha256": "8d04113c1ae1da2d03c70fd12bf3eb2b7431ea78d1f1cb08cf56ac3f67b1e1d5",
+  "prompt_file_sha256": "a87e0f66984b3c4688ebedceea713132da8242a52d29576156584948622f2f5b",
+  "order": ["claude", "codex"],
+  "time_limit_minutes_per_arm": 20,
+  "maximum_autonomous_repair_passes": 2,
+  "expected_bbox_mm": [90.0, 70.0, 66.0],
+  "bbox_tolerance_mm": 0.1,
+  "expected_visible_solid_bodies": 1,
+  "expected_surface_bodies": 0,
+  "expected_user_parameters": 17,
+  "models": {
+    "claude": "Fable 5 Alto",
+    "codex": "current Codex task model"
+  },
+  "notes": [
+    "The geometric acceptance criteria and oracle were frozen before either geometry result was inspected.",
+    "The weighted 100-point score was documented after execution and is interpretive, not a pre-registered gate.",
+    "This is an end-to-end system comparison, not a model-only evaluation."
+  ]
+}

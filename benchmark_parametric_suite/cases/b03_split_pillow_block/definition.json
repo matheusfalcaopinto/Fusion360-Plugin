@@ -1,0 +1,136 @@
+{
+  "schema_version": "fusion_parametric_case.v1",
+  "case_id": "b03_split_pillow_block",
+  "title": "Parametric split pillow block with separate cap",
+  "complexity_tier": 3,
+  "time_limit_minutes": 20,
+  "maximum_autonomous_repairs": 2,
+  "risk_domains": [
+    "multi_component_additive_creation",
+    "identity_occurrence_transforms",
+    "split_gap",
+    "coaxial_bore_across_components",
+    "aligned_clamp_holes",
+    "cap_only_counterbores",
+    "lower_only_mounting_holes",
+    "tool_body_consumption"
+  ],
+  "future_targets": [
+    {
+      "id": "future_assembly_reference",
+      "bind_target": true,
+      "entity_type": "sketch",
+      "selector": {"component_path": "root", "name": "SK00_Assembly_Reference"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_lower_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP01_Lower_Block"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_upper_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP02_Upper_Cap"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_lower_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B01_Lower_Block"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 90.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 50.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 21.75, "tolerance": 0.1}
+      ]
+    },
+    {
+      "id": "future_upper_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B02_Upper_Cap"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 90.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 50.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 21.75, "tolerance": 0.1}
+      ]
+    },
+    {
+      "id": "future_lower_feature",
+      "bind_target": false,
+      "entity_type": "feature",
+      "selector": {"name": "EX01_Lower_Block"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_upper_feature",
+      "bind_target": false,
+      "entity_type": "feature",
+      "selector": {"name": "EX05_Upper_Cap"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.Occurrences.addNewComponent",
+    "adsk.fusion.ExtrudeFeatures.createInput",
+    "adsk.fusion.ExtrudeFeatureInput.setSymmetricExtent",
+    "adsk.fusion.ExtrudeFeatures.addSimple",
+    "adsk.fusion.CombineFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatureInput.setDirectionTwo",
+    "adsk.fusion.ConstructionPlaneInput.setByOffset",
+    "adsk.fusion.SketchDimensions.addDistanceDimension",
+    "adsk.fusion.GeometricConstraints.addEqual",
+    "adsk.fusion.BRepBody.pointContainment"
+  ],
+  "expected": {
+    "parameters": 17,
+    "root_components_excluding_root": 2,
+    "root_occurrences": 2,
+    "root_bodies": 0,
+    "solid_bodies": 2,
+    "lumps_per_body": 1,
+    "bbox_mm": {"min": [-45.0, -25.0, 0.0], "max": [45.0, 25.0, 44.0]},
+    "split_center_z_mm": 22.0,
+    "split_gap_mm": 0.5,
+    "lower_bbox_z_mm": [0.0, 21.75],
+    "upper_bbox_z_mm": [22.25, 44.0],
+    "bore": {"axis": "X", "diameter_mm": 24.0, "center_y_mm": 0.0, "center_z_mm": 22.0},
+    "clamp_holes": {"count_per_component": 4, "diameter_mm": 5.5, "x_mm": [-28.0, 28.0], "y_mm": [-15.0, 15.0]},
+    "counterbores": {"component": "CMP02_Upper_Cap", "count": 4, "diameter_mm": 10.0, "depth_mm": 4.0},
+    "mounting_holes": {"component": "CMP01_Lower_Block", "count": 2, "diameter_mm": 7.0, "x_mm": [0.0], "y_mm": [-18.0, 18.0]},
+    "sketches": 9,
+    "consumed_component_sketches": 8,
+    "minimum_features": 18
+  }
+}

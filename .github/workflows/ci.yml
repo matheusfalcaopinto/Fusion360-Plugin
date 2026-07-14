@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  canonical-source-and-wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.11"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install canonical harness
+        run: python -m pip install -e "./harness[test]"
+      - name: Unit, fake MCP, linter, route-lock, and benchmark mock tests
+        run: python -m pytest -q -p no:cacheprovider
+      - name: Build deterministic wheel
+        run: python scripts/build-distribution.py
+      - name: Validate plugin bundle
+        run: python scripts/validate_plugin.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fusion-agent-harness-${{ matrix.os }}
+          path: wheels/fusion_agent_harness-0.2.1-py3-none-any.whl

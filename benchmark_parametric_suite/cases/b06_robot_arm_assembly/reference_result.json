@@ -1,0 +1,3206 @@
+{
+  "build_script_sha256": "3763e336fb6a8309fd9528031036f3b508d45a12d4f03f2dc3e8be7fa08772b8",
+  "case_id": "b06_robot_arm_assembly",
+  "cleanup": {
+    "active_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "baseline_open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "closed_without_save": true,
+    "inventory_restored": true,
+    "open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "restored": true
+  },
+  "definition_sha256": "6afa811e53d858dc9aa34bd8f101b86d36616d4b268718980f6bc2fd35e312b5",
+  "eco": {
+    "fast_path": {
+      "after": {
+        "document": {
+          "id": "",
+          "is_modified": true,
+          "name": "Sem título",
+          "product_type": "",
+          "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+          "version_id": ""
+        },
+        "duration_ms": 126,
+        "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+        "results": [
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N0QmAMAxExSn8zAKFJI1tHUDEJYQa++MeOobjOJdpP80ROI7jHkICNBGwfXOczBFITQI81D/5WLZrPc7hfmdrMPgAOtEeKUUXhNiJR3WZtTgsyiWP066SW9c2ut81HkLDVTwzfhQ8MYmIAAAA",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "85 mm",
+                "is_referenced_component": false,
+                "name": "WristLength",
+                "path": "WristLength",
+                "paths": [
+                  "WristLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_wrist_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0Uki0Nk8wNLcx1zUwMjXRNjA2SdRONklN1DVKTjVITTS2Tkk0SwWqBZjCgAbB9Bgpg60DWGxmaAQDiyn9LiAAAAA==",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "155 mm",
+                "is_referenced_component": false,
+                "name": "ForearmLength",
+                "path": "ForearmLength",
+                "paths": [
+                  "ForearmLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_forearm_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N0QmAMAxExSn8zAKFJI1tHUDEJYQa++MeOobjOJdpP80ROI7jHkICNBGwfXOczBFITQI81D/5WLZrPc7hfmdrMPgAOtEeKUUXhNiJR3WZtTgsyiWP066SW9c2ut81HkLDVTwTf/sOEkyIAAAA",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "195 mm",
+                "is_referenced_component": false,
+                "name": "UpperArmLength",
+                "path": "UpperArmLength",
+                "paths": [
+                  "UpperArmLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_upper_arm_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    195.00000000000003,
+                    18.0,
+                    142.00000000000006
+                  ],
+                  "min_mm": [
+                    0.0,
+                    -18.0,
+                    98.0
+                  ],
+                  "size_mm": [
+                    195.00000000000003,
+                    36.0,
+                    44.00000000000004
+                  ]
+                },
+                "component_path": "CMP04_Upper_Arm:1",
+                "component_paths": [
+                  "CMP04_Upper_Arm:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UDA1SzFJSUw10UwwTjXVNzC2MdS1NTc10k0zN0hKNTJMsU1MTwWqBZjCgAbB9Bgpg60DWW5oaAQD5L8mSiAAAAA==",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B04_Upper_Arm",
+                "occurrence_count_for_component": 1,
+                "path": "CMP04_Upper_Arm:1/B04_Upper_Arm",
+                "paths": [
+                  "CMP04_Upper_Arm:1/B04_Upper_Arm"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_upper_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    215.0,
+                    16.0,
+                    275.0
+                  ],
+                  "min_mm": [
+                    175.00000000000006,
+                    -16.0,
+                    120.0
+                  ],
+                  "size_mm": [
+                    39.99999999999993,
+                    32.0,
+                    155.0
+                  ]
+                },
+                "component_path": "CMP06_Forearm:1",
+                "component_paths": [
+                  "CMP06_Forearm:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N3QmAMAyExSl8zAKFpL/pACIuIVRrH9xDx+g4zmXaR3MEjuO4D4EBRQRavjvN4ghsSzxUGmvKy3av+Zqed5aGBuMhOG8zhaLSWVjZiIfanfXKEDFiyDpi7F3ZGH7XeQgd1/BkyH3vVewxiQAAAA==",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B06_Forearm",
+                "occurrence_count_for_component": 1,
+                "path": "CMP06_Forearm:1/B06_Forearm",
+                "paths": [
+                  "CMP06_Forearm:1/B06_Forearm"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_forearm_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    279.9999999999999,
+                    15.0,
+                    293.0
+                  ],
+                  "min_mm": [
+                    195.0,
+                    -15.0,
+                    257.0
+                  ],
+                  "size_mm": [
+                    84.99999999999989,
+                    30.0,
+                    35.99999999999998
+                  ]
+                },
+                "component_path": "CMP08_Wrist_Link:1",
+                "component_paths": [
+                  "CMP08_Wrist_Link:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0ULI0NjVJSzBN1k8xTDHRNDJLTdBOT0gx0k5LNk1MtEtOM04xNwGqBZjCgAbB9Bgpg60DWG5qZWwAAuUz1FYkAAAA=",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B08_Wrist_Link",
+                "occurrence_count_for_component": 1,
+                "path": "CMP08_Wrist_Link:1/B08_Wrist_Link",
+                "paths": [
+                  "CMP08_Wrist_Link:1/B08_Wrist_Link"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_wrist_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    450.0,
+                    7.5,
+                    315.0
+                  ],
+                  "min_mm": [
+                    380.0,
+                    -7.5,
+                    300.0
+                  ],
+                  "size_mm": [
+                    70.0,
+                    15.0,
+                    15.0
+                  ]
+                },
+                "component_path": "CMP12_Gripper_Finger_Upper:1",
+                "component_paths": [
+                  "CMP12_Gripper_Finger_Upper:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0U0owMkpONTFJ1k5NNEnVNks2MdZNSLU11jU1NTY1NU4zMzZNSwWqBZjCgAbB9Bgpg60DWG5kYGwAAl6XplokAAAA=",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B12_Gripper_Finger_Upper",
+                "occurrence_count_for_component": 1,
+                "path": "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper",
+                "paths": [
+                  "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_finger",
+            "truncated": false
+          }
+        ],
+        "status": "read_succeeded",
+        "success": true,
+        "summary": {
+          "bodies": 16,
+          "components": 17,
+          "features": 16,
+          "occurrences": 16,
+          "parameters": 122,
+          "sketches": 17,
+          "state_fingerprint": "f3adf5790a73361c19f129453d4f256aa99c555f0743b669c0a00d120b1221ed",
+          "state_fingerprint_items": 205,
+          "state_fingerprint_truncated": false,
+          "visible_body_bbox_mm": {
+            "max_mm": [
+              450.0,
+              80.0,
+              315.0
+            ],
+            "min_mm": [
+              -80.0,
+              -80.0,
+              0.0
+            ],
+            "size_mm": [
+              530.0,
+              160.0,
+              315.0
+            ]
+          },
+          "visible_body_count": 16
+        },
+        "warnings": []
+      },
+      "api_references": [
+        "adsk.fusion.UserParameter.expression"
+      ],
+      "artifacts": {
+        "audit_path": "outputs\\fast_path\\fast_90e8589e9c52408e816162cf5916854e\\audit.json"
+      },
+      "baseline": {
+        "document": {
+          "id": "",
+          "is_modified": true,
+          "name": "Sem título",
+          "product_type": "",
+          "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+          "version_id": ""
+        },
+        "duration_ms": 123,
+        "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+        "results": [
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N0QmAMAxExSn8zAKFJI1tHUDEJYQa++MeOobjOJdpP80ROI7jHkICNBGwfXOczBFITQI81D/5WLZrPc7hfmdrMPgAOtEeKUUXhNiJR3WZtTgsyiWP066SW9c2ut81HkLDVTwzfhQ8MYmIAAAA",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "70 mm",
+                "is_referenced_component": false,
+                "name": "WristLength",
+                "path": "WristLength",
+                "paths": [
+                  "WristLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_wrist_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0Uki0Nk8wNLcx1zUwMjXRNjA2SdRONklN1DVKTjVITTS2Tkk0SwWqBZjCgAbB9Bgpg60DWGxmaAQDiyn9LiAAAAA==",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "130 mm",
+                "is_referenced_component": false,
+                "name": "ForearmLength",
+                "path": "ForearmLength",
+                "paths": [
+                  "ForearmLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_forearm_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N0QmAMAxExSn8zAKFJI1tHUDEJYQa++MeOobjOJdpP80ROI7jHkICNBGwfXOczBFITQI81D/5WLZrPc7hfmdrMPgAOtEeKUUXhNiJR3WZtTgsyiWP066SW9c2ut81HkLDVTwTf/sOEkyIAAAA",
+                "entity_type": "parameter",
+                "exists": true,
+                "expression": "160 mm",
+                "is_referenced_component": false,
+                "name": "UpperArmLength",
+                "path": "UpperArmLength",
+                "paths": [
+                  "UpperArmLength"
+                ],
+                "unit": "mm",
+                "visible": true
+              }
+            ],
+            "query_id": "eco_upper_arm_length",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    160.0,
+                    18.0,
+                    142.0
+                  ],
+                  "min_mm": [
+                    0.0,
+                    -18.0,
+                    98.0
+                  ],
+                  "size_mm": [
+                    160.0,
+                    36.0,
+                    43.999999999999986
+                  ]
+                },
+                "component_path": "CMP04_Upper_Arm:1",
+                "component_paths": [
+                  "CMP04_Upper_Arm:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UDA1SzFJSUw10UwwTjXVNzC2MdS1NTc10k0zN0hKNTJMsU1MTwWqBZjCgAbB9Bgpg60DWW5oaAQD5L8mSiAAAAA==",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B04_Upper_Arm",
+                "occurrence_count_for_component": 1,
+                "path": "CMP04_Upper_Arm:1/B04_Upper_Arm",
+                "paths": [
+                  "CMP04_Upper_Arm:1/B04_Upper_Arm"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_upper_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    180.0,
+                    16.0,
+                    250.0
+                  ],
+                  "min_mm": [
+                    140.0,
+                    -16.0,
+                    120.0
+                  ],
+                  "size_mm": [
+                    40.0,
+                    32.0,
+                    130.0
+                  ]
+                },
+                "component_path": "CMP06_Forearm:1",
+                "component_paths": [
+                  "CMP06_Forearm:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N3QmAMAyExSl8zAKFpL/pACIuIVRrH9xDx+g4zmXaR3MEjuO4D4EBRQRavjvN4ghsSzxUGmvKy3av+Zqed5aGBuMhOG8zhaLSWVjZiIfanfXKEDFiyDpi7F3ZGH7XeQgd1/BkyH3vVewxiQAAAA==",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B06_Forearm",
+                "occurrence_count_for_component": 1,
+                "path": "CMP06_Forearm:1/B06_Forearm",
+                "paths": [
+                  "CMP06_Forearm:1/B06_Forearm"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_forearm_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    230.0,
+                    15.0,
+                    268.0
+                  ],
+                  "min_mm": [
+                    160.0,
+                    -15.0,
+                    232.0
+                  ],
+                  "size_mm": [
+                    70.0,
+                    30.0,
+                    36.000000000000014
+                  ]
+                },
+                "component_path": "CMP08_Wrist_Link:1",
+                "component_paths": [
+                  "CMP08_Wrist_Link:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0ULI0NjVJSzBN1k8xTDHRNDJLTdBOT0gx0k5LNk1MtEtOM04xNwGqBZjCgAbB9Bgpg60DWG5qZWwAAuUz1FYkAAAA=",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B08_Wrist_Link",
+                "occurrence_count_for_component": 1,
+                "path": "CMP08_Wrist_Link:1/B08_Wrist_Link",
+                "paths": [
+                  "CMP08_Wrist_Link:1/B08_Wrist_Link"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_wrist_body",
+            "truncated": false
+          },
+          {
+            "ambiguous": false,
+            "match_count": 1,
+            "matches": [
+              {
+                "bounding_box_mm": {
+                  "max_mm": [
+                    400.0,
+                    7.5,
+                    290.0
+                  ],
+                  "min_mm": [
+                    330.0,
+                    -7.5,
+                    275.0
+                  ],
+                  "size_mm": [
+                    70.0,
+                    15.0,
+                    15.0
+                  ]
+                },
+                "component_path": "CMP12_Gripper_Finger_Upper:1",
+                "component_paths": [
+                  "CMP12_Gripper_Finger_Upper:1"
+                ],
+                "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0U0owMkpONTFJ1k5NNEnVNks2MdZNSLU11jU1NTY1NU4zMzZNSwWqBZjCgAbB9Bgpg60DWG5kYGwAAl6XplokAAAA=",
+                "entity_type": "body",
+                "exists": true,
+                "is_referenced_component": false,
+                "name": "B12_Gripper_Finger_Upper",
+                "occurrence_count_for_component": 1,
+                "path": "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper",
+                "paths": [
+                  "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper"
+                ],
+                "valid": true,
+                "visible": true
+              }
+            ],
+            "query_id": "eco_finger",
+            "truncated": false
+          }
+        ],
+        "status": "read_succeeded",
+        "success": true,
+        "summary": {
+          "bodies": 16,
+          "components": 17,
+          "features": 16,
+          "occurrences": 16,
+          "parameters": 122,
+          "sketches": 17,
+          "state_fingerprint": "94d4b085d5ac58c32db466931be89a15420eb266fe0936e11ba3d92d5ed74f09",
+          "state_fingerprint_items": 205,
+          "state_fingerprint_truncated": false,
+          "visible_body_bbox_mm": {
+            "max_mm": [
+              400.0,
+              80.0,
+              290.0
+            ],
+            "min_mm": [
+              -80.0,
+              -80.0,
+              0.0
+            ],
+            "size_mm": [
+              480.0,
+              160.0,
+              290.0
+            ]
+          },
+          "visible_body_count": 16
+        },
+        "warnings": []
+      },
+      "bindings": {
+        "target_components": [],
+        "targets": [
+          "eco_forearm_length",
+          "eco_upper_arm_length",
+          "eco_wrist_length"
+        ]
+      },
+      "change_class": "scoped_update",
+      "declared_mutation_count": 1,
+      "duration_ms": 579,
+      "execution": {
+        "error": null,
+        "error_code": null,
+        "ok": true
+      },
+      "execution_path": "native_fast",
+      "intent": "Extend the upper arm, forearm and wrist while preserving the complete joint-to-tool chain and component count.",
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "mutating_call_count": 1,
+      "native_call_count": 4,
+      "operation_id": "fast_90e8589e9c52408e816162cf5916854e",
+      "policy": {
+        "allowed": true,
+        "change_class": "scoped_update",
+        "detected_change_class": "scoped_update",
+        "errors": [],
+        "mutating_syntax_detected": true,
+        "script_sha256": "e5c91a2db19508db9fb6752a56711a5f4be495e9d0075820f7ad925612cbdf4b",
+        "warnings": []
+      },
+      "recovery_instruction": "",
+      "script_sha256": "e5c91a2db19508db9fb6752a56711a5f4be495e9d0075820f7ad925612cbdf4b",
+      "status": "applied_verified",
+      "transport_mutating_dispatch_count": 1,
+      "verification": {
+        "assertions": [
+          {
+            "actual": "85 mm",
+            "before": "70 mm",
+            "expected": "85 mm",
+            "field": "expression",
+            "id": "eco_wrist_expression",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_wrist_length",
+            "tolerance": null
+          },
+          {
+            "actual": "155 mm",
+            "before": "130 mm",
+            "expected": "155 mm",
+            "field": "expression",
+            "id": "eco_forearm_expression",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_forearm_length",
+            "tolerance": null
+          },
+          {
+            "actual": "195 mm",
+            "before": "160 mm",
+            "expected": "195 mm",
+            "field": "expression",
+            "id": "eco_upper_expression",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_upper_arm_length",
+            "tolerance": null
+          },
+          {
+            "actual": true,
+            "before": true,
+            "expected": true,
+            "field": "valid",
+            "id": "eco_upper_valid",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_upper_body",
+            "tolerance": null
+          },
+          {
+            "actual": 195.00000000000003,
+            "before": 160.0,
+            "expected": 195.0,
+            "field": "bounding_box_mm.size_mm.0",
+            "id": "eco_upper_length",
+            "message": "ok",
+            "operator": "approx",
+            "passed": true,
+            "query_id": "eco_upper_body",
+            "tolerance": 0.3
+          },
+          {
+            "actual": true,
+            "before": true,
+            "expected": true,
+            "field": "valid",
+            "id": "eco_forearm_valid",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_forearm_body",
+            "tolerance": null
+          },
+          {
+            "actual": 155.0,
+            "before": 130.0,
+            "expected": 155.0,
+            "field": "bounding_box_mm.size_mm.2",
+            "id": "eco_forearm_length_check",
+            "message": "ok",
+            "operator": "approx",
+            "passed": true,
+            "query_id": "eco_forearm_body",
+            "tolerance": 0.3
+          },
+          {
+            "actual": true,
+            "before": true,
+            "expected": true,
+            "field": "valid",
+            "id": "eco_wrist_valid",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_wrist_body",
+            "tolerance": null
+          },
+          {
+            "actual": 84.99999999999989,
+            "before": 70.0,
+            "expected": 85.0,
+            "field": "bounding_box_mm.size_mm.0",
+            "id": "eco_wrist_length_check",
+            "message": "ok",
+            "operator": "approx",
+            "passed": true,
+            "query_id": "eco_wrist_body",
+            "tolerance": 0.3
+          },
+          {
+            "actual": true,
+            "before": true,
+            "expected": true,
+            "field": "valid",
+            "id": "eco_finger_valid",
+            "message": "ok",
+            "operator": "eq",
+            "passed": true,
+            "query_id": "eco_finger",
+            "tolerance": null
+          },
+          {
+            "actual": 450.0,
+            "before": 400.0,
+            "expected": 450.0,
+            "field": "bounding_box_mm.max_mm.0",
+            "id": "eco_tool_tip_x",
+            "message": "ok",
+            "operator": "approx",
+            "passed": true,
+            "query_id": "eco_finger",
+            "tolerance": 0.4
+          },
+          {
+            "actual": 315.0,
+            "before": 290.0,
+            "expected": 315.0,
+            "field": "bounding_box_mm.max_mm.2",
+            "id": "eco_tool_tip_z",
+            "message": "ok",
+            "operator": "approx",
+            "passed": true,
+            "query_id": "eco_finger",
+            "tolerance": 0.4
+          }
+        ],
+        "invariants": [
+          {
+            "name": "document_identity_unchanged",
+            "passed": true
+          },
+          {
+            "name": "scoped_update_counts_unchanged",
+            "passed": true
+          },
+          {
+            "name": "visible_body_bbox_valid",
+            "passed": true
+          },
+          {
+            "name": "target_bounding_boxes_valid",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "source": "post_apply"
+      }
+    },
+    "id": "eco_b06_extend_kinematic_chain",
+    "images": [
+      {
+        "bytes": 66017,
+        "direction": "isometric",
+        "native_direction": "iso-top-right",
+        "path": "cases/b06_robot_arm_assembly/images/reference_eco_isometric.png",
+        "sha256": "11b2b0c2a13f0184d7cdc739f5817d10bbd35926907e48e3a8d7bb6b5f16222d"
+      },
+      {
+        "bytes": 19321,
+        "direction": "front",
+        "native_direction": "front",
+        "path": "cases/b06_robot_arm_assembly/images/reference_eco_front.png",
+        "sha256": "a536028eded46bcf0096c67f8652efd5bec9f05dab50bbc095a5fa89dc8cd285"
+      },
+      {
+        "bytes": 21113,
+        "direction": "top",
+        "native_direction": "top",
+        "path": "cases/b06_robot_arm_assembly/images/reference_eco_top.png",
+        "sha256": "0c66ca01aa759028565b42ab10ef8645770e3e9a168ef230172d176d70dca948"
+      },
+      {
+        "bytes": 14267,
+        "direction": "right",
+        "native_direction": "right",
+        "path": "cases/b06_robot_arm_assembly/images/reference_eco_right.png",
+        "sha256": "d0e877fb1b508c7ab3dbf03108173470b243c4cedfc5d04f5e0f4425de0ec532"
+      }
+    ],
+    "oracle": {
+      "case_id": "b06_robot_arm_assembly",
+      "checks": [
+        {
+          "expected": {
+            "marked": true,
+            "saved": false
+          },
+          "id": "document.identity_preserved",
+          "observed": {
+            "marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+            "saved": false
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "count": 36,
+            "values": {
+              "ElbowX": [
+                19.5,
+                "UpperArmLength"
+              ],
+              "ForearmLength": [
+                15.5,
+                "155 mm"
+              ],
+              "ShoulderZ": [
+                12.0,
+                "BaseHeight + ColumnHeight"
+              ],
+              "UpperArmLength": [
+                19.5,
+                "195 mm"
+              ],
+              "WristLength": [
+                8.5,
+                "85 mm"
+              ],
+              "WristTipX": [
+                28.0,
+                "ElbowX + WristLength"
+              ],
+              "WristZ": [
+                27.5,
+                "ShoulderZ + ForearmLength"
+              ]
+            }
+          },
+          "id": "parameters.eco_and_dependencies",
+          "observed": {
+            "count": 36,
+            "failures": []
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "bodies": 16,
+            "components": 16,
+            "features": 16,
+            "identity": true,
+            "joints": 12,
+            "occurrences": 16
+          },
+          "id": "assembly.counts_health_and_identity_after_eco",
+          "observed": {
+            "bodies": 16,
+            "components": 16,
+            "errors": [],
+            "features": 16,
+            "joints": 12,
+            "non_identity": [],
+            "occurrences": 16
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "max": [
+              450.0,
+              80.0,
+              315.0
+            ],
+            "min": [
+              -80.0,
+              -80.0,
+              0.0
+            ]
+          },
+          "id": "geometry.eco_workspace_bbox",
+          "observed": {
+            "max": [
+              450.0,
+              80.0,
+              315.0
+            ],
+            "min": [
+              -80.0,
+              -80.0,
+              0.0
+            ],
+            "size": [
+              530.0,
+              160.0,
+              315.0
+            ]
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "B04_Upper_Arm": [
+              [
+                0.0,
+                -18.0,
+                98.0
+              ],
+              [
+                195.0,
+                18.0,
+                142.0
+              ]
+            ],
+            "B06_Forearm": [
+              [
+                175.0,
+                -16.0,
+                120.0
+              ],
+              [
+                215.0,
+                16.0,
+                275.0
+              ]
+            ],
+            "B08_Wrist_Link": [
+              [
+                195.0,
+                -15.0,
+                257.0
+              ],
+              [
+                280.0,
+                15.0,
+                293.0
+              ]
+            ],
+            "B09_Wrist_Roll_Motor": [
+              [
+                280.0,
+                -22.0,
+                253.0
+              ],
+              [
+                340.0,
+                22.0,
+                297.0
+              ]
+            ],
+            "B10_Tool_Flange": [
+              [
+                340.0,
+                -40.0,
+                235.0
+              ],
+              [
+                350.0,
+                40.0,
+                315.0
+              ]
+            ],
+            "B11_Gripper_Palm": [
+              [
+                350.0,
+                -30.0,
+                235.0
+              ],
+              [
+                380.0,
+                30.0,
+                315.0
+              ]
+            ],
+            "B12_Gripper_Finger_Upper": [
+              [
+                380.0,
+                -7.5,
+                300.0
+              ],
+              [
+                450.0,
+                7.5,
+                315.0
+              ]
+            ],
+            "B13_Gripper_Finger_Lower": [
+              [
+                380.0,
+                -7.5,
+                235.0
+              ],
+              [
+                450.0,
+                7.5,
+                250.0
+              ]
+            ]
+          },
+          "id": "geometry.eco_joint_to_tool_continuity",
+          "observed": {
+            "boxes": {
+              "B04_Upper_Arm": {
+                "max": [
+                  195.00000000000003,
+                  18.0,
+                  142.00000000000006
+                ],
+                "min": [
+                  0.0,
+                  -18.0,
+                  98.0
+                ],
+                "size": [
+                  195.00000000000003,
+                  36.0,
+                  44.00000000000004
+                ]
+              },
+              "B06_Forearm": {
+                "max": [
+                  215.0,
+                  16.0,
+                  275.0
+                ],
+                "min": [
+                  175.00000000000006,
+                  -16.0,
+                  120.0
+                ],
+                "size": [
+                  39.99999999999993,
+                  32.0,
+                  155.0
+                ]
+              },
+              "B08_Wrist_Link": {
+                "max": [
+                  279.9999999999999,
+                  15.0,
+                  293.0
+                ],
+                "min": [
+                  195.0,
+                  -15.0,
+                  257.0
+                ],
+                "size": [
+                  84.99999999999989,
+                  30.0,
+                  35.99999999999998
+                ]
+              },
+              "B09_Wrist_Roll_Motor": {
+                "max": [
+                  340.0,
+                  21.999999999999993,
+                  297.0
+                ],
+                "min": [
+                  280.0,
+                  -21.999999999999993,
+                  253.0
+                ],
+                "size": [
+                  60.0,
+                  43.999999999999986,
+                  43.999999999999986
+                ]
+              },
+              "B10_Tool_Flange": {
+                "max": [
+                  350.0,
+                  40.0,
+                  315.0
+                ],
+                "min": [
+                  340.0,
+                  -40.0,
+                  235.0
+                ],
+                "size": [
+                  10.0,
+                  80.0,
+                  80.0
+                ]
+              },
+              "B11_Gripper_Palm": {
+                "max": [
+                  380.0,
+                  30.0,
+                  315.0
+                ],
+                "min": [
+                  350.0,
+                  -30.0,
+                  235.0
+                ],
+                "size": [
+                  30.0,
+                  60.0,
+                  80.0
+                ]
+              },
+              "B12_Gripper_Finger_Upper": {
+                "max": [
+                  450.0,
+                  7.5,
+                  315.0
+                ],
+                "min": [
+                  380.0,
+                  -7.5,
+                  300.0
+                ],
+                "size": [
+                  70.0,
+                  15.0,
+                  15.0
+                ]
+              },
+              "B13_Gripper_Finger_Lower": {
+                "max": [
+                  450.0,
+                  7.5,
+                  250.0
+                ],
+                "min": [
+                  380.0,
+                  -7.5,
+                  235.0
+                ],
+                "size": [
+                  70.0,
+                  15.0,
+                  15.0
+                ]
+              }
+            },
+            "failures": []
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "B14_Cable_Upper": [
+              [
+                16.0,
+                -4.0,
+                142.0
+              ],
+              [
+                179.0,
+                4.0,
+                150.0
+              ]
+            ],
+            "B15_Cable_Forearm": [
+              [
+                215.0,
+                -4.0,
+                132.5
+              ],
+              [
+                223.0,
+                4.0,
+                262.5
+              ]
+            ],
+            "B16_Cable_Wrist": [
+              [
+                207.5,
+                -4.0,
+                293.0
+              ],
+              [
+                267.5,
+                4.0,
+                301.0
+              ]
+            ]
+          },
+          "id": "geometry.eco_cable_propagation",
+          "observed": {
+            "boxes": {
+              "B14_Cable_Upper": {
+                "max": [
+                  179.00000000000006,
+                  4.0,
+                  149.99999999999997
+                ],
+                "min": [
+                  15.999999999999979,
+                  -4.0,
+                  142.0
+                ],
+                "size": [
+                  163.00000000000009,
+                  8.0,
+                  7.999999999999989
+                ]
+              },
+              "B15_Cable_Forearm": {
+                "max": [
+                  222.99999999999997,
+                  4.0,
+                  262.5
+                ],
+                "min": [
+                  214.99999999999994,
+                  -4.0,
+                  132.5
+                ],
+                "size": [
+                  8.000000000000043,
+                  8.0,
+                  130.0
+                ]
+              },
+              "B16_Cable_Wrist": {
+                "max": [
+                  267.50000000000006,
+                  4.0,
+                  301.0
+                ],
+                "min": [
+                  207.5,
+                  -4.0,
+                  293.0
+                ],
+                "size": [
+                  60.000000000000036,
+                  8.0,
+                  8.000000000000007
+                ]
+              }
+            },
+            "failures": []
+          },
+          "status": "pass"
+        },
+        {
+          "expected": {
+            "errors": 0,
+            "joints": 12,
+            "revolute": 4
+          },
+          "id": "joints.healthy_after_eco",
+          "observed": {
+            "errors": [],
+            "joints": 12,
+            "revolute": 4
+          },
+          "status": "pass"
+        }
+      ],
+      "coverage": {
+        "failed": 0,
+        "mandatory": 7,
+        "passed": 7,
+        "unverified": 0
+      },
+      "diagnostics": {
+        "marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+        "total_volume_mm3": 2320907.7469857414
+      },
+      "failed_checks": [],
+      "ok": true,
+      "oracle_id": "b06_robot_arm_assembly_eco",
+      "passed": true,
+      "phase": "eco",
+      "schema_version": "fusion_parametric_oracle.v2"
+    }
+  },
+  "eco_linter": {
+    "allowed": true,
+    "change_class": "scoped_update",
+    "detected_change_class": "scoped_update",
+    "errors": [],
+    "mutating_syntax_detected": true,
+    "script_sha256": "e5c91a2db19508db9fb6752a56711a5f4be495e9d0075820f7ad925612cbdf4b",
+    "warnings": []
+  },
+  "eco_oracle_script_sha256": "945c22a5b9394005ce12428e96a03e33bc3f1f26f2c6608aa3ebcb1ad99eeee0",
+  "eco_script_sha256": "e5c91a2db19508db9fb6752a56711a5f4be495e9d0075820f7ad925612cbdf4b",
+  "elapsed_ms": 9127,
+  "fast_path": {
+    "after": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+        "version_id": ""
+      },
+      "duration_ms": 162,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N0QmAMAxExSn8zAKFJI21HUDEJYQa++MeOkbHcS5jP80ROI7jHkIENBGwfXMczRHIlwSo1Nd8LNu1HudwP7M1GHwATbRPFCcXhNiJR3WZtTgsyiWPaVfJrWsb3e8aD6HhPjwLv776ZTGIAAAA",
+              "entity_type": "sketch",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "SK00_Kinematic_Envelope",
+              "occurrence_count_for_component": 0,
+              "path": "root/SK00_Kinematic_Envelope",
+              "paths": [
+                "root/SK00_Kinematic_Envelope"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_reference",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP01_Base:1",
+              "component_paths": [
+                "CMP01_Base:1"
+              ],
+              "entity_token": "/v4BAAEADAEAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "CMP01_Base",
+              "occurrence_count_for_component": 1,
+              "path": "CMP01_Base:1",
+              "paths": [
+                "CMP01_Base:1"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_base_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP04_Upper_Arm:1",
+              "component_paths": [
+                "CMP04_Upper_Arm:1"
+              ],
+              "entity_token": "/v4BAAEA7wIAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "CMP04_Upper_Arm",
+              "occurrence_count_for_component": 1,
+              "path": "CMP04_Upper_Arm:1",
+              "paths": [
+                "CMP04_Upper_Arm:1"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP11_Gripper_Palm:1",
+              "component_paths": [
+                "CMP11_Gripper_Palm:1"
+              ],
+              "entity_token": "/v4BAAEA5gcAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "CMP11_Gripper_Palm",
+              "occurrence_count_for_component": 1,
+              "path": "CMP11_Gripper_Palm:1",
+              "paths": [
+                "CMP11_Gripper_Palm:1"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_gripper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  80.0,
+                  80.0,
+                  20.0
+                ],
+                "min_mm": [
+                  -80.0,
+                  -80.0,
+                  0.0
+                ],
+                "size_mm": [
+                  160.0,
+                  160.0,
+                  20.0
+                ]
+              },
+              "component_path": "CMP01_Base:1",
+              "component_paths": [
+                "CMP01_Base:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UDAxNTU3NjS10DU3MknRNTBMNdS2MTU10Lc3NzI3MDQwtTNOSwGqBZjCgAbB9Bgpg60DWG1taAgCYVY/3iAAAAA==",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B01_Base",
+              "occurrence_count_for_component": 1,
+              "path": "CMP01_Base:1/B01_Base",
+              "paths": [
+                "CMP01_Base:1/B01_Base"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_base_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  160.0,
+                  18.0,
+                  142.0
+                ],
+                "min_mm": [
+                  0.0,
+                  -18.0,
+                  98.0
+                ],
+                "size_mm": [
+                  160.0,
+                  36.0,
+                  43.999999999999986
+                ]
+              },
+              "component_path": "CMP04_Upper_Arm:1",
+              "component_paths": [
+                "CMP04_Upper_Arm:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UDA1SzFJSUw10UwwTjXVNzC2MdS1NTc10k0zN0hKNTJMsU1MTwWqBZjCgAbB9Bgpg60DWW5oaAQD5L8mSiAAAAA==",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B04_Upper_Arm",
+              "occurrence_count_for_component": 1,
+              "path": "CMP04_Upper_Arm:1/B04_Upper_Arm",
+              "paths": [
+                "CMP04_Upper_Arm:1/B04_Upper_Arm"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  180.0,
+                  16.0,
+                  250.0
+                ],
+                "min_mm": [
+                  140.0,
+                  -16.0,
+                  120.0
+                ],
+                "size_mm": [
+                  40.0,
+                  32.0,
+                  130.0
+                ]
+              },
+              "component_path": "CMP06_Forearm:1",
+              "component_paths": [
+                "CMP06_Forearm:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12N3QmAMAyExSl8zAKFpL/pACIuIVRrH9xDx+g4zmXaR3MEjuO4D4EBRQRavjvN4ghsSzxUGmvKy3av+Zqed5aGBuMhOG8zhaLSWVjZiIfanfXKEDFiyDpi7F3ZGH7XeQgd1/BkyH3vVewxiQAAAA==",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B06_Forearm",
+              "occurrence_count_for_component": 1,
+              "path": "CMP06_Forearm:1/B06_Forearm",
+              "paths": [
+                "CMP06_Forearm:1/B06_Forearm"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_forearm_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  230.0,
+                  15.0,
+                  268.0
+                ],
+                "min_mm": [
+                  160.0,
+                  -15.0,
+                  232.0
+                ],
+                "size_mm": [
+                  70.0,
+                  30.0,
+                  36.000000000000014
+                ]
+              },
+              "component_path": "CMP08_Wrist_Link:1",
+              "component_paths": [
+                "CMP08_Wrist_Link:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0ULI0NjVJSzBN1k8xTDHRNDJLTdBOT0gx0k5LNk1MtEtOM04xNwGqBZjCgAbB9Bgpg60DWG5qZWwAAuUz1FYkAAAA=",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B08_Wrist_Link",
+              "occurrence_count_for_component": 1,
+              "path": "CMP08_Wrist_Link:1/B08_Wrist_Link",
+              "paths": [
+                "CMP08_Wrist_Link:1/B08_Wrist_Link"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_wrist_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  400.0,
+                  7.5,
+                  290.0
+                ],
+                "min_mm": [
+                  330.0,
+                  -7.5,
+                  275.0
+                ],
+                "size_mm": [
+                  70.0,
+                  15.0,
+                  15.0
+                ]
+              },
+              "component_path": "CMP12_Gripper_Finger_Upper:1",
+              "component_paths": [
+                "CMP12_Gripper_Finger_Upper:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0U0owMkpONTFJ1k5NNEnVNks2MdZNSLU11jU1NTY1NU4zMzZNSwWqBZjCgAbB9Bgpg60DWG5kYGwAAl6XplokAAAA=",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B12_Gripper_Finger_Upper",
+              "occurrence_count_for_component": 1,
+              "path": "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper",
+              "paths": [
+                "CMP12_Gripper_Finger_Upper:1/B12_Gripper_Finger_Upper"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_finger_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  144.0,
+                  4.0,
+                  150.0
+                ],
+                "min_mm": [
+                  15.999999999999996,
+                  -4.0,
+                  142.0
+                ],
+                "size_mm": [
+                  128.0,
+                  8.0,
+                  8.000000000000007
+                ]
+              },
+              "component_path": "CMP14_Cable_Upper:1",
+              "component_paths": [
+                "CMP14_Cable_Upper:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/12NywmAQAxExSo8poGF/NzNFiBiE4Lfg31oGZZjXcY9miEwDMM8BAN0EbB/cWzuCPRLItxU39Paj+ewHs31dN5gkAi25ST7lsKSeQlKmoORpiBtRJkTqeBcur5R/a7wEAruw7OpvkXlojqJAAAA",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B14_Cable_Upper",
+              "occurrence_count_for_component": 1,
+              "path": "CMP14_Cable_Upper:1/B14_Cable_Upper",
+              "paths": [
+                "CMP14_Cable_Upper:1/B14_Cable_Upper"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_cable_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP04_Upper_Arm:1",
+              "component_paths": [
+                "CMP04_Upper_Arm:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UDA1SzFJSUw10UwwTjXVNzC2MdS1NTc10k0zN0hKNTJMsU1MTwWqBZjCgAbB9Bgpg60DWWxoZAAAS2IYziAAAAA==",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "EX01_Upper_Arm",
+              "occurrence_count_for_component": 1,
+              "path": "CMP04_Upper_Arm:1/EX01_Upper_Arm",
+              "paths": [
+                "CMP04_Upper_Arm:1/EX01_Upper_Arm"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP09_Wrist_Roll_Motor:1",
+              "component_paths": [
+                "CMP09_Wrist_Roll_Motor:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwjxDpnmJKe5xrZ4pWRJtx1yBKowUjM0UUkyMzM1SjFJ0zdJSzXVNLJOTdZMMTNJ000zSLCxSUtPMk83SwGqBZjCgAbB9Bgpg60DWG1oYGQIAenvLm4kAAAA=",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "EX01_Wrist_Roll_Motor",
+              "occurrence_count_for_component": 1,
+              "path": "CMP09_Wrist_Roll_Motor:1/EX01_Wrist_Roll_Motor",
+              "paths": [
+                "CMP09_Wrist_Roll_Motor:1/EX01_Wrist_Roll_Motor"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_roll_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 16,
+        "components": 17,
+        "features": 16,
+        "occurrences": 16,
+        "parameters": 122,
+        "sketches": 17,
+        "state_fingerprint": "94d4b085d5ac58c32db466931be89a15420eb266fe0936e11ba3d92d5ed74f09",
+        "state_fingerprint_items": 205,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": {
+          "max_mm": [
+            400.0,
+            80.0,
+            290.0
+          ],
+          "min_mm": [
+            -80.0,
+            -80.0,
+            0.0
+          ],
+          "size_mm": [
+            480.0,
+            160.0,
+            290.0
+          ]
+        },
+        "visible_body_count": 16
+      },
+      "warnings": []
+    },
+    "api_references": [
+      "adsk.fusion.Occurrences.addNewComponent",
+      "adsk.fusion.ExtrudeFeatures.createInput",
+      "adsk.fusion.ExtrudeFeatureInput.setSymmetricExtent",
+      "adsk.fusion.ConstructionPlaneInput.setByOffset",
+      "adsk.fusion.AsBuiltJoints.createInput",
+      "adsk.fusion.AsBuiltJointInput.setAsRevoluteJointMotion",
+      "adsk.fusion.JointGeometry.createByPoint",
+      "adsk.fusion.SketchDimensions.addDistanceDimension"
+    ],
+    "artifacts": {
+      "audit_path": "outputs\\fast_path\\fast_9773d21c472441a1aba93c964076efc8\\audit.json"
+    },
+    "baseline": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+        "version_id": ""
+      },
+      "duration_ms": 24,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_reference",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_base_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_gripper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_base_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_forearm_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_wrist_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_finger_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_cable_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_roll_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 0,
+        "components": 1,
+        "features": 0,
+        "occurrences": 0,
+        "parameters": 0,
+        "sketches": 0,
+        "state_fingerprint": "32f173281e02b48b86f04d85ca2a82bab9e9698c907beb4559588f5c82012ce6",
+        "state_fingerprint_items": 2,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": null,
+        "visible_body_count": 0
+      },
+      "warnings": []
+    },
+    "bindings": {
+      "target_components": [
+        "root"
+      ],
+      "targets": []
+    },
+    "change_class": "additive",
+    "declared_mutation_count": 1,
+    "duration_ms": 2057,
+    "execution": {
+      "error": null,
+      "error_code": null,
+      "ok": true
+    },
+    "execution_path": "native_fast",
+    "intent": "Build canonical reference fixture b06_robot_arm_assembly: Parametric multi-component industrial robot arm",
+    "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+    "mutating_call_count": 1,
+    "native_call_count": 4,
+    "operation_id": "fast_9773d21c472441a1aba93c964076efc8",
+    "policy": {
+      "allowed": true,
+      "change_class": "additive",
+      "detected_change_class": "additive",
+      "errors": [],
+      "mutating_syntax_detected": true,
+      "script_sha256": "3763e336fb6a8309fd9528031036f3b508d45a12d4f03f2dc3e8be7fa08772b8",
+      "warnings": []
+    },
+    "recovery_instruction": "",
+    "script_sha256": "3763e336fb6a8309fd9528031036f3b508d45a12d4f03f2dc3e8be7fa08772b8",
+    "status": "applied_verified",
+    "transport_mutating_dispatch_count": 1,
+    "verification": {
+      "assertions": [
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_reference_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_reference",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_reference_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_reference",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_base_component_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_base_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_base_component_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_base_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_component_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_component_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_gripper_component_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_gripper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_gripper_component_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_gripper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_base_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_base_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_base_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_base_body",
+          "tolerance": null
+        },
+        {
+          "actual": 160.0,
+          "before": null,
+          "expected": 160.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_base_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_base_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 160.0,
+          "before": null,
+          "expected": 160.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_base_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_base_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 20.0,
+          "before": null,
+          "expected": 20.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_base_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_base_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": null
+        },
+        {
+          "actual": 160.0,
+          "before": null,
+          "expected": 160.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_upper_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 36.0,
+          "before": null,
+          "expected": 36.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_upper_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 43.999999999999986,
+          "before": null,
+          "expected": 44.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_upper_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_forearm_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_forearm_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_forearm_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_forearm_body",
+          "tolerance": null
+        },
+        {
+          "actual": 40.0,
+          "before": null,
+          "expected": 40.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_forearm_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_forearm_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 130.0,
+          "before": null,
+          "expected": 130.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_forearm_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_forearm_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_wrist_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_wrist_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_wrist_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_wrist_body",
+          "tolerance": null
+        },
+        {
+          "actual": 70.0,
+          "before": null,
+          "expected": 70.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_wrist_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_wrist_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 36.000000000000014,
+          "before": null,
+          "expected": 36.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_wrist_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_wrist_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_finger_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_finger_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_finger_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_finger_body",
+          "tolerance": null
+        },
+        {
+          "actual": 70.0,
+          "before": null,
+          "expected": 70.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_finger_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_finger_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 15.0,
+          "before": null,
+          "expected": 15.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_finger_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_finger_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 15.0,
+          "before": null,
+          "expected": 15.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_finger_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_finger_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_cable_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_cable_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_cable_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_cable_body",
+          "tolerance": null
+        },
+        {
+          "actual": 128.0,
+          "before": null,
+          "expected": 128.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_cable_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_cable_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 8.0,
+          "before": null,
+          "expected": 8.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_cable_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_cable_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 8.000000000000007,
+          "before": null,
+          "expected": 8.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_cable_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_cable_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_feature_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_feature_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_roll_feature_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_roll_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_roll_feature_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_roll_feature",
+          "tolerance": null
+        }
+      ],
+      "invariants": [
+        {
+          "name": "document_identity_unchanged",
+          "passed": true
+        },
+        {
+          "name": "additive_counts_do_not_decrease",
+          "passed": true
+        },
+        {
+          "name": "visible_body_bbox_valid",
+          "passed": true
+        },
+        {
+          "name": "target_feature_health",
+          "passed": true,
+          "values": [
+            "0",
+            "0"
+          ]
+        },
+        {
+          "name": "target_bounding_boxes_valid",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "source": "post_apply"
+    }
+  },
+  "fixture": {
+    "fixture_document_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+    "fixture_fingerprint": "06fc41170496f5c4cee0499c7f8dd5c626a033ed03d9fe1df2cfdd5bfef1a0f3",
+    "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "unsaved": true
+  },
+  "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+  "images": [
+    {
+      "bytes": 68050,
+      "direction": "isometric",
+      "native_direction": "iso-top-right",
+      "path": "cases/b06_robot_arm_assembly/images/reference_initial_isometric.png",
+      "sha256": "f22e846fac518029624322824497ce0703fec9dabaa7e8fb6b62243656409663"
+    },
+    {
+      "bytes": 19789,
+      "direction": "front",
+      "native_direction": "front",
+      "path": "cases/b06_robot_arm_assembly/images/reference_initial_front.png",
+      "sha256": "68e10241315705b92554bae7943c4cb576113a7bc326e2cca967bfb65cb76da7"
+    },
+    {
+      "bytes": 20529,
+      "direction": "top",
+      "native_direction": "top",
+      "path": "cases/b06_robot_arm_assembly/images/reference_initial_top.png",
+      "sha256": "ee7d96a58dd25637f94548ce9bd63f5f9b332bc97492a3058db004b36897d5bd"
+    },
+    {
+      "bytes": 14503,
+      "direction": "right",
+      "native_direction": "right",
+      "path": "cases/b06_robot_arm_assembly/images/reference_initial_right.png",
+      "sha256": "ba34d3db3167c32064b7bc613f9e39e65a43083501551264c11408b1257ac0e9"
+    }
+  ],
+  "linter": {
+    "allowed": true,
+    "change_class": "additive",
+    "detected_change_class": "additive",
+    "errors": [],
+    "mutating_syntax_detected": true,
+    "script_sha256": "3763e336fb6a8309fd9528031036f3b508d45a12d4f03f2dc3e8be7fa08772b8",
+    "warnings": []
+  },
+  "oracle": {
+    "case_id": "b06_robot_arm_assembly",
+    "checks": [
+      {
+        "expected": {
+          "marked": true,
+          "saved": false
+        },
+        "id": "document.marked_unsaved",
+        "observed": {
+          "marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+          "saved": false
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "count": 36,
+          "critical_values_cm": {
+            "BaseDiameter": 16.0,
+            "BaseHeight": 2.0,
+            "CableThickness": 0.8,
+            "ColumnHeight": 10.0,
+            "ElbowX": 16.0,
+            "ForearmLength": 13.0,
+            "JawGap": 5.0,
+            "ShoulderZ": 12.0,
+            "UpperArmLength": 16.0,
+            "WristLength": 7.0,
+            "WristTipX": 23.0,
+            "WristZ": 25.0
+          }
+        },
+        "id": "parameters.chain_values",
+        "observed": {
+          "count": 36,
+          "failures": []
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "components": 16,
+          "identity": true,
+          "occurrences": 16,
+          "root_bodies": 0
+        },
+        "id": "assembly.component_hierarchy_and_identity",
+        "observed": {
+          "components": [
+            "CMP01_Base",
+            "CMP02_Column",
+            "CMP03_Shoulder_Motor",
+            "CMP04_Upper_Arm",
+            "CMP05_Elbow_Motor",
+            "CMP06_Forearm",
+            "CMP07_Wrist_Pitch_Motor",
+            "CMP08_Wrist_Link",
+            "CMP09_Wrist_Roll_Motor",
+            "CMP10_Tool_Flange",
+            "CMP11_Gripper_Palm",
+            "CMP12_Gripper_Finger_Upper",
+            "CMP13_Gripper_Finger_Lower",
+            "CMP14_Cable_Upper",
+            "CMP15_Cable_Forearm",
+            "CMP16_Cable_Wrist"
+          ],
+          "non_identity": [],
+          "occurrences": 16,
+          "root_bodies": 0
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "bodies": 16,
+          "child_sketches": 16,
+          "features": 16,
+          "root_reference_sketches": 1
+        },
+        "id": "topology.one_healthy_body_per_component",
+        "observed": {
+          "bodies": [
+            "B01_Base",
+            "B02_Column",
+            "B03_Shoulder_Motor",
+            "B04_Upper_Arm",
+            "B05_Elbow_Motor",
+            "B06_Forearm",
+            "B07_Wrist_Pitch_Motor",
+            "B08_Wrist_Link",
+            "B09_Wrist_Roll_Motor",
+            "B10_Tool_Flange",
+            "B11_Gripper_Palm",
+            "B12_Gripper_Finger_Upper",
+            "B13_Gripper_Finger_Lower",
+            "B14_Cable_Upper",
+            "B15_Cable_Forearm",
+            "B16_Cable_Wrist"
+          ],
+          "child_sketches": 16,
+          "feature_errors": [],
+          "features": 16,
+          "root_sketches": 1,
+          "topology_errors": []
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "max": [
+            400.0,
+            80.0,
+            290.0
+          ],
+          "min": [
+            -80.0,
+            -80.0,
+            0.0
+          ]
+        },
+        "id": "geometry.global_workspace_bbox",
+        "observed": {
+          "max": [
+            400.0,
+            80.0,
+            290.0
+          ],
+          "min": [
+            -80.0,
+            -80.0,
+            0.0
+          ],
+          "size": [
+            480.0,
+            160.0,
+            290.0
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "B04_Upper_Arm": [
+            [
+              0.0,
+              -18.0,
+              98.0
+            ],
+            [
+              160.0,
+              18.0,
+              142.0
+            ]
+          ],
+          "B06_Forearm": [
+            [
+              140.0,
+              -16.0,
+              120.0
+            ],
+            [
+              180.0,
+              16.0,
+              250.0
+            ]
+          ],
+          "B08_Wrist_Link": [
+            [
+              160.0,
+              -15.0,
+              232.0
+            ],
+            [
+              230.0,
+              15.0,
+              268.0
+            ]
+          ],
+          "B09_Wrist_Roll_Motor": [
+            [
+              230.0,
+              -22.0,
+              228.0
+            ],
+            [
+              290.0,
+              22.0,
+              272.0
+            ]
+          ],
+          "B10_Tool_Flange": [
+            [
+              290.0,
+              -40.0,
+              210.0
+            ],
+            [
+              300.0,
+              40.0,
+              290.0
+            ]
+          ],
+          "B11_Gripper_Palm": [
+            [
+              300.0,
+              -30.0,
+              210.0
+            ],
+            [
+              330.0,
+              30.0,
+              290.0
+            ]
+          ],
+          "B12_Gripper_Finger_Upper": [
+            [
+              330.0,
+              -7.5,
+              275.0
+            ],
+            [
+              400.0,
+              7.5,
+              290.0
+            ]
+          ],
+          "B13_Gripper_Finger_Lower": [
+            [
+              330.0,
+              -7.5,
+              210.0
+            ],
+            [
+              400.0,
+              7.5,
+              225.0
+            ]
+          ]
+        },
+        "id": "geometry.continuous_joint_to_tool_chain",
+        "observed": {
+          "boxes": {
+            "B04_Upper_Arm": {
+              "max": [
+                160.0,
+                18.0,
+                142.0
+              ],
+              "min": [
+                0.0,
+                -18.0,
+                98.0
+              ],
+              "size": [
+                160.0,
+                36.0,
+                43.999999999999986
+              ]
+            },
+            "B06_Forearm": {
+              "max": [
+                180.0,
+                16.0,
+                250.0
+              ],
+              "min": [
+                140.0,
+                -16.0,
+                120.0
+              ],
+              "size": [
+                40.0,
+                32.0,
+                130.0
+              ]
+            },
+            "B08_Wrist_Link": {
+              "max": [
+                230.0,
+                15.0,
+                268.0
+              ],
+              "min": [
+                160.0,
+                -15.0,
+                232.0
+              ],
+              "size": [
+                70.0,
+                30.0,
+                36.000000000000014
+              ]
+            },
+            "B09_Wrist_Roll_Motor": {
+              "max": [
+                290.0,
+                21.999999999999993,
+                272.0
+              ],
+              "min": [
+                230.0,
+                -21.999999999999993,
+                228.0
+              ],
+              "size": [
+                60.0,
+                43.999999999999986,
+                43.999999999999986
+              ]
+            },
+            "B10_Tool_Flange": {
+              "max": [
+                300.0,
+                40.0,
+                290.0
+              ],
+              "min": [
+                290.0,
+                -40.0,
+                210.0
+              ],
+              "size": [
+                10.0,
+                80.0,
+                80.0
+              ]
+            },
+            "B11_Gripper_Palm": {
+              "max": [
+                330.0,
+                30.0,
+                290.0
+              ],
+              "min": [
+                300.0,
+                -30.0,
+                210.0
+              ],
+              "size": [
+                30.0,
+                60.0,
+                80.0
+              ]
+            },
+            "B12_Gripper_Finger_Upper": {
+              "max": [
+                400.0,
+                7.5,
+                290.0
+              ],
+              "min": [
+                330.0,
+                -7.5,
+                275.0
+              ],
+              "size": [
+                70.0,
+                15.0,
+                15.0
+              ]
+            },
+            "B13_Gripper_Finger_Lower": {
+              "max": [
+                400.0,
+                7.5,
+                225.0
+              ],
+              "min": [
+                330.0,
+                -7.5,
+                210.0
+              ],
+              "size": [
+                70.0,
+                15.0,
+                15.0
+              ]
+            }
+          },
+          "failures": []
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "B14_Cable_Upper": [
+            [
+              16.0,
+              -4.0,
+              142.0
+            ],
+            [
+              144.0,
+              4.0,
+              150.0
+            ]
+          ],
+          "B15_Cable_Forearm": [
+            [
+              180.0,
+              -4.0,
+              132.5
+            ],
+            [
+              188.0,
+              4.0,
+              237.5
+            ]
+          ],
+          "B16_Cable_Wrist": [
+            [
+              172.5,
+              -4.0,
+              268.0
+            ],
+            [
+              217.5,
+              4.0,
+              276.0
+            ]
+          ]
+        },
+        "id": "geometry.cable_harness_three_segments",
+        "observed": {
+          "boxes": {
+            "B14_Cable_Upper": {
+              "max": [
+                144.0,
+                4.0,
+                150.0
+              ],
+              "min": [
+                15.999999999999996,
+                -4.0,
+                142.0
+              ],
+              "size": [
+                128.0,
+                8.0,
+                8.000000000000007
+              ]
+            },
+            "B15_Cable_Forearm": {
+              "max": [
+                187.99999999999997,
+                4.0,
+                237.5
+              ],
+              "min": [
+                180.0,
+                -4.0,
+                132.5
+              ],
+              "size": [
+                7.999999999999972,
+                8.0,
+                105.0
+              ]
+            },
+            "B16_Cable_Wrist": {
+              "max": [
+                217.5,
+                4.0,
+                276.0
+              ],
+              "min": [
+                172.5,
+                -4.0,
+                268.0
+              ],
+              "size": [
+                45.0,
+                8.0,
+                7.999999999999972
+              ]
+            }
+          },
+          "failures": []
+        },
+        "status": "pass"
+      },
+      {
+        "expected": {
+          "joints": 12,
+          "names": [
+            "J01_Base_Column_Rigid",
+            "J02_Shoulder_Revolute",
+            "J03_Shoulder_Link_Rigid",
+            "J04_Elbow_Revolute",
+            "J05_Elbow_Link_Rigid",
+            "J06_Wrist_Pitch_Revolute",
+            "J07_Wrist_Link_Rigid",
+            "J08_Wrist_Roll_Revolute",
+            "J09_Tool_Flange_Rigid",
+            "J10_Gripper_Palm_Rigid",
+            "J11_Upper_Finger_Rigid",
+            "J12_Lower_Finger_Rigid"
+          ],
+          "revolute": 4
+        },
+        "id": "joints.named_graph_and_dof",
+        "observed": {
+          "errors": [],
+          "joints": [
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J01_Base_Column_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RevoluteJointMotion",
+              "name": "J02_Shoulder_Revolute",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J03_Shoulder_Link_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RevoluteJointMotion",
+              "name": "J04_Elbow_Revolute",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J05_Elbow_Link_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RevoluteJointMotion",
+              "name": "J06_Wrist_Pitch_Revolute",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J07_Wrist_Link_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RevoluteJointMotion",
+              "name": "J08_Wrist_Roll_Revolute",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J09_Tool_Flange_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J10_Gripper_Palm_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J11_Upper_Finger_Rigid",
+              "valid": true
+            },
+            {
+              "motion": "adsk::fusion::RigidJointMotion",
+              "name": "J12_Lower_Finger_Rigid",
+              "valid": true
+            }
+          ],
+          "revolute": 4
+        },
+        "status": "pass"
+      }
+    ],
+    "coverage": {
+      "failed": 0,
+      "mandatory": 8,
+      "passed": 8,
+      "unverified": 0
+    },
+    "diagnostics": {
+      "marker": "fusion_agent_trial_ref_20260714T055207Z_b06_robot_arm_assembly_1a41c9bca5",
+      "parameter_expressions": {
+        "BaseDiameter": "160 mm",
+        "BaseHeight": "20 mm",
+        "CableThickness": "8 mm",
+        "ColumnDepth": "70 mm",
+        "ColumnHeight": "100 mm",
+        "ColumnWidth": "60 mm",
+        "ElbowMotorDiameter": "58 mm",
+        "ElbowMotorLength": "70 mm",
+        "ElbowX": "UpperArmLength",
+        "FingerDepth": "15 mm",
+        "FingerLength": "70 mm",
+        "FingerThickness": "15 mm",
+        "ForearmLength": "130 mm",
+        "ForearmThickness": "32 mm",
+        "ForearmWidth": "40 mm",
+        "JawGap": "50 mm",
+        "PalmHeight": "80 mm",
+        "PalmLength": "30 mm",
+        "PalmThickness": "60 mm",
+        "ShoulderMotorDiameter": "64 mm",
+        "ShoulderMotorLength": "80 mm",
+        "ShoulderZ": "BaseHeight + ColumnHeight",
+        "ToolFlangeDiameter": "80 mm",
+        "ToolFlangeThickness": "10 mm",
+        "UpperArmHeight": "44 mm",
+        "UpperArmLength": "160 mm",
+        "UpperArmThickness": "36 mm",
+        "WristHeight": "36 mm",
+        "WristLength": "70 mm",
+        "WristMotorDiameter": "50 mm",
+        "WristMotorLength": "60 mm",
+        "WristRollDiameter": "44 mm",
+        "WristRollLength": "60 mm",
+        "WristThickness": "30 mm",
+        "WristTipX": "ElbowX + WristLength",
+        "WristZ": "ShoulderZ + ForearmLength"
+      },
+      "total_volume_mm3": 2212467.7469857414
+    },
+    "failed_checks": [],
+    "ok": true,
+    "oracle_id": "b06_robot_arm_assembly_geometry",
+    "passed": true,
+    "phase": "initial",
+    "schema_version": "fusion_parametric_oracle.v2"
+  },
+  "oracle_script_sha256": "9c285d6e4b903064e292a296faae7f45cf2f2642895c7ccdd8ea0bfdc8a3133c",
+  "run_id": "ref_20260714T055207Z",
+  "schema_version": "fusion_parametric_reference_result.v1",
+  "trial_id": "b06_robot_arm_assembly_2328c1094b6a"
+}

@@ -1,0 +1,1580 @@
+{
+  "build_script_sha256": "d11c9bd1e22dc89af51fce1134c6c43f54940aac5f39ae1ed3eb8c14e0f415eb",
+  "case_id": "b03_split_pillow_block",
+  "cleanup": {
+    "active_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "baseline_open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "closed_without_save": true,
+    "inventory_restored": true,
+    "open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "restored": true
+  },
+  "definition_sha256": "a19ec679e1359b81d47f5a1ddf7e092c2a1bdc6671cd61fe024ddf5fe44d6930",
+  "elapsed_ms": 4215,
+  "fast_path": {
+    "after": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+        "version_id": ""
+      },
+      "duration_ms": 76,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwh7vm4c1tjg/7G8zZVTtXbMcqMJIwdhMwdzAJMky0SxN1zTZxEzXJNE8RTfRwChR18zCLMUkxTTZ0NTCGKwWaAYDGgDbZ6AAtg5kvZGRMQAWbCO0iAAAAA==",
+              "entity_type": "sketch",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "SK00_Assembly_Reference",
+              "occurrence_count_for_component": 0,
+              "path": "root/SK00_Assembly_Reference",
+              "paths": [
+                "root/SK00_Assembly_Reference"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_assembly_reference",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP01_Lower_Block:1",
+              "component_paths": [
+                "CMP01_Lower_Block:1"
+              ],
+              "entity_token": "/v4BAAEA+QAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "CMP01_Lower_Block",
+              "occurrence_count_for_component": 1,
+              "path": "CMP01_Lower_Block:1",
+              "paths": [
+                "CMP01_Lower_Block:1"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_lower_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP02_Upper_Cap:1",
+              "component_paths": [
+                "CMP02_Upper_Cap:1"
+              ],
+              "entity_token": "/v4BAAEAOAEAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "CMP02_Upper_Cap",
+              "occurrence_count_for_component": 1,
+              "path": "CMP02_Upper_Cap:1",
+              "paths": [
+                "CMP02_Upper_Cap:1"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  45.0,
+                  25.0,
+                  21.75
+                ],
+                "min_mm": [
+                  -45.0,
+                  -25.0,
+                  0.0
+                ],
+                "size_mm": [
+                  90.0,
+                  50.0,
+                  21.75
+                ]
+              },
+              "component_path": "CMP01_Lower_Block:1",
+              "component_paths": [
+                "CMP01_Lower_Block:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwh7vm4c1tjg/7G8zZVTtXbMcqMJIwdhMwcDCwMgsycxA1wxI6ZpYWJjqJqYYmQFZRiapKcZpSYmpaWC1QDMY0ADYPgMFsHUg600sDAFadQFCiAAAAA==",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B01_Lower_Block",
+              "occurrence_count_for_component": 1,
+              "path": "CMP01_Lower_Block:1/B01_Lower_Block",
+              "paths": [
+                "CMP01_Lower_Block:1/B01_Lower_Block"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_lower_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  45.0,
+                  25.0,
+                  44.0
+                ],
+                "min_mm": [
+                  -45.0,
+                  -25.0,
+                  22.25
+                ],
+                "size_mm": [
+                  90.0,
+                  50.0,
+                  21.750000000000004
+                ]
+              },
+              "component_path": "CMP02_Upper_Cap:1",
+              "component_paths": [
+                "CMP02_Upper_Cap:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwh7vm4c1tjg/7G8zZVTtXbMcqMJIwdhMwdwwKTUlycRENy3NwlLXxDDZQjcxOc1Q18IsOdk4Ndko1TLVGKwWaAYDGgDbZ6AAtg5kvaGxuTEAcDoNDIkAAAA=",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "B02_Upper_Cap",
+              "occurrence_count_for_component": 1,
+              "path": "CMP02_Upper_Cap:1/B02_Upper_Cap",
+              "paths": [
+                "CMP02_Upper_Cap:1/B02_Upper_Cap"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP01_Lower_Block:1",
+              "component_paths": [
+                "CMP01_Lower_Block:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwh7vm4c1tjg/7G8zZVTtXbMcqMJIwdhMwcDCwMgsycxA1wxI6ZpYWJjqJqYYmQFZRiapKcZpSYmpaWC1QDMY0ADYPgMFsHUg601MLAFksm/giAAAAA==",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "EX01_Lower_Block",
+              "occurrence_count_for_component": 1,
+              "path": "CMP01_Lower_Block:1/EX01_Lower_Block",
+              "paths": [
+                "CMP01_Lower_Block:1/EX01_Lower_Block"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_lower_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "CMP02_Upper_Cap:1",
+              "component_paths": [
+                "CMP02_Upper_Cap:1"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZwh7vm4c1tjg/7G8zZVTtXbMcqMJIwdhMwdwwKTUlycRENy3NwlLXxDDZQjcxOc1Q18IsOdk4Ndko1TLVGKwWaAYDGgDbZ6AAtg5kvaGxiSEAnwguyYkAAAA=",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "EX05_Upper_Cap",
+              "occurrence_count_for_component": 1,
+              "path": "CMP02_Upper_Cap:1/EX05_Upper_Cap",
+              "paths": [
+                "CMP02_Upper_Cap:1/EX05_Upper_Cap"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_upper_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 2,
+        "components": 3,
+        "features": 18,
+        "occurrences": 2,
+        "parameters": 63,
+        "sketches": 9,
+        "state_fingerprint": "6132a9ec8c85786697f3c368abfb58fafadb4af61721f454e4294646ef16b48a",
+        "state_fingerprint_items": 98,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": {
+          "max_mm": [
+            45.0,
+            25.0,
+            44.0
+          ],
+          "min_mm": [
+            -45.0,
+            -25.0,
+            0.0
+          ],
+          "size_mm": [
+            90.0,
+            50.0,
+            44.0
+          ]
+        },
+        "visible_body_count": 2
+      },
+      "warnings": []
+    },
+    "api_references": [
+      "adsk.fusion.Occurrences.addNewComponent",
+      "adsk.fusion.ExtrudeFeatures.createInput",
+      "adsk.fusion.ExtrudeFeatureInput.setSymmetricExtent",
+      "adsk.fusion.ExtrudeFeatures.addSimple",
+      "adsk.fusion.CombineFeatures.createInput",
+      "adsk.fusion.RectangularPatternFeatures.createInput",
+      "adsk.fusion.RectangularPatternFeatureInput.setDirectionTwo",
+      "adsk.fusion.ConstructionPlaneInput.setByOffset",
+      "adsk.fusion.SketchDimensions.addDistanceDimension",
+      "adsk.fusion.GeometricConstraints.addEqual",
+      "adsk.fusion.BRepBody.pointContainment"
+    ],
+    "artifacts": {
+      "audit_path": "outputs\\fast_path\\fast_9c07d61e606f4bae9d942c547deb0b1a\\audit.json"
+    },
+    "baseline": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+        "version_id": ""
+      },
+      "duration_ms": 24,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_assembly_reference",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_lower_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_component",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_lower_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_lower_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_upper_feature",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 0,
+        "components": 1,
+        "features": 0,
+        "occurrences": 0,
+        "parameters": 0,
+        "sketches": 0,
+        "state_fingerprint": "74b681040c71d77b88591b43af243e9d4f7b2831cfbf3ba726b6fad30e67cfc3",
+        "state_fingerprint_items": 2,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": null,
+        "visible_body_count": 0
+      },
+      "warnings": []
+    },
+    "bindings": {
+      "target_components": [
+        "root"
+      ],
+      "targets": []
+    },
+    "change_class": "additive",
+    "declared_mutation_count": 1,
+    "duration_ms": 643,
+    "execution": {
+      "error": null,
+      "error_code": null,
+      "ok": true
+    },
+    "execution_path": "native_fast",
+    "intent": "Build canonical reference fixture b03_split_pillow_block: Parametric split pillow block with separate cap",
+    "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+    "mutating_call_count": 1,
+    "native_call_count": 4,
+    "operation_id": "fast_9c07d61e606f4bae9d942c547deb0b1a",
+    "policy": {
+      "allowed": true,
+      "change_class": "additive",
+      "detected_change_class": "additive",
+      "errors": [],
+      "mutating_syntax_detected": true,
+      "script_sha256": "d11c9bd1e22dc89af51fce1134c6c43f54940aac5f39ae1ed3eb8c14e0f415eb",
+      "warnings": []
+    },
+    "recovery_instruction": "",
+    "script_sha256": "d11c9bd1e22dc89af51fce1134c6c43f54940aac5f39ae1ed3eb8c14e0f415eb",
+    "status": "applied_verified",
+    "transport_mutating_dispatch_count": 1,
+    "verification": {
+      "assertions": [
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_assembly_reference_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_assembly_reference",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_assembly_reference_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_assembly_reference",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_lower_component_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_lower_component_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_component_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_component_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_component",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_lower_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_lower_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_body",
+          "tolerance": null
+        },
+        {
+          "actual": 90.0,
+          "before": null,
+          "expected": 90.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_lower_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_lower_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": 50.0,
+          "before": null,
+          "expected": 50.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_lower_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_lower_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": 21.75,
+          "before": null,
+          "expected": 21.75,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_lower_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_lower_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": null
+        },
+        {
+          "actual": 90.0,
+          "before": null,
+          "expected": 90.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_upper_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": 50.0,
+          "before": null,
+          "expected": 50.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_upper_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": 21.750000000000004,
+          "before": null,
+          "expected": 21.75,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_upper_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_upper_body",
+          "tolerance": 0.1
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_lower_feature_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_lower_feature_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_lower_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_upper_feature_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_feature",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_upper_feature_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_upper_feature",
+          "tolerance": null
+        }
+      ],
+      "invariants": [
+        {
+          "name": "document_identity_unchanged",
+          "passed": true
+        },
+        {
+          "name": "additive_counts_do_not_decrease",
+          "passed": true
+        },
+        {
+          "name": "visible_body_bbox_valid",
+          "passed": true
+        },
+        {
+          "name": "target_feature_health",
+          "passed": true,
+          "values": [
+            "0",
+            "0"
+          ]
+        },
+        {
+          "name": "target_bounding_boxes_valid",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "source": "post_apply"
+    }
+  },
+  "fixture": {
+    "fixture_document_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+    "fixture_fingerprint": "241d6aae49ff8a85e25ee05682766817f1b4c42cd0aeee540795adf48d0db320",
+    "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "unsaved": true
+  },
+  "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+  "images": [
+    {
+      "bytes": 70620,
+      "direction": "isometric",
+      "native_direction": "iso-top-right",
+      "path": "cases/b03_split_pillow_block/images/reference_isometric.png",
+      "sha256": "f25df489af7285d97ad03158ad1a8748a652e66570ffb46bff87e0205e2c3193"
+    },
+    {
+      "bytes": 12799,
+      "direction": "front",
+      "native_direction": "front",
+      "path": "cases/b03_split_pillow_block/images/reference_front.png",
+      "sha256": "0cd548a41b1fb99a198b302e239bd8c167dd775db828a54e92727aca05f0e210"
+    },
+    {
+      "bytes": 21279,
+      "direction": "top",
+      "native_direction": "top",
+      "path": "cases/b03_split_pillow_block/images/reference_top.png",
+      "sha256": "f03009212d45bcb2ddc458d6c321ba902435c459a44975491e84fbd5738464db"
+    },
+    {
+      "bytes": 13759,
+      "direction": "right",
+      "native_direction": "right",
+      "path": "cases/b03_split_pillow_block/images/reference_right.png",
+      "sha256": "f558dec80e7f8c5b7693beead3a387dc118b9e74d9a7c6dc1dc77ea661e9bced"
+    }
+  ],
+  "linter": {
+    "allowed": true,
+    "change_class": "additive",
+    "detected_change_class": "additive",
+    "errors": [],
+    "mutating_syntax_detected": true,
+    "script_sha256": "d11c9bd1e22dc89af51fce1134c6c43f54940aac5f39ae1ed3eb8c14e0f415eb",
+    "warnings": []
+  },
+  "oracle": {
+    "case_id": "b03_split_pillow_block",
+    "checks": [
+      {
+        "evidence": {},
+        "expected": {
+          "marked": true,
+          "saved": false
+        },
+        "id": "document.marked_unsaved",
+        "observed": {
+          "marker": "fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+          "saved": false
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": [
+          "CMP01_Lower_Block",
+          "CMP02_Upper_Cap"
+        ],
+        "id": "assembly.two_named_components",
+        "observed": [
+          "CMP01_Lower_Block",
+          "CMP02_Upper_Cap"
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "count": 2,
+          "identity": true
+        },
+        "id": "assembly.two_identity_occurrences",
+        "observed": [
+          {
+            "component": "CMP01_Lower_Block",
+            "full_path": "CMP01_Lower_Block:1",
+            "identity": true,
+            "name": "CMP01_Lower_Block:1"
+          },
+          {
+            "component": "CMP02_Upper_Cap",
+            "full_path": "CMP02_Upper_Cap:1",
+            "identity": true,
+            "name": "CMP02_Upper_Cap:1"
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": 0,
+        "id": "topology.root_has_no_bodies",
+        "observed": 0,
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "bodies": 2,
+          "lumps_each": 1,
+          "solid": true,
+          "visible": true
+        },
+        "id": "topology.one_solid_lump_per_component",
+        "observed": {
+          "lower": {
+            "lumps": 1,
+            "name": "B01_Lower_Block",
+            "solid": true,
+            "visible": true
+          },
+          "upper": {
+            "lumps": 1,
+            "name": "B02_Upper_Cap",
+            "solid": true,
+            "visible": true
+          }
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "count": 17,
+          "values_cm": {
+            "BlockHeight": 4.4,
+            "BlockLength": 9.0,
+            "BlockWidth": 5.0,
+            "BoreCenterZ": 2.2,
+            "BoreDiameter": 2.4,
+            "ClampHoleDiameter": 0.55,
+            "ClampPitchX": 5.6,
+            "ClampPitchY": 3.0,
+            "CounterboreDepth": 0.4,
+            "CounterboreDiameter": 1.0,
+            "LowerHeight": 2.175,
+            "MountingHoleDiameter": 0.7,
+            "MountingPitchY": 3.6,
+            "SplitCenterZ": 2.2,
+            "SplitGap": 0.05,
+            "ToolOvertravel": 0.2,
+            "UpperHeight": 2.175
+          }
+        },
+        "id": "parameters.exact_values",
+        "observed": {
+          "count": 17,
+          "failures": []
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "component_sketches": 8,
+          "fully_constrained": 9,
+          "root_reference": 1
+        },
+        "id": "sketches.valid_and_constrained",
+        "observed": [
+          {
+            "fully_constrained": true,
+            "name": "SK00_Assembly_Reference",
+            "profiles": 0,
+            "valid": true,
+            "visible": true
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK01_Lower_Outer_Profile",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK02_Lower_Bore_Tool",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK03_Lower_Clamp_Holes",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK04_Lower_Mounting_Holes",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK05_Upper_Outer_Profile",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK06_Upper_Bore_Tool",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK07_Upper_Clamp_Holes",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK08_Upper_Counterbores",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "hidden": 8
+        },
+        "id": "sketches.consumed_component_sketches_hidden",
+        "observed": {
+          "visible": []
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "count": 18,
+          "errors": 0,
+          "names": [
+            "CB01_Lower_Bore_Cut",
+            "CB02_Lower_Clamp_Cut",
+            "CB03_Lower_Mounting_Cut",
+            "CB04_Upper_Bore_Cut",
+            "CB05_Upper_Clamp_Cut",
+            "CB06_Upper_Counterbore_Cut",
+            "EX01_Lower_Block",
+            "EX02_Lower_Bore_Tool",
+            "EX03_Lower_Clamp_Tools",
+            "EX04_Lower_Mounting_Tools",
+            "EX05_Upper_Cap",
+            "EX06_Upper_Bore_Tool",
+            "EX07_Upper_Clamp_Tools",
+            "EX08_Upper_Counterbore_Tools",
+            "RP01_Lower_Clamp_2x2",
+            "RP02_Lower_Mounting_2x1",
+            "RP03_Upper_Clamp_2x2",
+            "RP04_Upper_Counterbore_2x2"
+          ]
+        },
+        "id": "features.named_and_healthy",
+        "observed": [
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX01_Lower_Block",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX02_Lower_Bore_Tool",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB01_Lower_Bore_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX03_Lower_Clamp_Tools",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "RP01_Lower_Clamp_2x2",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB02_Lower_Clamp_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX04_Lower_Mounting_Tools",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "RP02_Lower_Mounting_2x1",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB03_Lower_Mounting_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX05_Upper_Cap",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX06_Upper_Bore_Tool",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB04_Upper_Bore_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX07_Upper_Clamp_Tools",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "RP03_Upper_Clamp_2x2",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB05_Upper_Clamp_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX08_Upper_Counterbore_Tools",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "RP04_Upper_Counterbore_2x2",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB06_Upper_Counterbore_Cut",
+            "valid": true
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "global": {
+            "max": [
+              45.0,
+              25.0,
+              44.0
+            ],
+            "min": [
+              -45.0,
+              -25.0,
+              0.0
+            ]
+          },
+          "lower_z": [
+            0.0,
+            21.75
+          ],
+          "upper_z": [
+            22.25,
+            44.0
+          ]
+        },
+        "id": "geometry.global_and_body_bboxes",
+        "observed": {
+          "global": {
+            "max": [
+              45.0,
+              25.0,
+              44.0
+            ],
+            "min": [
+              -45.0,
+              -25.0,
+              0.0
+            ],
+            "size": [
+              90.0,
+              50.0,
+              44.0
+            ]
+          },
+          "lower": {
+            "max": [
+              45.0,
+              25.0,
+              21.75
+            ],
+            "min": [
+              -45.0,
+              -25.0,
+              0.0
+            ],
+            "size": [
+              90.0,
+              50.0,
+              21.75
+            ]
+          },
+          "upper": {
+            "max": [
+              45.0,
+              25.0,
+              44.0
+            ],
+            "min": [
+              -45.0,
+              -25.0,
+              22.25
+            ],
+            "size": [
+              90.0,
+              50.0,
+              21.750000000000004
+            ]
+          }
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "gap_mm": 0.5,
+          "z_center_mm": 22.0
+        },
+        "id": "geometry.split_gap",
+        "observed": {
+          "center_probes": {
+            "lower": "outside",
+            "upper": "outside"
+          },
+          "gap_mm": 0.5
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "axis": "X",
+          "center": [
+            0.0,
+            22.0
+          ],
+          "diameter_mm": 24.0
+        },
+        "id": "geometry.coaxial_bore",
+        "observed": {
+          "lower_cylinders": [
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "bbox_max_mm": [
+                45.0,
+                11.997395550701826,
+                21.75
+              ],
+              "bbox_min_mm": [
+                -45.0,
+                -11.997395550701826,
+                10.000000000000002
+              ],
+              "origin_mm": [
+                0.0,
+                0.0,
+                22.0
+              ],
+              "radius_mm": 12.0
+            }
+          ],
+          "probes": {
+            "lower_center": "outside",
+            "lower_wall": "inside",
+            "upper_center": "outside",
+            "upper_wall": "inside"
+          },
+          "upper_cylinders": [
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "bbox_max_mm": [
+                45.0,
+                11.997395550701826,
+                34.0
+              ],
+              "bbox_min_mm": [
+                -45.0,
+                -11.997395550701826,
+                22.25
+              ],
+              "origin_mm": [
+                0.0,
+                0.0,
+                22.0
+              ],
+              "radius_mm": 12.0
+            }
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "centers_mm": [
+            [
+              -28.0,
+              -15.0
+            ],
+            [
+              -28.0,
+              15.0
+            ],
+            [
+              28.0,
+              -15.0
+            ],
+            [
+              28.0,
+              15.0
+            ]
+          ],
+          "per_component": 4
+        },
+        "id": "holes.clamp_alignment",
+        "observed": {
+          "lower": [
+            [
+              -28.0,
+              -15.0
+            ],
+            [
+              -28.0,
+              15.0
+            ],
+            [
+              28.0,
+              -15.0
+            ],
+            [
+              28.0,
+              15.0
+            ]
+          ],
+          "upper": [
+            [
+              -28.0,
+              -15.0
+            ],
+            [
+              -28.0,
+              15.0
+            ],
+            [
+              28.0,
+              -15.0
+            ],
+            [
+              28.0,
+              15.0
+            ]
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "depth_mm": 4.0,
+          "diameter_mm": 10.0,
+          "lower": 0,
+          "upper": 4
+        },
+        "id": "holes.cap_only_counterbores",
+        "observed": {
+          "centers": [
+            [
+              -28.0,
+              -15.0
+            ],
+            [
+              -28.0,
+              15.0
+            ],
+            [
+              28.0,
+              -15.0
+            ],
+            [
+              28.0,
+              15.0
+            ]
+          ],
+          "cylinders": [
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox_max_mm": [
+                33.00000000000001,
+                20.0,
+                44.0
+              ],
+              "bbox_min_mm": [
+                23.000000000000007,
+                10.0,
+                40.0
+              ],
+              "origin_mm": [
+                28.000000000000007,
+                15.0,
+                40.0
+              ],
+              "radius_mm": 5.0
+            },
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox_max_mm": [
+                -23.0,
+                20.0,
+                44.0
+              ],
+              "bbox_min_mm": [
+                -33.0,
+                10.0,
+                40.0
+              ],
+              "origin_mm": [
+                -28.0,
+                15.0,
+                40.0
+              ],
+              "radius_mm": 5.0
+            },
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox_max_mm": [
+                33.00000000000001,
+                -10.0,
+                44.0
+              ],
+              "bbox_min_mm": [
+                23.000000000000007,
+                -20.0,
+                40.0
+              ],
+              "origin_mm": [
+                28.000000000000007,
+                -15.0,
+                40.0
+              ],
+              "radius_mm": 5.0
+            },
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox_max_mm": [
+                -23.0,
+                -10.0,
+                44.0
+              ],
+              "bbox_min_mm": [
+                -33.0,
+                -20.0,
+                40.0
+              ],
+              "origin_mm": [
+                -28.0,
+                -15.0,
+                40.0
+              ],
+              "radius_mm": 5.0
+            }
+          ],
+          "lower": 0,
+          "upper": 4
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "centers_mm": [
+            [
+              0.0,
+              -18.0
+            ],
+            [
+              0.0,
+              18.0
+            ]
+          ],
+          "diameter_mm": 7.0,
+          "lower": 2,
+          "upper": 0
+        },
+        "id": "holes.lower_only_mounting",
+        "observed": {
+          "centers": [
+            [
+              0.0,
+              -18.0
+            ],
+            [
+              0.0,
+              18.0
+            ]
+          ],
+          "probes": {
+            "lower_negative": "outside",
+            "lower_positive": "outside",
+            "upper_negative": "inside",
+            "upper_positive": "inside"
+          }
+        },
+        "status": "pass"
+      }
+    ],
+    "coverage": {
+      "failed": 0,
+      "mandatory": 15,
+      "passed": 15,
+      "unverified": 0
+    },
+    "diagnostics": {
+      "document": "Sem título",
+      "lower_faces": 14,
+      "lower_volume_mm3": 74316.39273789189,
+      "marker": "fusion_agent_trial_ref_20260714T055207Z_b03_split_pillow_block_916e92b449",
+      "parameter_expressions": {
+        "BlockHeight": "44 mm",
+        "BlockLength": "90 mm",
+        "BlockWidth": "50 mm",
+        "BoreCenterZ": "SplitCenterZ",
+        "BoreDiameter": "24 mm",
+        "ClampHoleDiameter": "5.5 mm",
+        "ClampPitchX": "56 mm",
+        "ClampPitchY": "30 mm",
+        "CounterboreDepth": "4 mm",
+        "CounterboreDiameter": "10 mm",
+        "LowerHeight": "SplitCenterZ - SplitGap / 2",
+        "MountingHoleDiameter": "7 mm",
+        "MountingPitchY": "36 mm",
+        "SplitCenterZ": "22 mm",
+        "SplitGap": "0.5 mm",
+        "ToolOvertravel": "2 mm",
+        "UpperHeight": "BlockHeight - SplitCenterZ - SplitGap / 2"
+      },
+      "upper_faces": 20,
+      "upper_volume_mm3": 75113.9645728223
+    },
+    "failed_checks": [],
+    "ok": true,
+    "oracle_id": "b03_split_pillow_block_geometry",
+    "passed": true,
+    "schema_version": "fusion_parametric_oracle.v2"
+  },
+  "oracle_script_sha256": "f02b48da27b9b1de12271d2a3bd77382db2ae9498498c241f25062736f086a98",
+  "run_id": "ref_20260714T055207Z",
+  "schema_version": "fusion_parametric_reference_result.v1",
+  "trial_id": "b03_split_pillow_block_d75cd3acbccd"
+}

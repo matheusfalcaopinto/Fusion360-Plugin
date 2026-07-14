@@ -1,0 +1,107 @@
+{
+  "schema_version": "fusion_parametric_case.v1",
+  "case_id": "b04_offset_duct_adapter",
+  "title": "Offset rectangular-to-circular hollow duct adapter",
+  "complexity_tier": 4,
+  "time_limit_minutes": 20,
+  "maximum_autonomous_repairs": 2,
+  "risk_domains": [
+    "offset_loft_frames",
+    "hollow_passage_continuity",
+    "single_lump_topology",
+    "rectangular_pattern_cardinality",
+    "circular_pattern_axis",
+    "tool_body_combine_cut"
+  ],
+  "future_targets": [
+    {
+      "id": "future_body",
+      "entity_type": "body",
+      "selector": {"component_path": "root", "name": "Offset_Duct_Adapter"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 105.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 84.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 100.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_outer_loft",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "LF01_Outer_Transition"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_inner_loft",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "LF02_Inner_Passage_Tool"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_inner_cut",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "CB03_Inner_Passage_Cut"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_bottom_pattern",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RP01_Bottom_Bolt_2x2"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_top_pattern",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "CP01_Top_Bolt_6x"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.LoftFeatures.createInput",
+    "adsk.fusion.LoftSections.add",
+    "adsk.fusion.CombineFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatureInput.setDirectionTwo",
+    "adsk.fusion.CircularPatternFeatures.createInput",
+    "adsk.fusion.ConstructionAxisInput.setByCircularFace",
+    "adsk.fusion.BRepBody.pointContainment"
+  ],
+  "expected": {
+    "parameters": 19,
+    "components": 1,
+    "occurrences": 0,
+    "solid_bodies": 1,
+    "lumps": 1,
+    "bbox_mm": {"min": [-50.0, -35.0, 0.0], "max": [55.0, 49.0, 100.0], "tolerance": 0.2},
+    "base_flange_mm": [100.0, 70.0, 5.0],
+    "inlet_inner_mm": [80.0, 50.0],
+    "lower_outer_mm": [86.0, 56.0],
+    "transition_height_mm": 90.0,
+    "outlet": {"id_mm": 54.0, "od_mm": 60.0, "offset_xy_mm": [14.0, 8.0]},
+    "top_flange": {"diameter_mm": 82.0, "thickness_mm": 5.0},
+    "bottom_holes": {"count": 4, "grid_mm": [84.0, 54.0], "diameter_mm": 5.0},
+    "top_holes": {"count": 6, "bolt_circle_mm": 72.0, "diameter_mm": 4.5}
+  }
+}

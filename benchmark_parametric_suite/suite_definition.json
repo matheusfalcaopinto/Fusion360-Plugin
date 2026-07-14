@@ -1,0 +1,472 @@
+{
+  "schema_version": "fusion_parametric_suite_definition.v1",
+  "suite_id": "fusion_parametric_reference_b02_b07",
+  "title": "Fusion parametric progressive reference and ECO suite",
+  "language": "pt-BR",
+  "status": "reference_complete",
+  "purpose": "Avaliar planejamento, construção, integridade topológica, parametrização e verificação independente em seis casos Autodesk Fusion de complexidade crescente, incluindo mudanças de engenharia no mesmo documento.",
+  "scope_note": "Referência canônica do Fusion Agent; não é comparação A/B Claude/Codex.",
+  "runner": "run_reference_suite.py",
+  "aggregate_result": "reference_suite_result.json",
+  "aggregate_result_scope": [
+    "b02_vented_enclosure",
+    "b03_split_pillow_block",
+    "b04_offset_duct_adapter",
+    "b05_spherical_lattice_radome",
+    "b06_robot_arm_assembly",
+    "b07_packaging_machine"
+  ],
+  "case_order": [
+    "b02_vented_enclosure",
+    "b03_split_pillow_block",
+    "b04_offset_duct_adapter",
+    "b05_spherical_lattice_radome",
+    "b06_robot_arm_assembly",
+    "b07_packaging_machine"
+  ],
+  "runner_default_cases": [
+    "b02_vented_enclosure",
+    "b03_split_pillow_block",
+    "b04_offset_duct_adapter",
+    "b05_spherical_lattice_radome",
+    "b06_robot_arm_assembly",
+    "b07_packaging_machine"
+  ],
+  "explicit_phase_cases": [
+    "b05_spherical_lattice_radome",
+    "b06_robot_arm_assembly",
+    "b07_packaging_machine"
+  ],
+  "reference_status": {
+    "approved_cases": [
+      "b02_vented_enclosure",
+      "b03_split_pillow_block",
+      "b04_offset_duct_adapter",
+      "b05_spherical_lattice_radome",
+      "b06_robot_arm_assembly",
+      "b07_packaging_machine"
+    ],
+    "executed_invalid_cases": [],
+    "pending_cases": []
+  },
+  "reference_run": {
+    "scope": [
+      "b02_vented_enclosure",
+      "b03_split_pillow_block",
+      "b04_offset_duct_adapter",
+      "b05_spherical_lattice_radome",
+      "b06_robot_arm_assembly",
+      "b07_packaging_machine"
+    ],
+    "run_id": "ref_20260714T055207Z",
+    "completed_at_utc": "2026-07-14T05:52:57Z",
+    "restored": true,
+    "all_cases_completed_pass": true,
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "final_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "open_document_inventory_count": 8,
+    "original_and_final_open_document_ids_identical": true
+  },
+  "documentation": {
+    "competition_sources": "COMPETITION_SOURCES.md",
+    "executor_reliability": "EXECUTOR_RELIABILITY.md"
+  },
+  "safety_protocol": {
+    "baseline": {
+      "capture_original_active_document_id": true,
+      "capture_open_document_inventory": true
+    },
+    "fixture": {
+      "document": "new_unsaved",
+      "unique_trial_marker": true,
+      "unique_fixture_fingerprint": true,
+      "require_empty_baseline": true
+    },
+    "mutation": {
+      "maximum_build_dispatches": 1,
+      "maximum_eco_dispatches": 1,
+      "eco_uses_same_marked_document": true,
+      "retry_after_dispatch": false,
+      "on_unknown_outcome": "readback_only_never_replay"
+    },
+    "verification": {
+      "oracle": "canonical_independent",
+      "trust_executor_assertions": false,
+      "mandatory_coverage_percent": 100,
+      "allow_unverified_mandatory_checks": false,
+      "screenshots_are_secondary": true,
+      "required_screenshot_views": [
+        "isometric",
+        "front",
+        "top",
+        "right"
+      ],
+      "required_screenshot_mime_type": "image/png",
+      "required_screenshots_per_executed_phase": 4,
+      "preserve_directional_screenshot_artifacts": true,
+      "reject_all_identical_screenshot_hashes": true,
+      "initial_and_eco_oracles_are_independent": true
+    },
+    "teardown": {
+      "save": false,
+      "sync": false,
+      "export": false,
+      "close_exact_marked_document": true,
+      "restore_original_active_document": true,
+      "restore_open_document_inventory": true,
+      "abort_suite_on_failure": true
+    }
+  },
+  "pass_policy": {
+    "require_fast_path_apply_success": true,
+    "require_independent_oracle_pass": true,
+    "require_zero_failed_checks": true,
+    "require_zero_unverified_mandatory_checks": true,
+    "require_single_mutating_dispatch": true,
+    "require_single_mutating_dispatch_per_phase": true,
+    "require_initial_and_eco_pass_for_phase_cases": true,
+    "require_verified_screenshots": true,
+    "require_directional_screenshot_preservation": true,
+    "reject_all_identical_screenshot_hashes": true,
+    "require_close_without_save": true,
+    "require_restoration": true
+  },
+  "cases": [
+    {
+      "case_id": "b02_vented_enclosure",
+      "title": "Parametric vented electronics enclosure",
+      "complexity_tier": 2,
+      "case_path": "cases/b02_vented_enclosure",
+      "definition": "cases/b02_vented_enclosure/definition.json",
+      "prompt": "cases/b02_vented_enclosure/prompt.txt",
+      "build_script": "cases/b02_vented_enclosure/build_script.py",
+      "oracle_script": "cases/b02_vented_enclosure/oracle_script.py",
+      "reference_result": "cases/b02_vented_enclosure/reference_result.json",
+      "reference_status": "completed_pass",
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms": 4536,
+        "fast_path_status": "applied_verified",
+        "oracle_passed": true,
+        "coverage": {"mandatory": 13, "passed": 13, "failed": 0, "unverified": 0},
+        "mutating_call_count": 1,
+        "transport_mutating_dispatch_count": 1,
+        "screenshots": 4,
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "risk_domains": [
+        "hollow_topology",
+        "wall_and_floor_thickness",
+        "rectangular_pattern_cardinality",
+        "slot_overall_length",
+        "feature_mirror",
+        "boss_connectivity"
+      ]
+    },
+    {
+      "case_id": "b03_split_pillow_block",
+      "title": "Parametric split pillow block with separate cap",
+      "complexity_tier": 3,
+      "case_path": "cases/b03_split_pillow_block",
+      "definition": "cases/b03_split_pillow_block/definition.json",
+      "prompt": "cases/b03_split_pillow_block/prompt.txt",
+      "build_script": "cases/b03_split_pillow_block/build_script.py",
+      "oracle_script": "cases/b03_split_pillow_block/oracle_script.py",
+      "reference_result": "cases/b03_split_pillow_block/reference_result.json",
+      "reference_status": "completed_pass",
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms": 4215,
+        "fast_path_status": "applied_verified",
+        "oracle_passed": true,
+        "coverage": {"mandatory": 15, "passed": 15, "failed": 0, "unverified": 0},
+        "mutating_call_count": 1,
+        "transport_mutating_dispatch_count": 1,
+        "screenshots": 4,
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "implementation_findings": [
+        "Dimensões independentes por quadrante causaram VCS_SKETCH_OVER_CONSTRAINTS; a solução final usa seed e padrões retangulares.",
+        "Perfis YZ foram corrigidos com modelToSketchSpace.",
+        "Occurrence.name é read-only nesta instalação; os nomes das ocorrências derivam dos componentes."
+      ],
+      "risk_domains": [
+        "multi_component_additive_creation",
+        "identity_occurrence_transforms",
+        "split_gap",
+        "coaxial_bore_across_components",
+        "aligned_clamp_holes",
+        "cap_only_counterbores",
+        "lower_only_mounting_holes",
+        "tool_body_consumption"
+      ]
+    },
+    {
+      "case_id": "b04_offset_duct_adapter",
+      "title": "Offset rectangular-to-circular hollow duct adapter",
+      "complexity_tier": 4,
+      "case_path": "cases/b04_offset_duct_adapter",
+      "definition": "cases/b04_offset_duct_adapter/definition.json",
+      "prompt": "cases/b04_offset_duct_adapter/prompt.txt",
+      "build_script": "cases/b04_offset_duct_adapter/build_script.py",
+      "oracle_script": "cases/b04_offset_duct_adapter/oracle_script.py",
+      "reference_result": "cases/b04_offset_duct_adapter/reference_result.json",
+      "reference_status": "completed_pass",
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms": 4663,
+        "fast_path_status": "applied_verified",
+        "oracle_passed": true,
+        "coverage": {"mandatory": 17, "passed": 17, "failed": 0, "unverified": 0},
+        "mutating_call_count": 1,
+        "transport_mutating_dispatch_count": 1,
+        "screenshots": 4,
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "implementation_findings": [
+        "A API desta instalação usa ConstructionAxisInput.setByCircularFace; setByCylinderOrConeFace não está disponível."
+      ],
+      "known_limitations": [
+        {
+          "id": "construction_visibility_finish",
+          "classification": "finish_only",
+          "geometry_oracle_impact": "none",
+          "reason": "O Fast Path bloqueia mutações explícitas de visibilidade.",
+          "visible_sketches": [
+            "SK02_Outer_Lower_86x56",
+            "SK03_Outer_Outlet_OD60",
+            "SK05_Inner_Inlet_80x50",
+            "SK06_Inner_Outlet_ID54"
+          ],
+          "visible_axes": ["CA01_Offset_Outlet_Axis"]
+        }
+      ],
+      "risk_domains": [
+        "offset_loft_frames",
+        "hollow_passage_continuity",
+        "single_lump_topology",
+        "rectangular_pattern_cardinality",
+        "circular_pattern_axis",
+        "tool_body_combine_cut"
+      ]
+    },
+    {
+      "case_id": "b05_spherical_lattice_radome",
+      "title": "Parametric spherical lattice radome",
+      "complexity_tier": 5,
+      "case_path": "cases/b05_spherical_lattice_radome",
+      "definition": "cases/b05_spherical_lattice_radome/definition.json",
+      "prompt": "cases/b05_spherical_lattice_radome/prompt.txt",
+      "build_script": "cases/b05_spherical_lattice_radome/build_script.py",
+      "oracle_script": "cases/b05_spherical_lattice_radome/oracle_script.py",
+      "eco_script": "cases/b05_spherical_lattice_radome/eco_script.py",
+      "eco_oracle_script": "cases/b05_spherical_lattice_radome/eco_oracle_script.py",
+      "reference_result": "cases/b05_spherical_lattice_radome/reference_result.json",
+      "reference_status": "completed_pass",
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms_total": 8024,
+        "initial": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 11, "passed": 11, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "eco": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 8, "passed": 8, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "eco": {
+        "id": "eco_b05_scale_and_repattern",
+        "changes": [
+          "DomeRadius: 90 mm -> 105 mm",
+          "BaseFlangeOD: 200 mm -> 230 mm",
+          "BaseBoltCircleDiameter: 184 mm -> 210 mm",
+          "BaseBoltCount: 12 -> 16",
+          "MeridianCount: 12 -> 16"
+        ]
+      },
+      "risk_domains": [
+        "spherical_revolve_shell",
+        "concentric_cut_topology",
+        "partial_revolve_meridian_pattern",
+        "latitude_torus_join",
+        "circular_pattern_cardinality",
+        "derived_trigonometric_parameters",
+        "post_build_eco_regeneration"
+      ]
+    },
+    {
+      "case_id": "b06_robot_arm_assembly",
+      "title": "Parametric multi-component industrial robot arm",
+      "complexity_tier": 6,
+      "case_path": "cases/b06_robot_arm_assembly",
+      "definition": "cases/b06_robot_arm_assembly/definition.json",
+      "prompt": "cases/b06_robot_arm_assembly/prompt.txt",
+      "build_script": "cases/b06_robot_arm_assembly/build_script.py",
+      "oracle_script": "cases/b06_robot_arm_assembly/oracle_script.py",
+      "eco_script": "cases/b06_robot_arm_assembly/eco_script.py",
+      "eco_oracle_script": "cases/b06_robot_arm_assembly/eco_oracle_script.py",
+      "reference_result": "cases/b06_robot_arm_assembly/reference_result.json",
+      "reference_status": "completed_pass",
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms_total": 9127,
+        "initial": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 8, "passed": 8, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "eco": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 7, "passed": 7, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "eco": {
+        "id": "eco_b06_extend_kinematic_chain",
+        "changes": [
+          "UpperArmLength: 160 mm -> 195 mm",
+          "ForearmLength: 130 mm -> 155 mm",
+          "WristLength: 70 mm -> 85 mm"
+        ]
+      },
+      "risk_domains": [
+        "multi_component_additive_creation",
+        "identity_occurrence_architecture",
+        "parametric_kinematic_chain",
+        "as_built_joint_graph",
+        "orthogonal_axis_motor_envelopes",
+        "cable_harness_propagation",
+        "end_effector_continuity",
+        "post_build_eco_regeneration"
+      ]
+    },
+    {
+      "case_id": "b07_packaging_machine",
+      "title": "Parametric multi-component industrial packaging machine",
+      "complexity_tier": 7,
+      "case_path": "cases/b07_packaging_machine",
+      "definition": "cases/b07_packaging_machine/definition.json",
+      "prompt": "cases/b07_packaging_machine/prompt.txt",
+      "build_script": "cases/b07_packaging_machine/build_script.py",
+      "oracle_script": "cases/b07_packaging_machine/oracle_script.py",
+      "eco_script": "cases/b07_packaging_machine/eco_script.py",
+      "eco_oracle_script": "cases/b07_packaging_machine/eco_oracle_script.py",
+      "reference_result": "cases/b07_packaging_machine/reference_result.json",
+      "reference_status": "completed_pass",
+      "phases": {
+        "initial": {"status": "completed_pass"},
+        "eco": {"status": "completed_pass"}
+      },
+      "expected": {
+        "parameters": 59,
+        "root_components_excluding_root": 34,
+        "root_occurrences": 34,
+        "root_bodies": 0,
+        "solid_bodies": 34,
+        "features": 34,
+        "child_component_sketches": 35,
+        "root_reference_sketches": 1,
+        "as_built_joints": 33,
+        "revolute_joints": 5,
+        "bbox_mm": {"min": [-300.0, -310.0, 0.0], "max": [300.0, 310.0, 500.0], "tolerance": 0.5}
+      },
+      "observed": {
+        "run_id": "ref_20260714T055207Z",
+        "elapsed_ms_total": 17869,
+        "initial": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 13, "passed": 13, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "eco": {
+          "fast_path_status": "applied_verified",
+          "oracle_passed": true,
+          "coverage": {"mandatory": 10, "passed": 10, "failed": 0, "unverified": 0},
+          "screenshots": 4
+        },
+        "closed_without_save": true,
+        "restored": true,
+        "inventory_restored": true
+      },
+      "eco": {
+        "id": "eco_b07_widen_packaging_cell",
+        "changes": [
+          "MachineWidth: 600 mm -> 760 mm",
+          "BeltWidth: 300 mm -> 400 mm",
+          "DoorWidth: 360 mm -> 460 mm"
+        ]
+      },
+      "known_limitations": [
+        {
+          "id": "drive_shaft_bearing_coupling_not_modeled",
+          "classification": "declared_scope_limit",
+          "drive_motor_to_outfeed_roller_axial_gap_mm": 20.0,
+          "reason": "Motor e roller de saída são coaxiais, mas eixo, rolamento e acoplamento físico não fazem parte da fixture."
+        }
+      ],
+      "risk_domains": [
+        "large_multi_component_additive_creation",
+        "identity_occurrence_architecture",
+        "fully_coupled_machine_envelope",
+        "closed_structural_frame",
+        "sheet_enclosure_and_access_door",
+        "conveyor_roller_tangency",
+        "revolute_joint_graph",
+        "lofted_feed_hopper",
+        "feed_path_continuity",
+        "control_cabinet_anchoring",
+        "multi_subsystem_post_build_eco"
+      ]
+    }
+  ],
+  "run_findings": [
+    {
+      "id": "native_executor_stream_wrapper_accumulation",
+      "observation": "O executor nativo acumula wrappers de stdout/stderr no processo Python do Fusion; trocar apenas a sessão MCP não limpa esse estado.",
+      "reference": "EXECUTOR_RELIABILITY.md",
+      "upstream_resolution_claimed": false,
+      "final_trial_replay": false
+    },
+    {
+      "id": "directional_screenshots_preserved",
+      "observation": "Cada fase canônica preservou PNGs distintos para isometric, front, top e right.",
+      "mitigation": "Direções ausentes ou quatro hashes idênticos reprovam o gate; imagens permanecem evidência secundária."
+    },
+    {
+      "id": "b07_drive_coupling_scope_limit",
+      "observation": "B07 reserva 20 mm entre motor e roller de saída, porém não modela eixo, rolamento ou acoplamento.",
+      "reference": "COMPETITION_SOURCES.md",
+      "oracle_scope": "coaxialidade_envelope_gap_e_joint_graph"
+    }
+  ],
+  "result_interpretation": {
+    "fast_path_applied_verified_without_independent_oracle": "not_passed",
+    "screenshot_without_programmatic_oracle": "insufficient_evidence",
+    "cleanup_failure": "invalid_trial_abort_suite",
+    "phase_case_requires_initial_and_eco_oracles": "true",
+    "b04_visibility": "completed_pass_with_explicit_finish_limitation",
+    "b05_status": "completed_pass_initial_and_eco",
+    "b06_status": "completed_pass_initial_and_eco",
+    "b07_status": "completed_pass_initial_and_eco_with_declared_drive_coupling_scope_limit"
+  }
+}

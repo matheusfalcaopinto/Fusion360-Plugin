@@ -34,6 +34,9 @@ work_unpacked_wheel/
 *.log
 *.tmp
 
+# Generated benchmark executions; keep the stable canonical result only.
+benchmark_parametric_suite/reference_suite_result_ref_*.json
+
 # Local Fusion/Codex scratch state
 .fusion-agent/
 .codex-local/

@@ -2,19 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import zipfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-WHEEL = ROOT / "wheels" / "fusion_agent_harness-0.1.0-py3-none-any.whl"
-EXTRACTED_WHEEL = ROOT / ".tmp" / "tests" / "fusion_agent_harness"
-if not (EXTRACTED_WHEEL / "fusion_agent_mcp").exists():
-    EXTRACTED_WHEEL.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(WHEEL) as zf:
-        zf.extractall(EXTRACTED_WHEEL)
-sys.path.insert(0, str(EXTRACTED_WHEEL))
+SOURCE_PACKAGES = ROOT / "harness" / "packages"
+SOURCE_APPS = ROOT / "harness" / "apps"
+sys.path[:0] = [str(SOURCE_PACKAGES), str(SOURCE_APPS)]
 
 from agent_core.guardrails import PlannerUnsupportedError, classify_safe_change, diff_snapshots  # noqa: E402
 from agent_core.planner import PlanningRequest, RuleBasedPlanner  # noqa: E402

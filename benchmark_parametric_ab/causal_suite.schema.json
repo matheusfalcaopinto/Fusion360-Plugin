@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.fusion-agent.invalid/schemas/fusion_causal_suite.v1.json",
+  "title": "Fusion causal benchmark suite v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_id", "title", "description", "arms", "cases"],
+  "properties": {
+    "schema_version": {"const": "fusion_causal_suite.v1"},
+    "suite_id": {"$ref": "#/$defs/id"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "description": {"type": "string", "maxLength": 4000},
+    "arms": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/arm"}
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,79}$"
+    },
+    "armId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,39}$"
+    },
+    "runnerId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]{2,79}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 500},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "provider",
+        "model",
+        "reasoning_profile",
+        "system",
+        "metadata"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/armId"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 80},
+        "model": {"type": "string", "minLength": 1, "maxLength": 120},
+        "reasoning_profile": {"type": "string", "minLength": 1, "maxLength": 80},
+        "system": {"type": "string", "minLength": 1, "maxLength": 120},
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "plannerArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "plan", "script"],
+      "properties": {
+        "arm_id": {"$ref": "#/$defs/armId"},
+        "plan": {"$ref": "#/$defs/artifact"},
+        "script": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "nativeRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "route_lock"],
+      "properties": {
+        "arm_id": {"$ref": "#/$defs/armId"},
+        "route_lock": {"$ref": "#/$defs/runnerId"}
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prompt",
+        "category",
+        "risk",
+        "timeout_seconds",
+        "fixture_id",
+        "oracle_id",
+        "transport_replay",
+        "planner_isolated",
+        "native_e2e"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
+        "category": {"type": "string", "minLength": 1, "maxLength": 120},
+        "risk": {
+          "enum": ["read_only", "additive", "scoped_update", "destructive"]
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 3600
+        },
+        "fixture_id": {"$ref": "#/$defs/id"},
+        "oracle_id": {"$ref": "#/$defs/id"},
+        "transport_replay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runner_id", "script"],
+          "properties": {
+            "runner_id": {"$ref": "#/$defs/runnerId"},
+            "script": {"$ref": "#/$defs/artifact"}
+          }
+        },
+        "planner_isolated": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runner_id", "artifacts"],
+          "properties": {
+            "runner_id": {"$ref": "#/$defs/runnerId"},
+            "artifacts": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"$ref": "#/$defs/plannerArtifacts"}
+            }
+          }
+        },
+        "native_e2e": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["routes"],
+          "properties": {
+            "routes": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"$ref": "#/$defs/nativeRoute"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

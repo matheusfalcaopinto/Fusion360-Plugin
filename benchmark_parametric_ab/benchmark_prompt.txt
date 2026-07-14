@@ -1,0 +1,46 @@
+Using the Autodesk Fusion integration available to you, autonomously create a new unsaved parametric Fusion design. Do not modify, save, close, or otherwise alter any pre-existing document.
+
+Create a manufacturable single-body adjustable NEMA 17 motor bracket named NEMA17_Adjustable_Bracket. Use millimeters and place the origin at the center of the lower front edge of the base. X is width, Y runs front-to-rear, and Z is vertical.
+
+Create these named user parameters with the exact values shown:
+BaseWidth = 90 mm
+BaseDepth = 70 mm
+BaseThickness = 6 mm
+FlangeWidth = 70 mm
+FlangeHeight = 60 mm
+FlangeThickness = 6 mm
+MotorCenterHeight = 30 mm
+MotorBoltSpacing = 31 mm
+MotorBoltDiameter = 4.5 mm
+MotorClearanceDiameter = 24 mm
+SlotSpacing = 60 mm
+SlotLength = 24 mm
+SlotWidth = 6.5 mm
+SlotCenterY = 30 mm
+GussetLeg = 24 mm
+GussetThickness = 6 mm
+EdgeFillet = 3 mm
+
+Required geometry:
+1. A rectangular base plate, BaseWidth wide in X, BaseDepth deep in Y, and BaseThickness high in Z.
+2. A vertical rear flange centered in X, flush with the rear edge of the base. It must occupy the rear FlangeThickness of the base, start at the top of the base, and rise FlangeHeight above it. Its width is FlangeWidth.
+3. On the vertical flange, create one through center-clearance hole of MotorClearanceDiameter. Its center is on X=0 and MotorCenterHeight above the top surface of the base.
+4. Create four through motor-mounting holes of MotorBoltDiameter on a square pattern whose horizontal and vertical center spacing are both MotorBoltSpacing. The pattern is centered on the clearance hole.
+5. In the base, create two through slots parallel to Y. Their centers are separated by SlotSpacing in X, centered symmetrically about X=0, and located SlotCenterY from the front edge. SlotLength means overall end-to-end length, including rounded ends; slot width is SlotWidth.
+6. Add two connected triangular gussets between the base and rear flange. Each has equal horizontal and vertical legs of GussetLeg and thickness GussetThickness in X. Position them symmetrically, with their thickness centered at X = plus or minus SlotSpacing/2. Build one gusset from referenced bracket geometry and obtain the second by mirror across the central YZ plane.
+7. Apply EdgeFillet to the two flange edges running through its thickness at the upper-left and upper-right corners, rounding the flange's top outside corners in front view.
+
+Requirements for design quality:
+- The final result must contain exactly one connected visible solid body and no surface bodies or disconnected/floating solids.
+- Use origin planes, symmetry, projected/reference geometry, patterns, and mirror relationships where appropriate. Avoid fragile references to arbitrary generated edges where stable datums are available.
+- Every geometric value represented by a named parameter must use that parameter or an expression based on it, rather than duplicating the numeric literal.
+- All profile sketches must be fully constrained. Construction geometry may be used only for datums, symmetry, and pattern centers.
+- Give meaningful names to sketches and timeline features.
+- All features must report healthy status.
+- Hide consumed sketches and construction geometry in the final state.
+- Do not save the document.
+- Verify the finished model programmatically or through structured Fusion inspection before reporting completion. Check body count, overall dimensions, hole and slot positions, feature health, sketch constraint status, and the absence of floating geometry.
+- Finish in an isometric view with the complete part visible.
+- You have at most two autonomous repair passes after the first construction attempt.
+
+Do not substitute a simplified shape, omit features, or leave manual cleanup for the user. If any requested operation cannot be completed, report the exact incomplete requirement rather than claiming success.

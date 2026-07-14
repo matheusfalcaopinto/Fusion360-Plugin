@@ -1,0 +1,166 @@
+{
+  "schema_version": "fusion_parametric_case.v2",
+  "case_id": "b05_spherical_lattice_radome",
+  "title": "Parametric spherical lattice radome",
+  "complexity_tier": 5,
+  "time_limit_minutes": 45,
+  "maximum_autonomous_repairs": 2,
+  "source_inspiration": {
+    "name": "PTC Creo Parametric Community Challenge 2 - Isogrid on a Curved Surface",
+    "url": "https://community.ptc.com/3d-part-assembly-design-327/creo-parametric-community-challenge-2-isogrid-on-a-curved-surface-145937",
+    "adaptation": "Clean-room spherical orthogrid fixture with independent geometry and no redistributed participant CAD."
+  },
+  "risk_domains": [
+    "spherical_revolve_shell",
+    "concentric_cut_topology",
+    "partial_revolve_meridian_pattern",
+    "latitude_torus_join",
+    "circular_pattern_cardinality",
+    "derived_trigonometric_parameters",
+    "post_build_eco_regeneration"
+  ],
+  "future_targets": [
+    {
+      "id": "future_body",
+      "entity_type": "body",
+      "selector": {"component_path": "root", "name": "B01_Spherical_Lattice_Radome"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 200.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 200.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 96.0, "tolerance": 0.3}
+      ]
+    },
+    {
+      "id": "future_hollow",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "CB01_Hollow_Dome"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_flange",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "EX01_Base_Flange"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_meridians",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "CP01_Meridional_Ribs"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_ring_15",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RV04_Latitude_Ring_15deg"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_ring_45",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RV06_Latitude_Ring_45deg"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_ring_75",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RV08_Latitude_Ring_75deg"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_bolts",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "CP02_Base_Bolts"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.UserParameters.add",
+    "adsk.fusion.SketchArcs.addByThreePoints",
+    "adsk.fusion.RevolveFeatures.createInput",
+    "adsk.fusion.RevolveFeatureInput.setAngleExtent",
+    "adsk.fusion.CombineFeatures.createInput",
+    "adsk.fusion.CircularPatternFeatures.createInput"
+  ],
+  "expected": {
+    "parameters": 28,
+    "components": 1,
+    "occurrences": 0,
+    "solid_bodies": 1,
+    "lumps": 1,
+    "features": 13,
+    "sketches": 10,
+    "bbox_mm": {"min": [-100.0, -100.0, -6.0], "max": [100.0, 100.0, 90.0], "tolerance": 0.3},
+    "meridian_count": 12,
+    "latitude_ring_count": 5,
+    "base_bolt_count": 12
+  },
+  "eco": {
+    "id": "eco_b05_scale_and_repattern",
+    "intent": "Increase the radome radius and flange, then repattern meridians and base bolts without rebuilding the model.",
+    "target_query_ids": [
+      "eco_flange_od",
+      "eco_bolt_circle",
+      "eco_bolt_count",
+      "eco_meridian_count",
+      "eco_dome_radius"
+    ],
+    "api_references": ["adsk.fusion.UserParameter.expression"],
+    "verification": {
+      "queries": [
+        {"id": "eco_flange_od", "entity_type": "parameter", "selector": {"name": "BaseFlangeOD"}, "fields": ["exists", "expression"]},
+        {"id": "eco_bolt_circle", "entity_type": "parameter", "selector": {"name": "BaseBoltCircleDiameter"}, "fields": ["exists", "expression"]},
+        {"id": "eco_bolt_count", "entity_type": "parameter", "selector": {"name": "BaseBoltCount"}, "fields": ["exists", "expression"]},
+        {"id": "eco_meridian_count", "entity_type": "parameter", "selector": {"name": "MeridianCount"}, "fields": ["exists", "expression"]},
+        {"id": "eco_dome_radius", "entity_type": "parameter", "selector": {"name": "DomeRadius"}, "fields": ["exists", "expression"]},
+        {"id": "eco_body", "entity_type": "body", "selector": {"component_path": "root", "name": "B01_Spherical_Lattice_Radome"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_meridian_pattern", "entity_type": "feature", "selector": {"component_path": "root", "name": "CP01_Meridional_Ribs"}, "fields": ["exists", "valid", "health"]}
+      ],
+      "assertions": [
+        {"id": "eco_flange_expression", "query_id": "eco_flange_od", "field": "expression", "operator": "eq", "expected": "230 mm"},
+        {"id": "eco_bolt_circle_expression", "query_id": "eco_bolt_circle", "field": "expression", "operator": "eq", "expected": "210 mm"},
+        {"id": "eco_bolt_count_expression", "query_id": "eco_bolt_count", "field": "expression", "operator": "eq", "expected": "16"},
+        {"id": "eco_meridian_count_expression", "query_id": "eco_meridian_count", "field": "expression", "operator": "eq", "expected": "16"},
+        {"id": "eco_radius_expression", "query_id": "eco_dome_radius", "field": "expression", "operator": "eq", "expected": "105 mm"},
+        {"id": "eco_body_exists", "query_id": "eco_body", "field": "exists", "operator": "eq", "expected": true},
+        {"id": "eco_body_valid", "query_id": "eco_body", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_body_width", "query_id": "eco_body", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 230.0, "tolerance": 0.4},
+        {"id": "eco_body_depth", "query_id": "eco_body", "field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 230.0, "tolerance": 0.4},
+        {"id": "eco_body_height", "query_id": "eco_body", "field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 111.0, "tolerance": 0.4},
+        {"id": "eco_pattern_valid", "query_id": "eco_meridian_pattern", "field": "valid", "operator": "eq", "expected": true}
+      ],
+      "limit_per_query": 20,
+      "include_screenshot": false
+    }
+  }
+}

@@ -4,7 +4,12 @@ set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${FUSION_AGENT_PYTHON:-}"
 WHEELS_ROOT="$PLUGIN_ROOT/wheels"
-WHEEL="$(find "$WHEELS_ROOT" -maxdepth 1 -type f -name 'fusion_agent_harness-*.whl' 2>/dev/null | sort -r | head -n 1 || true)"
+mapfile -t WHEELS < <(find "$WHEELS_ROOT" -maxdepth 1 -type f -name 'fusion_agent_harness-*.whl' 2>/dev/null | sort)
+if [[ "${#WHEELS[@]}" -gt 1 ]]; then
+  echo "Expected exactly one bundled harness wheel, found ${#WHEELS[@]}." >&2
+  exit 1
+fi
+WHEEL="${WHEELS[0]:-}"
 
 if [[ -z "$PYTHON" ]]; then
   if [[ -x "$PLUGIN_ROOT/.venv/bin/python" ]]; then
@@ -29,6 +34,8 @@ else
   echo "Missing bundled fusion_agent_harness wheel under $WHEELS_ROOT. Build the plugin with scripts/build-distribution.py." >&2
   exit 1
 fi
+"$PYTHON" "$PLUGIN_ROOT/scripts/configure_mcp.py" --plugin-root "$PLUGIN_ROOT" --python "$PYTHON"
 "$PYTHON" "$PLUGIN_ROOT/scripts/fusion_agent_codex_mcp_launcher.py" --check
 "$PYTHON" "$PLUGIN_ROOT/scripts/validate_plugin.py"
-"$PYTHON" -c "from fusion_agent_mcp.server import tool_specs; print(f'fusion_agent MCP tools: {len(tool_specs())}')"
+"$PYTHON" -c "import fusion_agent_mcp; from importlib.metadata import version; installed=version('fusion-agent-harness'); print(f'fusion-agent-harness: {installed}'); assert installed == fusion_agent_mcp.__version__ == '0.2.1', (installed, fusion_agent_mcp.__version__)"
+"$PYTHON" -c "from fusion_agent_mcp.server import tool_specs; count=len(tool_specs()); print(f'fusion_agent MCP tools: {count}'); assert count == 35, count"

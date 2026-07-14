@@ -1,0 +1,26 @@
+{
+  "schema_version": "fusion_planner_artifact.v1",
+  "arm_id": "claude",
+  "case_id": "nema17_bracket",
+  "planner": {
+    "provider": "Anthropic",
+    "model": "Fable 5 Alto",
+    "reasoning_profile": "alto"
+  },
+  "intent": "Build one connected parametric NEMA 17 adjustable bracket.",
+  "assumptions": ["All dimensions use explicit millimetre expressions."],
+  "parameters": [{"name": "BaseWidth", "expression": "90 mm"}],
+  "build_graph": [
+    {
+      "id": "base_plate",
+      "operation": "extrude",
+      "depends_on": [],
+      "target_component": "root",
+      "inputs": {"width": "BaseWidth", "operation": "new_body"}
+    }
+  ],
+  "verification_assertions": [
+    {"id": "single_body", "target": "summary.visible_body_count", "operator": "eq", "expected": 1}
+  ],
+  "script_sha256": "9ac183704d7f78781736503ce41c8e73737d91fbcbd16aea4dca99a16343451b"
+}

@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/matheusfalcaopinto/Fusion360-Plugin"><img alt="Repository" src="https://img.shields.io/badge/GitHub-Fusion360--Plugin-181717?logo=github"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.2.1-2563eb">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-plugin-111827">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-fusion__agent-0f766e">
@@ -47,14 +47,16 @@ plugin local pronto para uso. Ele conecta o Codex a um servidor MCP chamado
 `fusion_agent`, que atua como uma camada de transacao segura entre linguagem
 natural e operacoes CAD.
 
-Em vez de deixar o Codex chamar comandos Fusion diretamente, o plugin transforma
-o pedido em uma especificacao verificavel, executa primeiro em mock ou dry-run,
-aplica politicas de seguranca e so entao permite uma sessao real quando o
-ambiente esta claro.
+Em vez de deixar o Codex chamar comandos Fusion diretamente, o plugin mantem uma
+transporte MCP serializado, aplica politica de replay conforme o efeito da
+chamada e oferece duas rotas seguras: o Safe Harness legado e o Native Fast
+Path com lint, baseline e readback programatico.
 
 | Capacidade | O que entrega |
 | --- | --- |
 | Planejamento CAD | Converte pedidos em CAD Specs com nomes, unidades e parametros claros. |
+| Transporte controlado | Usa `legacy` por padrao e permite canario persistente POST-only sem repetir scripts incertos. |
+| Native Fast Path | Consulta a API, inspeciona alvos e executa um script limitado com uma unica escrita. |
 | Guardrail de planner | Bloqueia prompts de auditoria, hub, reorg e delete para evitar specs genericas. |
 | Snapshots compactos | Coleta ocorrencias, corpos visiveis, bboxes e duplicidades como evidencia primaria. |
 | Mudancas seguras | Exige preview, baseline, lotes pequenos e aborta em regressao visivel. |
@@ -64,6 +66,7 @@ ambiente esta claro.
 | Reparos limitados | Classifica falhas e evita loops abertos. |
 | Memoria de projeto | Guarda decisoes factuais e aprendizados tecnicos. |
 | Journals e traces | Produz artefatos para auditoria e diagnostico. |
+| Benchmark A/B | Compara `safe_harness` e `native_fast` com oracles independentes e artefatos por `run_id`. |
 
 ## O Que Vem No Plugin
 
@@ -76,7 +79,8 @@ ambiente esta claro.
 | Setup Windows | `scripts/setup.ps1` | Cria `.venv`, instala o wheel e roda checagens. |
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
 | Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
-| Runtime Python | `wheels/fusion_agent_harness-0.1.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
+| Fonte canônica | `harness/` | Fonte rastreada usada para testes e build reproduzivel. |
+| Runtime Python | `wheels/fusion_agent_harness-0.2.1-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
 
@@ -139,7 +143,7 @@ O plugin foi desenhado para falhar fechado.
 
 | Regra | Motivo |
 | --- | --- |
-| Comece com doctor, probe, health e inspect | Diferencia launcher, endpoint real, manifest e superficie anexada. |
+| Readiness interno | Cada ferramenta prepara a conexao quando necessario; diagnostico amplo e executado sob pedido ou falha. |
 | Exija unidades explicitas | CAD nao deve inferir se `10` significa mm, cm ou polegadas. |
 | Planeje somente criacao CAD conhecida | Auditoria, hub, reorg e cleanup usam ferramentas proprias. |
 | Verifique por dados | Snapshots e checks programaticos sao prova primaria; screenshots sao secundarios. |
@@ -183,7 +187,7 @@ SCREENSHOT_FAILED
 | `pytest-asyncio` | `0.23` |
 | `rich` | `13.0` |
 | `jsonschema` | `4.0` |
-| `mcp` | `1.0` |
+| `mcp` | `>=1.28,<2` |
 | `python-dotenv` | `1.0` |
 | `PyYAML` | `6.0` |
 
@@ -204,7 +208,9 @@ bash scripts/setup.sh
 ```
 
 O setup cria `.venv`, instala o wheel em `wheels/` e executa uma checagem basica
-do launcher.
+do launcher. Ao final, ele substitui o comando portatil de `.mcp.json` pelos
+caminhos absolutos do interpretador e do launcher desta instalacao. Isso evita
+o alias `WindowsApps` no Windows e torna explicito qual ambiente hospeda o MCP.
 
 > [!TIP]
 > Se `python` nao estiver no `PATH`, defina `FUSION_AGENT_PYTHON` com o caminho
@@ -224,9 +230,10 @@ repositorio como raiz do plugin.
 3. Aponte o Codex para a raiz deste repositorio.
 4. Recarregue o Codex se necessario.
 
-### Opcao B: copiar para plugins pessoais
+### Opcao B: preparar uma fonte pessoal limpa
 
-Copie a pasta inteira para o diretorio de plugins pessoais do Codex e rode:
+Copie somente os artefatos intencionais para o diretorio de plugins pessoais do
+Codex e rode:
 
 ```powershell
 .\scripts\setup.ps1
@@ -240,7 +247,14 @@ Mantenha estes caminhos juntos:
 skills/
 scripts/
 wheels/
+harness/
 ```
+
+Em `scripts/`, copie somente `build-distribution.py`, `configure_mcp.py`,
+`fusion_agent_codex_mcp_launcher.py`, `setup.ps1`, `setup.sh` e
+`validate_plugin.py`. Nao leve `.venv`, logs, manifests, outputs, workspace,
+arquivos de teste locais ou outros scripts de projeto para a fonte pessoal; o
+cache do Codex inclui o conteudo da origem do plugin.
 
 O launcher calcula a raiz do plugin a partir da pasta `scripts/`. Mover apenas o
 launcher ou apenas o wheel quebra a resolucao de caminhos.
@@ -265,7 +279,7 @@ Saida esperada:
 | --- | --- |
 | `plugin_root` | Caminho para este repositorio. |
 | `harness_root` | `<installed-package>` em instalacao normal. |
-| `bundled_wheels` | `1` ou mais, conforme distribuicao. |
+| `bundled_wheels` | Exatamente `1`. |
 | `installed_server_available` | `True`. |
 | `fusion_agent_codex` | `1`. |
 
@@ -301,29 +315,33 @@ sequenceDiagram
   participant F as Fusion real ou mock
 
   U->>C: Descreve a peca ou montagem
-  C->>H: doctor + probe + session_health + inspect
-  C->>H: memory_search
-  C->>H: plan_spec
-  C->>H: dry_run_session
-  H-->>C: plano, riscos e artefatos
-  U->>C: Aprova ou ajusta
-  C->>H: run_session
-  H->>F: mock, dry-run ou real
-  C->>H: verify_active_design
-  H-->>C: resultado, traces e evidencias
+  C->>H: native_read(api_documentation)
+  C->>H: targeted_inspect(baseline)
+  H-->>C: API, identidade e alvos unicos
+  C->>C: gera script e contrato de verificacao
+  C->>H: fast_execute ou Safe Harness
+  H->>F: uma escrita, sem retry
+  H->>F: readback direcionado
+  H-->>C: estado, assertions, traces e evidencias
 ```
 
 Checklist de uso:
 
-- rode `fusion_agent_doctor`, `fusion_agent_probe`,
-  `fusion_agent_session_health` e `fusion_agent_inspect`;
+- comece pela ferramenta especifica; `doctor`, `probe`, `session_health` e
+  inspecao ampla ficam para diagnostico solicitado ou falha de readiness;
 - busque memoria com `fusion_agent_memory_search`;
+- para uma operacao nativa elegivel, consulte somente a documentacao necessaria
+  com `fusion_agent_native_read`, delimite alvos com
+  `fusion_agent_targeted_inspect` e declare assertions no
+  `fusion_agent_fast_execute`;
 - para criacao CAD conhecida, gere plano com `fusion_agent_plan_spec`;
 - para auditoria, inventario de hub, reorg, cleanup ou delete, nao use o
   planner; use `fusion_agent_compact_snapshot`,
   `fusion_agent_hub_inventory` e `fusion_agent_safe_change_preview`;
-- rode `fusion_agent_dry_run_session`;
-- execute `fusion_agent_run_session` apenas quando o contexto estiver claro;
+- use Safe Harness para delete, cleanup, bulk, move, visibilidade,
+  componentize, entidades ocultas/importadas/compartilhadas e ambiguidade;
+- use `fusion_agent_dry_run_session` e `fusion_agent_run_session` para receitas
+  CadSpec legadas quando forem a rota recomendada;
 - valide com `fusion_agent_verify_active_design`;
 - capture evidencia visual com `fusion_agent_capture_viewport` somente como
   evidencia secundaria e exija `evidence_quality=verified_file`;
@@ -373,9 +391,54 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_PYTHON` | Opcional | Caminho explicito para o Python que hospeda o MCP server. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
 | `FUSION_MCP_ENDPOINT` | Real Fusion | Endpoint HTTP de um servidor MCP/Fusion real. |
+| `FUSION_MCP_TRANSPORT_MODE` | Opcional | `legacy` (padrao 0.2.1), `persistent_post_only`, `auto` ou `persistent` diagnostico. |
+| `FUSION_MCP_CONNECT_TIMEOUT_SECONDS` | Opcional | Timeout de conexao; padrao `5`. |
+| `FUSION_MCP_READ_TIMEOUT_SECONDS` | Opcional | Timeout de leitura; padrao `120`. |
+| `FUSION_MCP_MUTATION_TIMEOUT_SECONDS` | Opcional | Timeout de mutacao; padrao `240`. |
+| `FUSION_MCP_SSE_TIMEOUT_SECONDS` | Opcional | Timeout do stream SSE; padrao `300`. |
+| `FUSION_MCP_AUTO_CANARY_TIMEOUT_SECONDS` | Opcional | Limite do canario `auto`; padrao `2`. |
+| `FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS` | Opcional | Timeout de scripts internos auditados; padrao `10`. |
+| `FUSION_MCP_POST_DISPATCH_COOLDOWN_SECONDS` | Opcional | Bloqueio local apos outcome incerto; padrao `5`. |
+| `FUSION_AGENT_INSPECTION_MAX_ENTITIES` | Opcional | Budget default de entidades visitadas; padrao `1000`. |
+| `FUSION_AGENT_INSPECTION_DEADLINE_MS` | Opcional | Deadline default de inspecao; padrao `1500`. |
+| `FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES` | Opcional | Teto default de resposta; padrao `1048576`. |
+| `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` (padrao em 0.2.1) ou `enabled`. |
+| `FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES` | Opcional | Limite fail-closed do script final transmitido pelo Fast Execute, depois dos guards; padrao `28672` (28 KiB). |
+| `FUSION_AGENT_EXECUTION_PATH` | Teste/benchmark | `auto` (padrao), `native_fast` ou `safe_harness`; valores fixos travam a rota. |
+| `FUSION_AGENT_TELEMETRY` | Opcional | Quando `1`, grava telemetria local redigida; nenhum conteudo e enviado externamente. |
 | `FUSION_AGENT_REQUIRE_REAL` | Opcional | Forca modo real e bloqueia mock quando definido como `1`. |
 | `FUSION_AGENT_ALLOW_DRY_RUN` | Opcional | Quando `0`, bloqueia dry-run no ambiente instalado real-first. |
 | `PYTHONPATH` | Automatico | Ajustado pelo launcher quando `FUSION_AGENT_HARNESS_ROOT` esta definido. |
+
+`legacy` abre uma sessao one-shot por operacao e usa readiness/manifest em
+cache. `persistent_post_only` mantem uma sessao usando POST e o SSE retornado
+pela propria resposta, sem abrir o GET/SSE independente. `auto` executa um
+canario de leitura de dois segundos e fixa `legacy` para o restante do processo
+se o canario falhar. O modo `persistent` completo permanece disponivel somente
+para diagnostico explicito na serie 0.2.x.
+
+Scripts internos de inspecao e mutacoes usam replay
+`BEFORE_DISPATCH_ONLY`. Se uma leitura desse tipo expirar depois do dispatch,
+o harness retorna `READ_TIMEOUT_MAY_STILL_BE_RUNNING`, invalida a sessao e
+aplica cooldown; o script nao e reenviado automaticamente.
+
+### Orcamentos de inspecao
+
+As ferramentas `fusion_agent_inspect`, `fusion_agent_targeted_inspect` e
+`fusion_agent_compact_snapshot` aceitam campos opcionais e compativeis:
+
+| Campo | Padrao | Maximo | Funcao |
+| --- | ---: | ---: | --- |
+| `max_entities_visited` | `1000` | `5000` | Interrompe a travessia real, nao apenas a serializacao. |
+| `deadline_ms` | `1500` | `5000` | Deadline monotonicamente verificado durante o scan. |
+| `max_response_bytes` | `1048576` | `1048576` | Limita a resposta estruturada a 1 MiB. |
+
+Resultados limitados informam `complete`, `truncated`, `visited_entities`,
+`elapsed_ms`, `response_bytes`, `counts_exact` e `stop_reason`. O modo padrao de
+`fusion_agent_inspect` retorna identidade do documento e contagens baratas;
+geometria, parametros, assembly, propriedades fisicas e metricas legadas devem
+ser solicitados explicitamente. Um baseline incompleto nunca autoriza uma
+mudanca Safe Harness.
 
 ## Ferramentas MCP
 
@@ -384,6 +447,7 @@ A skill agrupa as ferramentas seguras em familias:
 | Grupo | Ferramentas |
 | --- | --- |
 | Sessao e ambiente | `fusion_agent_doctor`, `fusion_agent_readiness_report`, `fusion_agent_probe`, `fusion_agent_session_health`, `fusion_agent_inspect`, `fusion_agent_run_session`, `fusion_agent_dry_run_session`, `fusion_agent_list_sessions` |
+| Native Fast Path | `fusion_agent_native_read`, `fusion_agent_targeted_inspect`, `fusion_agent_fast_execute`, `fusion_agent_recover_change` |
 | Verificacao e evidencia | `fusion_agent_verify_active_design`, `fusion_agent_compact_snapshot`, `fusion_agent_capture_viewport` |
 | Inventario de hub | `fusion_agent_hub_inventory` |
 | Mudancas seguras | `fusion_agent_safe_change_preview`, `fusion_agent_safe_change_apply` |
@@ -394,13 +458,35 @@ A skill agrupa as ferramentas seguras em familias:
 | Memoria | `fusion_agent_memory_search`, `fusion_agent_memory_write`, `fusion_agent_memory_list_project` |
 | Skills do harness | `fusion_agent_skills_list`, `fusion_agent_skills_get`, `fusion_agent_skills_rank` |
 
+O gate de PR usa `driver=internal, mode=mock`. O runtime inclui o lifecycle
+auditado para criar, marcar, fechar sem salvar e restaurar uma fixture real,
+usando `dataFile.id` ou o marker como identidade estavel. A suite real stock
+ainda falha no preflight, antes da primeira chamada MCP, enquanto nao houver
+fixtures, acoes de rota, oracles e auditoria de containment registrados e
+revisados para cada caso. A saida do proprio executor nunca e aceita como prova
+de correcao. Mutacao real exige `confirm_real_benchmark=true`; um documento
+original nao salvo e sem identidade persistente tambem bloqueia antes da
+criacao da fixture.
+
+O Fast Execute mede o payload final, ja com o guard de identidade do documento
+e o preambulo de normalizacao dos streams. Acima do limite configurado, retorna
+`SCRIPT_SIZE_LIMIT_EXCEEDED` antes do dispatch e recomenda decompor a tarefa ou
+usar o Safe Harness. Ele nunca trunca nem reenvia silenciosamente o script.
+
+A investigação Claude/Codex usa uma matriz causal separada do benchmark
+safe-vs-fast do produto. Consulte
+[`CAUSAL_BENCHMARK.md`](benchmark_parametric_ab/CAUSAL_BENCHMARK.md) para as
+camadas e schemas offline e
+[`REAL_VALIDATION_RUNBOOK.md`](benchmark_parametric_ab/REAL_VALIDATION_RUNBOOK.md)
+para a campanha interativa adiada.
+
 ## Receitas De Prompt
 
 ### Inspecionar ambiente
 
 ```text
-Use o Fusion Agent Harness para rodar doctor, probe, session_health e inspect.
-Quero saber se estou em mock, dry-run ou conectado a um Fusion real.
+Use o Fusion Agent Harness para consultar active_command e o documento com
+native_read. Rode doctor, probe e session_health somente se a readiness falhar.
 ```
 
 ### Inventariar Personal Library
@@ -435,6 +521,20 @@ quatro furos de 5 mm a 10 mm das bordas, nomes estaveis para parametros e
 verificacao de bounding box.
 ```
 
+### Executar pelo Native Fast Path
+
+```text
+Use somente fusion_agent_*. Consulte api_documentation para as classes exatas,
+inspecione o documento e o alvo com targeted_inspect, gere um script com um
+unico run(_context: str) e envie fast_execute com change_class, target_query_ids
+e assertions programaticas. Em scoped_update, altere somente
+targets[query_id]. Em additive, declare component_path exato + name na query do
+novo alvo e crie somente a partir de target_components[component_path]. Nao
+redescubra alvos no script. Converta pontos com sketch.modelToSketchSpace, sem
+reconstruir manualmente os eixos xDirection/yDirection. Nao salve nem desfaça
+automaticamente.
+```
+
 ### Executar sessao mock
 
 ```text
@@ -460,8 +560,8 @@ sessao e resuma qualquer divergencia entre geometria, nomes e propriedades.
 <summary>Prompt mais completo para sessao real cautelosa</summary>
 
 ```text
-Use somente o servidor fusion_agent. Rode doctor, inspect e memory_search.
-Depois crie uma CAD Spec com unidades explicitas para uma placa de montagem de
+Use somente o servidor fusion_agent. Consulte api_documentation, faca uma
+targeted_inspect e busque memory_search. Depois crie uma CAD Spec com unidades explicitas para uma placa de montagem de
 120 mm x 80 mm x 8 mm, quatro furos M5 a 12 mm das bordas, chanfro externo de
 1 mm e parametros nomeados. Rode dry-run primeiro. Nao execute real ate listar
 riscos, plano, nomes esperados e verificacoes. Depois de aprovado, execute em
@@ -483,14 +583,20 @@ capture viewport.
 |   |-- ISSUE_TEMPLATE/
 |   `-- PULL_REQUEST_TEMPLATE.md
 |-- scripts/
+|   |-- build-distribution.py
 |   |-- fusion_agent_codex_mcp_launcher.py
 |   |-- setup.ps1
 |   `-- setup.sh
 |-- skills/
 |   `-- fusion-cad-harness/
 |       `-- SKILL.md
+|-- harness/
+|   |-- pyproject.toml
+|   |-- apps/
+|   |-- packages/
+|   `-- tests/
 |-- wheels/
-|   `-- fusion_agent_harness-0.1.0-py3-none-any.whl
+|   `-- fusion_agent_harness-0.2.1-py3-none-any.whl
 |-- .editorconfig
 |-- .gitattributes
 |-- .gitignore
@@ -538,7 +644,7 @@ Confirme se o arquivo existe em `wheels/`. Este repositorio deve publicar o
 wheel porque ele faz parte da distribuicao do plugin.
 
 ```text
-wheels/fusion_agent_harness-0.1.0-py3-none-any.whl
+wheels/fusion_agent_harness-0.2.1-py3-none-any.whl
 ```
 
 </details>
@@ -570,6 +676,18 @@ Comece em mock/dry-run e valide:
 </details>
 
 <details>
+<summary>Inspecao deixa uma montagem grande sem resposta</summary>
+
+Nao dispare outra inspecao ampla imediatamente. Se o resultado trouxer
+`READ_TIMEOUT_MAY_STILL_BE_RUNNING`, respeite `retry_after_seconds`; o script
+anterior pode continuar executando dentro do Fusion. Depois do cooldown, use
+`fusion_agent_targeted_inspect` com entity token ou component path e os
+orcamentos padrao. `fusion_agent_inspect` deve permanecer no resumo lazy, sem
+`physical_properties` ou `legacy_recipe_metrics`, salvo necessidade explicita.
+
+</details>
+
+<details>
 <summary>Unidades ambiguas</summary>
 
 Reescreva a especificacao com unidades explicitas:
@@ -585,8 +703,9 @@ Use angulo de 45 deg.
 
 ## Desenvolvimento
 
-Este repositorio e uma distribuicao pronta do plugin. Para desenvolver contra um
-checkout fonte do harness, defina `FUSION_AGENT_HARNESS_ROOT`.
+Este repositorio inclui a fonte canonica em `harness/`. Testes normais importam
+essa fonte; `scripts/build-distribution.py` produz o wheel reproduzivel. Para
+desenvolver contra outro checkout, defina `FUSION_AGENT_HARNESS_ROOT`.
 
 Windows:
 
@@ -616,17 +735,25 @@ variavel vazia para usar o wheel embutido.
 
 ## Publicacao
 
-Versao atual: `0.1.0`.
+Versao atual: `0.2.1`.
 
 Checklist de release:
 
-1. Atualize `.codex-plugin/plugin.json`.
-2. Gere o wheel `fusion_agent_harness-<versao>-py3-none-any.whl`.
-3. Mantenha apenas wheels intencionais em `wheels/`.
-4. Rode `scripts/setup.ps1` ou `scripts/setup.sh`.
-5. Rode `scripts/fusion_agent_codex_mcp_launcher.py --check`.
-6. Atualize `README.md` e `CHANGELOG.md`.
-7. Crie uma tag GitHub, por exemplo `v0.1.0`.
+1. Rode a suite completa contra `harness/`.
+2. Rode `python scripts/build-distribution.py` duas vezes e confirme SHA-256
+   identico.
+3. Gere
+   `fusion_agent_harness-<versao>-py3-none-any.whl`.
+4. Mantenha exatamente um wheel intencional em `wheels/`.
+5. Rode o validator do repositorio, o validator de plugin e o `quick_validate`
+   da skill.
+6. Aplique o cachebuster `0.2.1+codex.<timestamp-UTC>` somente depois desses
+   gates.
+7. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
+   `fusion-agent-codex@personal`.
+8. Confirme no cache instalado a versao exata, 35 ferramentas, output schemas e
+   somente nomes `fusion_agent_*`.
+9. Atualize `README.md` e `CHANGELOG.md` e crie a tag, por exemplo `v0.2.1`.
 
 ## Licenca
 

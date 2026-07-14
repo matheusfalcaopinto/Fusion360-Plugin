@@ -1,0 +1,1486 @@
+{
+  "build_script_sha256": "ac970ec1148704c89a35e9cc3f197cf94bafee2e93c06816dea6816400c76d11",
+  "case_id": "b04_offset_duct_adapter",
+  "cleanup": {
+    "active_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "baseline_open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "closed_without_save": true,
+    "inventory_restored": true,
+    "open_document_ids": [
+      "data:urn:adsk.wipprod:dm.lineage:lT72QVBYRHSgSUwyrn8M0w",
+      "data:urn:adsk.wipprod:dm.lineage:RNcZ8eI4TDKPrKe09aV3xA",
+      "data:urn:adsk.wipprod:dm.lineage:eiWxx36zTUOOFfAsjjXdog",
+      "data:urn:adsk.wipprod:dm.lineage:vWuGdTetTDW8wDdpZquLvw",
+      "data:urn:adsk.wipprod:dm.lineage:ghVEMcuPSzmNKkUFATCK3A",
+      "data:urn:adsk.wipprod:dm.lineage:bNOguFjoTaSlfkXQCIN86A",
+      "data:urn:adsk.wipprod:dm.lineage:N6Xm1j4cQ3iWvKAIuoUIyw",
+      "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw"
+    ],
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "restored": true
+  },
+  "definition_sha256": "db8c6353f92cb2f2d2f59966da77e2fa1c5702a1f27baf6da3fe8f7c1f1b255d",
+  "elapsed_ms": 4663,
+  "fast_path": {
+    "after": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+        "version_id": ""
+      },
+      "duration_ms": 77,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "bounding_box_mm": {
+                "max_mm": [
+                  55.0,
+                  48.999999999999986,
+                  100.0
+                ],
+                "min_mm": [
+                  -50.0,
+                  -35.0,
+                  0.0
+                ],
+                "size_mm": [
+                  105.0,
+                  83.99999999999999,
+                  100.0
+                ]
+              },
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2xhCgBtgMqriAAAAA==",
+              "entity_type": "body",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "Offset_Duct_Adapter",
+              "occurrence_count_for_component": 0,
+              "path": "root/Offset_Duct_Adapter",
+              "paths": [
+                "root/Offset_Duct_Adapter"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2pmCQB6nXI4iAAAAA==",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "LF01_Outer_Transition",
+              "occurrence_count_for_component": 0,
+              "path": "root/LF01_Outer_Transition",
+              "paths": [
+                "root/LF01_Outer_Transition"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_outer_loft",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2lsAAD/KMM1iAAAAA==",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "LF02_Inner_Passage_Tool",
+              "occurrence_count_for_component": 0,
+              "path": "root/LF02_Inner_Passage_Tool",
+              "paths": [
+                "root/LF02_Inner_Passage_Tool"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_inner_loft",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2lhAgAtNVrRiAAAAA==",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "CB03_Inner_Passage_Cut",
+              "occurrence_count_for_component": 0,
+              "path": "root/CB03_Inner_Passage_Cut",
+              "paths": [
+                "root/CB03_Inner_Passage_Cut"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_inner_cut",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2hoYAAABQ/cH4kAAAA=",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "RP01_Bottom_Bolt_2x2",
+              "occurrence_count_for_component": 0,
+              "path": "root/RP01_Bottom_Bolt_2x2",
+              "paths": [
+                "root/RP01_Bottom_Bolt_2x2"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_bottom_pattern",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAAARlJLZXkAH4sIAAAAAAAA/zNQsFAwAEJDBSMgBrOMLIAsQwUTkIiZgqX/Us6Kk+41m/nzfHc0+90BqjBSMDZTMEpNSTJITkvTNU8ysdA1sTRJ1U1KS0nVNbI0NDawTE0xMLEwB6sFmsGABsD2GSiArQNZb2hiYAEA3EXMF4kAAAA=",
+              "entity_type": "feature",
+              "error_or_warning": "",
+              "exists": true,
+              "health": "0",
+              "is_referenced_component": false,
+              "name": "CP01_Top_Bolt_6x",
+              "occurrence_count_for_component": 0,
+              "path": "root/CP01_Top_Bolt_6x",
+              "paths": [
+                "root/CP01_Top_Bolt_6x"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "future_top_pattern",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 1,
+        "components": 1,
+        "features": 13,
+        "occurrences": 0,
+        "parameters": 59,
+        "sketches": 8,
+        "state_fingerprint": "2a5b5f5693a0959775f227b61f3a9692ea72dea780f8da47330542886d6ad2b3",
+        "state_fingerprint_items": 83,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": {
+          "max_mm": [
+            55.0,
+            48.999999999999986,
+            100.0
+          ],
+          "min_mm": [
+            -50.0,
+            -35.0,
+            0.0
+          ],
+          "size_mm": [
+            105.0,
+            83.99999999999999,
+            100.0
+          ]
+        },
+        "visible_body_count": 1
+      },
+      "warnings": []
+    },
+    "api_references": [
+      "adsk.fusion.LoftFeatures.createInput",
+      "adsk.fusion.LoftSections.add",
+      "adsk.fusion.CombineFeatures.createInput",
+      "adsk.fusion.RectangularPatternFeatures.createInput",
+      "adsk.fusion.RectangularPatternFeatureInput.setDirectionTwo",
+      "adsk.fusion.CircularPatternFeatures.createInput",
+      "adsk.fusion.ConstructionAxisInput.setByCircularFace",
+      "adsk.fusion.BRepBody.pointContainment"
+    ],
+    "artifacts": {
+      "audit_path": "outputs\\fast_path\\fast_d3be2fab00454ab18dadf6c60fc08267\\audit.json"
+    },
+    "baseline": {
+      "document": {
+        "id": "",
+        "is_modified": true,
+        "name": "Sem título",
+        "product_type": "",
+        "runtime_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+        "version_id": ""
+      },
+      "duration_ms": 34,
+      "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+      "results": [
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_body",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_outer_loft",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_inner_loft",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_inner_cut",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_bottom_pattern",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 0,
+          "matches": [],
+          "query_id": "future_top_pattern",
+          "truncated": false
+        },
+        {
+          "ambiguous": false,
+          "match_count": 1,
+          "matches": [
+            {
+              "component_path": "root",
+              "component_paths": [
+                "root"
+              ],
+              "entity_token": "/v4BAAEAAwAAAAAAAAAAAAAA",
+              "entity_type": "component",
+              "exists": true,
+              "is_referenced_component": false,
+              "name": "(Não salvo)",
+              "occurrence_count_for_component": 0,
+              "path": "root",
+              "paths": [
+                "root"
+              ],
+              "valid": true,
+              "visible": true
+            }
+          ],
+          "query_id": "__fusion_agent_component_4813494d137e1631",
+          "truncated": false
+        }
+      ],
+      "status": "read_succeeded",
+      "success": true,
+      "summary": {
+        "bodies": 0,
+        "components": 1,
+        "features": 0,
+        "occurrences": 0,
+        "parameters": 0,
+        "sketches": 0,
+        "state_fingerprint": "0d8de1b954dcbb41ddd9e83b77653a2a9b8c73a4d06c8b5bc7e7debc21d34684",
+        "state_fingerprint_items": 2,
+        "state_fingerprint_truncated": false,
+        "visible_body_bbox_mm": null,
+        "visible_body_count": 0
+      },
+      "warnings": []
+    },
+    "bindings": {
+      "target_components": [
+        "root"
+      ],
+      "targets": []
+    },
+    "change_class": "additive",
+    "declared_mutation_count": 1,
+    "duration_ms": 906,
+    "execution": {
+      "error": null,
+      "error_code": null,
+      "ok": true
+    },
+    "execution_path": "native_fast",
+    "intent": "Build canonical reference fixture b04_offset_duct_adapter: Offset rectangular-to-circular hollow duct adapter",
+    "manifest_fingerprint": "8cca2c5340fb05d8b30e424dbe4edb3ccaa0da739a4c8fcdf232a13a9d3d1096",
+    "mutating_call_count": 1,
+    "native_call_count": 4,
+    "operation_id": "fast_d3be2fab00454ab18dadf6c60fc08267",
+    "policy": {
+      "allowed": true,
+      "change_class": "additive",
+      "detected_change_class": "additive",
+      "errors": [],
+      "mutating_syntax_detected": true,
+      "script_sha256": "ac970ec1148704c89a35e9cc3f197cf94bafee2e93c06816dea6816400c76d11",
+      "warnings": []
+    },
+    "recovery_instruction": "",
+    "script_sha256": "ac970ec1148704c89a35e9cc3f197cf94bafee2e93c06816dea6816400c76d11",
+    "status": "applied_verified",
+    "transport_mutating_dispatch_count": 1,
+    "verification": {
+      "assertions": [
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_body_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_body",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_body_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_body",
+          "tolerance": null
+        },
+        {
+          "actual": 105.0,
+          "before": null,
+          "expected": 105.0,
+          "field": "bounding_box_mm.size_mm.0",
+          "id": "future_body_3",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 83.99999999999999,
+          "before": null,
+          "expected": 84.0,
+          "field": "bounding_box_mm.size_mm.1",
+          "id": "future_body_4",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": 100.0,
+          "before": null,
+          "expected": 100.0,
+          "field": "bounding_box_mm.size_mm.2",
+          "id": "future_body_5",
+          "message": "ok",
+          "operator": "approx",
+          "passed": true,
+          "query_id": "future_body",
+          "tolerance": 0.2
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_outer_loft_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_outer_loft",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_outer_loft_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_outer_loft",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_inner_loft_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_inner_loft",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_inner_loft_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_inner_loft",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_inner_cut_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_inner_cut",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_inner_cut_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_inner_cut",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_bottom_pattern_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_bottom_pattern",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_bottom_pattern_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_bottom_pattern",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": false,
+          "expected": true,
+          "field": "exists",
+          "id": "future_top_pattern_1",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_top_pattern",
+          "tolerance": null
+        },
+        {
+          "actual": true,
+          "before": null,
+          "expected": true,
+          "field": "valid",
+          "id": "future_top_pattern_2",
+          "message": "ok",
+          "operator": "eq",
+          "passed": true,
+          "query_id": "future_top_pattern",
+          "tolerance": null
+        }
+      ],
+      "invariants": [
+        {
+          "name": "document_identity_unchanged",
+          "passed": true
+        },
+        {
+          "name": "additive_counts_do_not_decrease",
+          "passed": true
+        },
+        {
+          "name": "visible_body_bbox_valid",
+          "passed": true
+        },
+        {
+          "name": "target_feature_health",
+          "passed": true,
+          "values": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ]
+        },
+        {
+          "name": "target_bounding_boxes_valid",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "source": "post_apply"
+    }
+  },
+  "fixture": {
+    "fixture_document_id": "marker:fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+    "fixture_fingerprint": "5d15021ffb9bfb0c9b6895c799c6497c8cbfd829ce95f98a5d6eb7cd5df7fc81",
+    "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
+    "unsaved": true
+  },
+  "fixture_marker": "fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+  "images": [
+    {
+      "bytes": 107321,
+      "direction": "isometric",
+      "native_direction": "iso-top-right",
+      "path": "cases/b04_offset_duct_adapter/images/reference_isometric.png",
+      "sha256": "42733768f6a1bdf47048b73df651be767fc4cb917d5ee0778f61809cb2038217"
+    },
+    {
+      "bytes": 60986,
+      "direction": "front",
+      "native_direction": "front",
+      "path": "cases/b04_offset_duct_adapter/images/reference_front.png",
+      "sha256": "1ede4101193ee7f0f462ce2609f58bb9041d7245031ee97c94b9639888151fbc"
+    },
+    {
+      "bytes": 68475,
+      "direction": "top",
+      "native_direction": "top",
+      "path": "cases/b04_offset_duct_adapter/images/reference_top.png",
+      "sha256": "e06e31374caeedd18c9683ebb32895718f99f250775510b25ad03fb093f92ec0"
+    },
+    {
+      "bytes": 38651,
+      "direction": "right",
+      "native_direction": "right",
+      "path": "cases/b04_offset_duct_adapter/images/reference_right.png",
+      "sha256": "85f0ecf64ea66f40b2ebb89ca4c0022e1826e3cb5b5a450925df1770fee73c3e"
+    }
+  ],
+  "linter": {
+    "allowed": true,
+    "change_class": "additive",
+    "detected_change_class": "additive",
+    "errors": [],
+    "mutating_syntax_detected": true,
+    "script_sha256": "ac970ec1148704c89a35e9cc3f197cf94bafee2e93c06816dea6816400c76d11",
+    "warnings": []
+  },
+  "oracle": {
+    "case_id": "b04_offset_duct_adapter",
+    "checks": [
+      {
+        "evidence": {},
+        "expected": {
+          "marked": true,
+          "saved": false
+        },
+        "id": "document.marked_unsaved",
+        "observed": {
+          "marker": "fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+          "saved": false
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "components": 1,
+          "occurrences": 0
+        },
+        "id": "assembly.root_only",
+        "observed": {
+          "components": 1,
+          "occurrences": 0
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": 1,
+        "id": "topology.body_count",
+        "observed": 1,
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "lumps": 1,
+          "solid": true,
+          "valid": true,
+          "visible": true
+        },
+        "id": "topology.single_visible_solid_lump",
+        "observed": {
+          "lumps": 1,
+          "name": "Offset_Duct_Adapter",
+          "solid": true,
+          "valid": true,
+          "visible": true
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "count": 19,
+          "values_internal": {
+            "BaseDepth": 7.0,
+            "BaseThickness": 0.5,
+            "BaseWidth": 10.0,
+            "BottomBoltDiameter": 0.5,
+            "BottomBoltPitchX": 8.4,
+            "BottomBoltPitchY": 5.4,
+            "InletDepth": 5.0,
+            "InletWidth": 8.0,
+            "OutletInnerDiameter": 5.4,
+            "OutletOffsetX": 1.4,
+            "OutletOffsetY": 0.8,
+            "OutletOuterDiameter": 6.0,
+            "TopBoltCircleDiameter": 7.2,
+            "TopBoltCount": 6.0,
+            "TopBoltDiameter": 0.45,
+            "TopFlangeDiameter": 8.2,
+            "TopFlangeThickness": 0.5,
+            "TransitionHeight": 9.0,
+            "WallThickness": 0.3
+          }
+        },
+        "id": "parameters.exact_values",
+        "observed": {
+          "count": 19,
+          "failures": []
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {
+          "visible_count": 4
+        },
+        "expected": {
+          "count": 8,
+          "fully_constrained": 8,
+          "valid": 8
+        },
+        "id": "sketches.valid_and_constrained",
+        "observed": [
+          {
+            "fully_constrained": true,
+            "name": "SK01_Base_Flange_Ring",
+            "profiles": 2,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK02_Outer_Lower_86x56",
+            "profiles": 1,
+            "valid": true,
+            "visible": true
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK03_Outer_Outlet_OD60",
+            "profiles": 1,
+            "valid": true,
+            "visible": true
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK04_Top_Flange_Ring",
+            "profiles": 2,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK05_Inner_Inlet_80x50",
+            "profiles": 1,
+            "valid": true,
+            "visible": true
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK06_Inner_Outlet_ID54",
+            "profiles": 1,
+            "valid": true,
+            "visible": true
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK07_Bottom_Bolt_Seed",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          },
+          {
+            "fully_constrained": true,
+            "name": "SK08_Top_Bolt_Seed",
+            "profiles": 1,
+            "valid": true,
+            "visible": false
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "errors": 0,
+          "required_names": [
+            "CB01_Base_Outer_Join",
+            "CB02_Top_Flange_Join",
+            "CB03_Inner_Passage_Cut",
+            "CB04_Bottom_Bolts_Cut",
+            "CB05_Top_Bolts_Cut",
+            "CP01_Top_Bolt_6x",
+            "EX01_Base_Flange",
+            "EX02_Top_Flange",
+            "EX03_Bottom_Bolt_Seed_Tool",
+            "EX04_Top_Bolt_Seed_Tool",
+            "LF01_Outer_Transition",
+            "LF02_Inner_Passage_Tool",
+            "RP01_Bottom_Bolt_2x2"
+          ]
+        },
+        "id": "features.named_valid_and_healthy",
+        "observed": [
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX01_Base_Flange",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "LF01_Outer_Transition",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB01_Base_Outer_Join",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX02_Top_Flange",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB02_Top_Flange_Join",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "LF02_Inner_Passage_Tool",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB03_Inner_Passage_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX03_Bottom_Bolt_Seed_Tool",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "RP01_Bottom_Bolt_2x2",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB04_Bottom_Bolts_Cut",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "EX04_Top_Bolt_Seed_Tool",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CP01_Top_Bolt_6x",
+            "valid": true
+          },
+          {
+            "health": "0",
+            "message": "",
+            "name": "CB05_Top_Bolts_Cut",
+            "valid": true
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "names": [
+            "LF01_Outer_Transition",
+            "LF02_Inner_Passage_Tool"
+          ],
+          "sections_each": 2
+        },
+        "id": "features.outer_and_inner_lofts",
+        "observed": [
+          {
+            "message": "",
+            "name": "LF01_Outer_Transition",
+            "sections": 2,
+            "solid": true,
+            "valid": true
+          },
+          {
+            "message": "",
+            "name": "LF02_Inner_Passage_Tool",
+            "sections": 2,
+            "solid": true,
+            "valid": true
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "inner_mm": [
+            80.0,
+            50.0
+          ],
+          "outer_mm": [
+            86.0,
+            56.0
+          ]
+        },
+        "id": "ports.rectangular_section_signature",
+        "observed": {
+          "inner": {
+            "max": [
+              40.0,
+              25.0
+            ],
+            "min": [
+              -40.0,
+              -25.0
+            ],
+            "size": [
+              80.0,
+              50.0
+            ]
+          },
+          "outer": {
+            "max": [
+              43.0,
+              28.0
+            ],
+            "min": [
+              -43.0,
+              -28.0
+            ],
+            "size": [
+              86.0,
+              56.0
+            ]
+          }
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "center_mm": [
+            14.0,
+            8.0
+          ],
+          "inner_diameter_mm": 54.0,
+          "outer_diameter_mm": 60.0
+        },
+        "id": "ports.circular_section_signature",
+        "observed": {
+          "inner": [
+            {
+              "center_mm": [
+                14.0,
+                8.0
+              ],
+              "diameter_mm": 53.99999999999999
+            }
+          ],
+          "outer": [
+            {
+              "center_mm": [
+                14.0,
+                8.0
+              ],
+              "diameter_mm": 60.00000000000001
+            }
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "max": [
+            55.0,
+            49.0,
+            100.0
+          ],
+          "min": [
+            -50.0,
+            -35.0,
+            0.0
+          ]
+        },
+        "id": "geometry.global_bbox",
+        "observed": {
+          "max": [
+            55.0,
+            48.999999999999986,
+            100.0
+          ],
+          "min": [
+            -50.0,
+            -35.0,
+            0.0
+          ],
+          "size": [
+            105.0,
+            83.99999999999999,
+            100.0
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "base_flange_material": "inside",
+          "inlet_open": "outside",
+          "lower_duct_wall": "inside",
+          "outlet_open": "outside",
+          "outside_envelope": "outside",
+          "top_flange_material": "inside",
+          "transition_center_open": "outside"
+        },
+        "id": "geometry.open_continuous_passage",
+        "observed": {
+          "base_flange_material": "inside",
+          "inlet_open": "outside",
+          "lower_duct_wall": "inside",
+          "outlet_open": "outside",
+          "outside_envelope": "outside",
+          "top_flange_material": "inside",
+          "transition_center_open": "outside"
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "opening_mm": [
+            80.0,
+            50.0
+          ],
+          "vertical_inner_faces": 4
+        },
+        "id": "ports.rectangular_opening_faces",
+        "observed": [
+          {
+            "max": [
+              40.0,
+              25.0,
+              5.0
+            ],
+            "min": [
+              -40.0,
+              25.0,
+              0.0
+            ],
+            "size": [
+              80.0,
+              0.0,
+              5.0
+            ]
+          },
+          {
+            "max": [
+              -40.0,
+              25.0,
+              5.0
+            ],
+            "min": [
+              -40.0,
+              -25.0,
+              0.0
+            ],
+            "size": [
+              0.0,
+              50.0,
+              5.0
+            ]
+          },
+          {
+            "max": [
+              40.0,
+              -25.0,
+              5.0
+            ],
+            "min": [
+              -40.0,
+              -25.0,
+              0.0
+            ],
+            "size": [
+              80.0,
+              0.0,
+              5.0
+            ]
+          },
+          {
+            "max": [
+              40.0,
+              25.0,
+              5.0
+            ],
+            "min": [
+              40.0,
+              -25.0,
+              0.0
+            ],
+            "size": [
+              0.0,
+              50.0,
+              5.0
+            ]
+          }
+        ],
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "axis_xy_mm": [
+            14.0,
+            8.0
+          ],
+          "flange_radius_mm": 41.0,
+          "inner_radius_mm": 27.0
+        },
+        "id": "ports.outlet_offset_and_coaxiality",
+        "observed": {
+          "inner": [
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox": {
+                "max": [
+                  41.0,
+                  35.0,
+                  100.0
+                ],
+                "min": [
+                  -12.999999999999998,
+                  -18.999999999999996,
+                  95.0
+                ],
+                "size": [
+                  53.99999999999999,
+                  53.99999999999999,
+                  5.0
+                ]
+              },
+              "origin_mm": [
+                14.0,
+                8.0,
+                95.0
+              ],
+              "radius_mm": 26.999999999999996
+            }
+          ],
+          "outer": [
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "bbox": {
+                "max": [
+                  55.0,
+                  48.99999999999999,
+                  100.0
+                ],
+                "min": [
+                  -26.999999999999996,
+                  -33.0,
+                  95.0
+                ],
+                "size": [
+                  82.0,
+                  82.0,
+                  5.0
+                ]
+              },
+              "origin_mm": [
+                14.0,
+                8.0,
+                95.0
+              ],
+              "radius_mm": 41.0
+            }
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "centers_mm": [
+            [
+              -42.0,
+              -27.0
+            ],
+            [
+              42.0,
+              -27.0
+            ],
+            [
+              -42.0,
+              27.0
+            ],
+            [
+              42.0,
+              27.0
+            ]
+          ],
+          "count": 4,
+          "diameter_mm": 5.0
+        },
+        "id": "bolts.bottom_grid_2x2",
+        "observed": {
+          "centers_mm": [
+            [
+              42.0,
+              27.0
+            ],
+            [
+              -42.0,
+              27.0
+            ],
+            [
+              42.0,
+              -27.0
+            ],
+            [
+              -42.0,
+              -27.0
+            ]
+          ],
+          "count": 4
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "angular_step_deg": 60.0,
+          "circle_diameter_mm": 72.0,
+          "count": 6,
+          "diameter_mm": 4.5
+        },
+        "id": "bolts.top_bolt_circle_6x",
+        "observed": {
+          "centers_mm": [
+            [
+              31.999999999999975,
+              -23.17691453623981
+            ],
+            [
+              -4.000000000000017,
+              -23.176914536239785
+            ],
+            [
+              -22.0,
+              8.000000000000005
+            ],
+            [
+              -3.9999999999999947,
+              39.176914536239806
+            ],
+            [
+              32.0,
+              39.17691453623979
+            ],
+            [
+              50.0,
+              8.0
+            ]
+          ],
+          "count": 6,
+          "gaps_deg": [
+            60.0,
+            60.0,
+            60.0,
+            59.99999999999994,
+            60.0,
+            60.00000000000006
+          ],
+          "radii_mm": [
+            36.00000000000001,
+            36.0,
+            36.0,
+            36.00000000000001,
+            36.0,
+            36.0
+          ]
+        },
+        "status": "pass"
+      },
+      {
+        "evidence": {},
+        "expected": {
+          "circular": [
+            6,
+            6,
+            6.283185307179586
+          ],
+          "rectangular": [
+            2,
+            2,
+            4
+          ]
+        },
+        "id": "features.pattern_definitions",
+        "observed": {
+          "circular": {
+            "elements": 6,
+            "quantity": 6.0,
+            "total_angle_rad": 6.283185307179586
+          },
+          "rectangular": {
+            "elements": 4,
+            "quantity_one": 2.0,
+            "quantity_two": 2.0
+          }
+        },
+        "status": "pass"
+      }
+    ],
+    "coverage": {
+      "failed": 0,
+      "mandatory": 17,
+      "passed": 17,
+      "unverified": 0
+    },
+    "diagnostics": {
+      "body_volume_mm3": 89892.33883002616,
+      "construction_visibility": {
+        "axes": [
+          {
+            "name": "CA01_Offset_Outlet_Axis",
+            "visible": true
+          }
+        ],
+        "planes": [
+          {
+            "name": "CP01_Transition_Lower",
+            "visible": false
+          },
+          {
+            "name": "CP02_Transition_Upper",
+            "visible": false
+          }
+        ]
+      },
+      "document": "Sem título",
+      "edges": 86,
+      "faces": 36,
+      "marker": "fusion_agent_trial_ref_20260714T055207Z_b04_offset_duct_adapter_2fa35636a0",
+      "parameter_expressions": {
+        "BaseDepth": "70 mm",
+        "BaseThickness": "5 mm",
+        "BaseWidth": "100 mm",
+        "BottomBoltDiameter": "5 mm",
+        "BottomBoltPitchX": "84 mm",
+        "BottomBoltPitchY": "54 mm",
+        "InletDepth": "50 mm",
+        "InletWidth": "80 mm",
+        "OutletInnerDiameter": "54 mm",
+        "OutletOffsetX": "14 mm",
+        "OutletOffsetY": "8 mm",
+        "OutletOuterDiameter": "60 mm",
+        "TopBoltCircleDiameter": "72 mm",
+        "TopBoltCount": "6",
+        "TopBoltDiameter": "4.5 mm",
+        "TopFlangeDiameter": "82 mm",
+        "TopFlangeThickness": "5 mm",
+        "TransitionHeight": "90 mm",
+        "WallThickness": "3 mm"
+      },
+      "sketch_visibility": {
+        "SK01_Base_Flange_Ring": false,
+        "SK02_Outer_Lower_86x56": true,
+        "SK03_Outer_Outlet_OD60": true,
+        "SK04_Top_Flange_Ring": false,
+        "SK05_Inner_Inlet_80x50": true,
+        "SK06_Inner_Outlet_ID54": true,
+        "SK07_Bottom_Bolt_Seed": false,
+        "SK08_Top_Bolt_Seed": false
+      }
+    },
+    "failed_checks": [],
+    "ok": true,
+    "oracle_id": "b04_offset_duct_adapter_geometry",
+    "passed": true,
+    "schema_version": "fusion_parametric_oracle.v2"
+  },
+  "oracle_script_sha256": "83d1151ad57a9e0b45e5bd6ba2e1974d7e02b9b5d8b5d45bff3e148d4a47941b",
+  "run_id": "ref_20260714T055207Z",
+  "schema_version": "fusion_parametric_reference_result.v1",
+  "trial_id": "b04_offset_duct_adapter_ea10488d2889"
+}

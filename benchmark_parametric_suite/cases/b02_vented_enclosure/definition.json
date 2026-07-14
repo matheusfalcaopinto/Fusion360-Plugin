@@ -1,0 +1,105 @@
+{
+  "schema_version": "fusion_parametric_case.v1",
+  "case_id": "b02_vented_enclosure",
+  "title": "Parametric vented electronics enclosure",
+  "complexity_tier": 2,
+  "time_limit_minutes": 20,
+  "maximum_autonomous_repairs": 2,
+  "risk_domains": [
+    "hollow_topology",
+    "wall_and_floor_thickness",
+    "rectangular_pattern_cardinality",
+    "slot_overall_length",
+    "feature_mirror",
+    "boss_connectivity"
+  ],
+  "future_targets": [
+    {
+      "id": "future_body",
+      "entity_type": "body",
+      "selector": {"component_path": "root", "name": "Parametric_Vented_Enclosure"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 120.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 80.0, "tolerance": 0.1},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 35.0, "tolerance": 0.1}
+      ]
+    },
+    {
+      "id": "future_outer",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "EX01_Floor"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_pocket",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "EX02_Wall_Ring"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_boss_pattern",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RP01_Boss_2x2"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_vent_pattern",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "RP03_Front_Vent_5x3"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_vent_mirror",
+      "entity_type": "feature",
+      "selector": {"component_path": "root", "name": "MR01_Rear_Vent_5x3"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.ExtrudeFeatures.addSimple",
+    "adsk.fusion.CombineFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatures.createInput",
+    "adsk.fusion.RectangularPatternFeatureInput.setDirectionTwo",
+    "adsk.fusion.MirrorFeatures.createInput",
+    "adsk.fusion.Sketch.addCenterPointRectangle",
+    "adsk.fusion.Sketch.addCenterPointSlot",
+    "adsk.fusion.BRepBody.pointContainment"
+  ],
+  "expected": {
+    "parameters": 17,
+    "components": 1,
+    "occurrences": 0,
+    "solid_bodies": 1,
+    "lumps": 1,
+    "bbox_mm": {"min": [-60.0, -40.0, 0.0], "max": [60.0, 40.0, 35.0]},
+    "bosses": 4,
+    "boss_holes": 4,
+    "vent_slots": 30,
+    "vent_slots_per_wall": 15,
+    "vent_overall_length_mm": 12.0,
+    "vent_width_mm": 3.0
+  }
+}

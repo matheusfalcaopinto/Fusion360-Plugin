@@ -28,6 +28,8 @@ meio do servidor seguro `fusion_agent`, nunca por uma superficie MCP crua.
 Windows:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\.venv\Scripts\python.exe scripts\build-distribution.py
 .\scripts\setup.ps1
 .\.venv\Scripts\python.exe scripts\fusion_agent_codex_mcp_launcher.py --check
 ```
@@ -35,9 +37,24 @@ Windows:
 Linux/macOS:
 
 ```bash
+python -m pytest -q -p no:cacheprovider
+python scripts/build-distribution.py
 bash scripts/setup.sh
 ./.venv/bin/python scripts/fusion_agent_codex_mcp_launcher.py --check
 ```
+
+Testes normais devem importar `harness/packages` e `harness/apps`. Testes do
+artefato devem reconstruir e importar o wheel em uma extracao limpa ou
+identificada pelo SHA-256; nunca reutilize `work_unpacked_wheel/` como fonte.
+
+Benchmarks de PR usam `driver=internal` e `mode=mock`. Qualquer mutacao real
+exige confirmacao explicita, documento descartavel marcado e runner Windows
+interativo serializado.
+
+Testes de transporte devem distinguir efeito (`READ_ONLY`/`MUTATING`) de
+politica de replay e comprovar o numero exato de dispatches. Testes de inspecao
+em montagens grandes devem instrumentar entidades realmente visitadas e falhar
+se o codigo apenas truncar a resposta depois de percorrer o grafo inteiro.
 
 ## Pull requests
 

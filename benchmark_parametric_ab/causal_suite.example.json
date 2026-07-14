@@ -1,0 +1,81 @@
+{
+  "schema_version": "fusion_causal_suite.v1",
+  "suite_id": "parametric_causal_example",
+  "title": "Parametric CAD causal matrix example",
+  "description": "Inert, hash-frozen example for validation and mock scheduling only.",
+  "arms": [
+    {
+      "id": "claude",
+      "label": "Claude Desktop / Fusion connector",
+      "provider": "Anthropic",
+      "model": "Fable 5 Alto",
+      "reasoning_profile": "alto",
+      "system": "Claude Desktop / Autodesk Fusion connector",
+      "metadata": {"artifact_source": "external_schema_validated"}
+    },
+    {
+      "id": "codex",
+      "label": "Codex / Fusion Agent",
+      "provider": "OpenAI",
+      "model": "gpt-5.6-sol",
+      "reasoning_profile": "ultra",
+      "system": "Codex / Fusion Agent",
+      "metadata": {
+        "artifact_source": "codex_exec_output_schema",
+        "codex_bin": "C:\\Users\\mathe\\AppData\\Local\\OpenAI\\Codex\\bin\\a7c12ebff69fb123\\codex.exe",
+        "codex_cli_version": "0.144.0-alpha.4"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "nema17_bracket",
+      "prompt": "Create the frozen NEMA 17 adjustable bracket fixture and satisfy its independent oracle.",
+      "category": "parametric_part",
+      "risk": "additive",
+      "timeout_seconds": 1200,
+      "fixture_id": "new_disposable_document",
+      "oracle_id": "nema17_bracket_oracle",
+      "transport_replay": {
+        "runner_id": "common_fusion_runner_v1",
+        "script": {
+          "path": "causal_artifacts/shared_reference_script.py",
+          "sha256": "625d0065fdd2d9c62482cdd1a8ba15281420b8b7dbc00619e87da95b6b5a96b9"
+        }
+      },
+      "planner_isolated": {
+        "runner_id": "common_fusion_runner_v1",
+        "artifacts": [
+          {
+            "arm_id": "claude",
+            "plan": {
+              "path": "causal_artifacts/arm_a_plan.json",
+              "sha256": "63dd50cf517c74f6bae378689d03540cd98ce553e2a347e2056c3db37d16c5e8"
+            },
+            "script": {
+              "path": "causal_artifacts/arm_a_script.py",
+              "sha256": "9ac183704d7f78781736503ce41c8e73737d91fbcbd16aea4dca99a16343451b"
+            }
+          },
+          {
+            "arm_id": "codex",
+            "plan": {
+              "path": "causal_artifacts/arm_b_plan.json",
+              "sha256": "918f150a80c13545e44164c2265e7ded6eab478ae4b331c74e44e42bf8d5a3cc"
+            },
+            "script": {
+              "path": "causal_artifacts/arm_b_script.py",
+              "sha256": "e8d7186d98a70c276160e378ccc633f43bde9772bb1cbb3884107d696e5ac944"
+            }
+          }
+        ]
+      },
+      "native_e2e": {
+        "routes": [
+          {"arm_id": "claude", "route_lock": "claude_fusion_connector"},
+          {"arm_id": "codex", "route_lock": "codex_fusion_agent"}
+        ]
+      }
+    }
+  ]
+}

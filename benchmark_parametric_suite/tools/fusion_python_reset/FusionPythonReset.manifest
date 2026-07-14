@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "script",
+  "id": "494ec16b-b4e8-4eb2-b9a0-f69f93060ae4",
+  "author": "Fusion Agent benchmark harness",
+  "description": {
+    "": "Restore Fusion embedded Python stdout/stderr after a failed MCP capture."
+  },
+  "version": "1.0.0",
+  "runOnStartup": false,
+  "supportedOS": "windows",
+  "editEnabled": true
+}

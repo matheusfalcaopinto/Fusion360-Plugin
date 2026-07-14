@@ -2,6 +2,65 @@
 
 Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
+## 0.2.1 - 2026-07-14
+
+- Mantem `legacy` como transporte instalado padrao e adiciona os modos
+  `persistent_post_only` e `auto` para validar persistencia sem depender do
+  listener GET/SSE opcional.
+- Separa efeito da chamada de sua politica de replay. Mutacoes e scripts
+  internos de leitura sao transmitidos uma unica vez; timeout pos-dispatch de
+  leitura retorna `READ_TIMEOUT_MAY_STILL_BE_RUNNING` e aplica cooldown.
+- Centraliza a sessao persistente em uma worker task serial, incluindo
+  initialize, manifest, chamadas e fechamento limitado a dois segundos.
+- Torna `fusion_agent_inspect`, `fusion_agent_targeted_inspect` e
+  `fusion_agent_compact_snapshot` limitados por entidades visitadas, deadline e
+  tamanho da resposta, com completude e motivo de interrupcao explicitos.
+- Remove propriedades fisicas, joints e metricas de receitas do fluxo de
+  inspecao padrao; consultas por token e path evitam scans globais.
+- Bloqueia mutacoes com baseline parcial e impede `applied_verified` quando o
+  readback foi truncado, inexato ou perdeu evidencias durante a serializacao.
+- Amplia `benchmark_suite.v2` com primeira leitura fria persistente, inspecao
+  global limitada e lookup direto por token em montagem grande.
+- Preserva as 35 ferramentas `fusion_agent_*`, Fast Path `read_only`, schemas
+  anteriores e o fallback `legacy` durante toda a serie 0.2.x.
+
+## 0.2.0 - 2026-07-13
+
+- Move a fonte canonica do harness para `harness/` e adiciona build determinista
+  do wheel `fusion-agent-harness 0.2.0`, com `RECORD` e hashes verificados.
+- Introduz runtime unico e conexao MCP persistente lazy, serializacao de
+  operacoes, shutdown limitado, timeouts por semantica e fallback `legacy`.
+- Garante exactly-once para mutacoes: falha apos dispatch retorna
+  `MUTATION_OUTCOME_UNKNOWN` e nunca reenvia o script.
+- Migra manifests para schema v2 com fingerprint canonico, persistencia atomica,
+  deteccao de drift e migracao do alias real legado.
+- Adiciona `fusion_agent_native_read`, `fusion_agent_targeted_inspect`,
+  `fusion_agent_fast_execute` e `fusion_agent_recover_change`, elevando a
+  superficie publica segura de 31 para 35 ferramentas.
+- Adiciona linter AST, guard de identidade do documento, baseline/readback,
+  assertions programaticas, preservacao de `structuredContent` e PNG real.
+- Usa identidade estavel de documento (`dataFile.id` ou marker descartavel),
+  binding canonico do root component e normalizacao de `BaseVector`; respostas
+  Autodesk com `success=false` viram erro funcional mesmo quando `isError=false`.
+- Adiciona `benchmark_suite.v2`, driver internal/Codex E2E, A/B contrabalanceado,
+  route-lock, oracles independentes, estatisticas e artefatos por `run_id`.
+- Implementa lifecycle real de fixture nao salva com marker, `close(False)` e
+  restauracao do documento original; documento original nao salvo e sem
+  identidade persistente bloqueia antes da criacao da fixture.
+- Endurece a revisao final: ACK negativo aninhado continua erro funcional, o
+  simbolo interno do wrapper AST e reservado, fixtures sao fechadas por marker
+  ou fingerprint com inventario de documentos, e o handshake MCP anuncia a
+  versao `0.2.0` do harness em vez da versao do SDK.
+- Normaliza centralmente a cadeia `_NsSanitizedWriter` sem descartar o capturador
+  da chamada atual, registra hashes/tamanhos original e transmitido e bloqueia
+  Fast Execute acima de 28 KiB antes do dispatch.
+- Adiciona benchmark causal offline em tres camadas (`transport_replay`,
+  `planner_isolated` e `native_e2e`) com artefatos congelados, route-lock,
+  ordem AB/BA e oracle independente.
+- Mantem Fast Path em `read_only` por padrao; delete, cleanup, bulk, move,
+  visibilidade, componentize e entidades ocultas/compartilhadas permanecem no
+  Safe Harness.
+
 ## 0.1.0+guardrails - 2026-07-06
 
 - Adiciona ferramentas MCP seguras para `session_health`, `readiness_report`,

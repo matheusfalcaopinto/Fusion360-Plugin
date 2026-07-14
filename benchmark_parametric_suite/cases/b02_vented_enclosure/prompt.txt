@@ -1,0 +1,34 @@
+Using the Autodesk Fusion integration available to you, autonomously create a new unsaved parametric design named Parametric_Vented_Enclosure. Do not modify, save, close, or otherwise alter any pre-existing document.
+
+Create one connected solid body representing an open-top electronics enclosure. Use named user parameters for every value below and make the model regenerate from those parameters:
+
+- CaseLength = 120 mm
+- CaseWidth = 80 mm
+- CaseHeight = 35 mm
+- WallThickness = 2.4 mm
+- FloorThickness = 3 mm
+- BossDiameter = 8 mm
+- BossHoleDiameter = 3.2 mm
+- BossHeight = 18 mm above the interior floor
+- BossPitchX = 100 mm
+- BossPitchY = 60 mm
+- VentLength = 12 mm overall, including both rounded ends
+- VentWidth = 3 mm
+- VentCols = 5
+- VentRows = 3
+- VentPitchX = 18 mm
+- VentPitchZ = 9 mm
+- VentCenterZ = 20 mm
+
+Requirements:
+
+1. The exterior envelope must be exactly 120 × 80 × 35 mm, centered in X and Y, with its floor starting at Z=0.
+2. The enclosure must be open at the top. Side walls must be 2.4 mm thick and the floor must be 3 mm thick.
+3. Create four connected cylindrical bosses on the interior floor at X=±50 mm and Y=±30 mm. Each boss is Ø8 mm, rises 18 mm above the floor, and contains a concentric Ø3.2 mm through pilot.
+4. Create ventilation slots on the two opposite 120 mm side walls. Each wall must contain a 5-column by 3-row lattice: 15 slots per wall and 30 total.
+5. Slot-column centers are X = -36, -18, 0, 18, and 36 mm. Slot-row centers are Z = 11, 20, and 29 mm.
+6. Every slot is 12 mm overall length and 3 mm wide. Do not confuse overall length with the distance between arc centers.
+7. Create one boss seed and use a parametric 2×2 feature pattern. Create one vent seed, use a parametric 5×3 feature pattern, and mirror the completed vent pattern to the opposite wall. Do not draw or extrude every repeated item independently.
+8. The final model must contain exactly one visible solid body and one lump. Bosses may not remain as detached bodies.
+9. Keep every sketch valid, fully constrained, named, and hidden after use. Keep every feature healthy and name the body Parametric_Vented_Enclosure.
+10. Do not save the document. Finish by programmatically verifying the global body/lump counts, envelope, open cavity, wall/floor probes, four boss positions and holes, exact 30-slot lattice, slot width, and 12 mm overall slot length.

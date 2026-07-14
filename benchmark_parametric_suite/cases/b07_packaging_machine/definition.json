@@ -1,0 +1,366 @@
+{
+  "schema_version": "fusion_parametric_case.v2",
+  "case_id": "b07_packaging_machine",
+  "title": "Parametric multi-component industrial packaging machine",
+  "complexity_tier": 7,
+  "time_limit_minutes": 90,
+  "maximum_autonomous_repairs": 2,
+  "source_inspiration": {
+    "name": "WorldSkills Lyon 2024 Skill 05 Mechanical Engineering CAD",
+    "url": "https://worldskillsindia.co.in/world_skills_test_project_isc_2024.php",
+    "adaptation": "Clean-room packaging-cell fixture inspired by the complexity class of competition machinery. No official geometry, dimensions, marking data, or solution files are redistributed."
+  },
+  "risk_domains": [
+    "large_multi_component_additive_creation",
+    "identity_occurrence_architecture",
+    "fully_coupled_machine_envelope",
+    "closed_structural_frame",
+    "sheet_enclosure_and_access_door",
+    "revolute_access_door_chain",
+    "conveyor_roller_tangency",
+    "physically_supported_conveyor",
+    "revolute_joint_graph",
+    "lofted_feed_hopper",
+    "solid_metering_reservoir_envelope",
+    "control_cabinet_anchoring",
+    "critical_pair_interference_analysis",
+    "multi_subsystem_post_build_eco"
+  ],
+  "functional_contract": {
+    "hopper_representation": "solid_metering_reservoir_envelope",
+    "hopper_internal_void_modeled": false,
+    "material_flow_claimed": false,
+    "drive_motor_to_outfeed_roller_axial_gap_mm": 20.0,
+    "drive_coupling_modeled": false,
+    "critical_interference_pairs": [
+      "access_door|conveyor_belt",
+      "rear_panel|conveyor_belt",
+      "rear_panel|hopper",
+      "control_cabinet|right_conveyor_rail",
+      "drive_motor|right_conveyor_rail"
+    ]
+  },
+  "future_targets": [
+    {
+      "id": "future_reference",
+      "entity_type": "sketch",
+      "selector": {"component_path": "root", "name": "SK00_Machine_Envelope"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_frame_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP05_Post_Front_Left"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_conveyor_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP19_Conveyor_Belt"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_hopper_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP25_Hopper"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_base_rail",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B01_Base_Left_Rail"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 30.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 500.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 30.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_top_crossbar",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B09_Top_Front_Crossbar"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 540.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 30.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_access_door",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B16_Access_Door"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 360.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 250.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 220.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_rear_upper_panel",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B15_Panel_Rear"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 250.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 220.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_belt",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B19_Conveyor_Belt"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 300.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 620.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 8.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_infeed_roller",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B20_Roller_Infeed"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 340.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 40.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 40.0, "tolerance": 0.3}
+      ]
+    },
+    {
+      "id": "future_right_conveyor_rail",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B29_Conveyor_Rail_Right"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.min_mm.0", "operator": "approx", "expected": 170.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 20.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 620.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 80.0, "tolerance": 0.3}
+      ]
+    },
+    {
+      "id": "future_front_right_conveyor_support",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B31_Conveyor_Support_Front_Right"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 30.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.max_mm.2", "operator": "approx", "expected": 160.0, "tolerance": 0.3}
+      ]
+    },
+    {
+      "id": "future_motor",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B24_Drive_Motor"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 80.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 40.0, "tolerance": 0.3},
+        {"field": "bounding_box_mm.min_mm.0", "operator": "approx", "expected": 190.0, "tolerance": 0.3}
+      ]
+    },
+    {
+      "id": "future_hopper_support_crossbar",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B34_Hopper_Support_Crossbar"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 540.0, "tolerance": 0.4},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 20.0, "tolerance": 0.4},
+        {"field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 470.0, "tolerance": 0.4}
+      ]
+    },
+    {
+      "id": "future_hopper",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B25_Hopper"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 260.0, "tolerance": 0.4},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 220.0, "tolerance": 0.4},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 150.0, "tolerance": 0.4}
+      ]
+    },
+    {
+      "id": "future_throat",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B26_Feed_Throat"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 100.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 92.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_cabinet",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B27_Control_Cabinet"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 70.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 180.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 180.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_hopper_feature",
+      "bind_target": false,
+      "entity_type": "feature",
+      "selector": {"name": "LF01_Hopper"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.Occurrences.addNewComponent",
+    "adsk.fusion.SketchDimensions.addDistanceDimension",
+    "adsk.fusion.ConstructionPlaneInput.setByOffset",
+    "adsk.fusion.ExtrudeFeatures.addSimple",
+    "adsk.fusion.ExtrudeFeatureInput.setSymmetricExtent",
+    "adsk.fusion.LoftFeatures.createInput",
+    "adsk.fusion.LoftSections.add",
+    "adsk.fusion.AsBuiltJoints.createInput",
+    "adsk.fusion.AsBuiltJointInput.setAsRevoluteJointMotion",
+    "adsk.fusion.JointGeometry.createByPoint",
+    "adsk.fusion.Design.createInterferenceInput",
+    "adsk.fusion.Design.analyzeInterference",
+    "adsk.fusion.AsBuiltJoint.occurrenceOne",
+    "adsk.fusion.AsBuiltJoint.occurrenceTwo"
+  ],
+  "expected": {
+    "parameters": 59,
+    "root_components_excluding_root": 34,
+    "root_occurrences": 34,
+    "root_bodies": 0,
+    "solid_bodies": 34,
+    "lumps_per_body": 1,
+    "features": 34,
+    "child_sketches": 35,
+    "all_child_sketches_fully_constrained": true,
+    "as_built_joints": 33,
+    "joint_graph_connected_by_endpoint_bfs": true,
+    "revolute_joints": 5,
+    "revolute_joint_names": [
+      "J15_Access_Door_Pivot",
+      "J19_Roller_Infeed",
+      "J20_Roller_Quarter",
+      "J21_Roller_Three_Quarter",
+      "J22_Roller_Outfeed"
+    ],
+    "critical_pair_interference_count": 0,
+    "bbox_mm": {"min": [-300.0, -310.0, 0.0], "max": [300.0, 310.0, 500.0], "tolerance": 0.5}
+  },
+  "eco": {
+    "id": "eco_b07_widen_packaging_cell",
+    "intent": "Widen the machine, conveyor and access door while preserving every component identity, frame closure, roller tangency and the complete hopper-to-belt feed path.",
+    "target_query_ids": ["eco_machine_width", "eco_belt_width", "eco_door_width"],
+    "api_references": ["adsk.fusion.UserParameter.expression"],
+    "verification": {
+      "queries": [
+        {"id": "eco_machine_width", "entity_type": "parameter", "selector": {"name": "MachineWidth"}, "fields": ["exists", "expression"]},
+        {"id": "eco_belt_width", "entity_type": "parameter", "selector": {"name": "BeltWidth"}, "fields": ["exists", "expression"]},
+        {"id": "eco_door_width", "entity_type": "parameter", "selector": {"name": "DoorWidth"}, "fields": ["exists", "expression"]},
+        {"id": "eco_top_crossbar", "entity_type": "body", "selector": {"name": "B09_Top_Front_Crossbar"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_door", "entity_type": "body", "selector": {"name": "B16_Access_Door"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_rear_upper_panel", "entity_type": "body", "selector": {"name": "B15_Panel_Rear"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_belt", "entity_type": "body", "selector": {"name": "B19_Conveyor_Belt"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_roller", "entity_type": "body", "selector": {"name": "B20_Roller_Infeed"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_right_rail", "entity_type": "body", "selector": {"name": "B29_Conveyor_Rail_Right"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_front_right_support", "entity_type": "body", "selector": {"name": "B31_Conveyor_Support_Front_Right"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_motor", "entity_type": "body", "selector": {"name": "B24_Drive_Motor"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_hopper", "entity_type": "body", "selector": {"name": "B25_Hopper"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_hopper_support", "entity_type": "body", "selector": {"name": "B34_Hopper_Support_Crossbar"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_cabinet", "entity_type": "body", "selector": {"name": "B27_Control_Cabinet"}, "fields": ["exists", "valid", "bounding_box_mm"]}
+      ],
+      "assertions": [
+        {"id": "eco_machine_expression", "query_id": "eco_machine_width", "field": "expression", "operator": "eq", "expected": "760 mm"},
+        {"id": "eco_belt_expression", "query_id": "eco_belt_width", "field": "expression", "operator": "eq", "expected": "400 mm"},
+        {"id": "eco_door_expression", "query_id": "eco_door_width", "field": "expression", "operator": "eq", "expected": "460 mm"},
+        {"id": "eco_top_crossbar_valid", "query_id": "eco_top_crossbar", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_top_crossbar_width", "query_id": "eco_top_crossbar", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 700.0, "tolerance": 0.4},
+        {"id": "eco_door_valid", "query_id": "eco_door", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_door_width_check", "query_id": "eco_door", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 460.0, "tolerance": 0.4},
+        {"id": "eco_door_left_anchor", "query_id": "eco_door", "field": "bounding_box_mm.min_mm.0", "operator": "approx", "expected": -350.0, "tolerance": 0.4},
+        {"id": "eco_door_opening_clearance", "query_id": "eco_door", "field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 250.0, "tolerance": 0.4},
+        {"id": "eco_door_height", "query_id": "eco_door", "field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 220.0, "tolerance": 0.4},
+        {"id": "eco_rear_panel_opening_clearance", "query_id": "eco_rear_upper_panel", "field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 250.0, "tolerance": 0.4},
+        {"id": "eco_belt_width_check", "query_id": "eco_belt", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 400.0, "tolerance": 0.4},
+        {"id": "eco_roller_length_check", "query_id": "eco_roller", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 440.0, "tolerance": 0.4},
+        {"id": "eco_right_rail_position", "query_id": "eco_right_rail", "field": "bounding_box_mm.min_mm.0", "operator": "approx", "expected": 220.0, "tolerance": 0.4},
+        {"id": "eco_right_rail_width", "query_id": "eco_right_rail", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 20.0, "tolerance": 0.4},
+        {"id": "eco_support_reaches_frame", "query_id": "eco_front_right_support", "field": "bounding_box_mm.min_mm.2", "operator": "approx", "expected": 30.0, "tolerance": 0.4},
+        {"id": "eco_support_reaches_rail", "query_id": "eco_front_right_support", "field": "bounding_box_mm.max_mm.2", "operator": "approx", "expected": 160.0, "tolerance": 0.4},
+        {"id": "eco_motor_axial_start", "query_id": "eco_motor", "field": "bounding_box_mm.min_mm.0", "operator": "approx", "expected": 240.0, "tolerance": 0.4},
+        {"id": "eco_hopper_width", "query_id": "eco_hopper", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 360.0, "tolerance": 0.5},
+        {"id": "eco_hopper_support_width", "query_id": "eco_hopper_support", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 700.0, "tolerance": 0.5},
+        {"id": "eco_cabinet_right_anchor", "query_id": "eco_cabinet", "field": "bounding_box_mm.max_mm.0", "operator": "approx", "expected": 348.0, "tolerance": 0.4}
+      ],
+      "limit_per_query": 20,
+      "include_screenshot": false
+    }
+  }
+}

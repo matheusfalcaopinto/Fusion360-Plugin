@@ -1,0 +1,52 @@
+{
+  "schema_version": "fusion_executor_payload_probe.v1",
+  "experiment_id": "fusion_executor_protected_payload_boundary_32k",
+  "payload_metric": "protected_utf8_bytes",
+  "warmups": 1,
+  "repetitions": 3,
+  "seed": 20260714,
+  "process_modes": [
+    "same_process",
+    "fresh_process"
+  ],
+  "targets": [
+    { "id": "p020480", "target_protected_bytes": 20480 },
+    { "id": "p024576", "target_protected_bytes": 24576 },
+    { "id": "p028672", "target_protected_bytes": 28672 },
+    { "id": "p031744", "target_protected_bytes": 31744 },
+    { "id": "p032512", "target_protected_bytes": 32512 },
+    { "id": "p032767", "target_protected_bytes": 32767 },
+    { "id": "p032768", "target_protected_bytes": 32768 },
+    { "id": "p032769", "target_protected_bytes": 32769 },
+    { "id": "p033024", "target_protected_bytes": 33024 },
+    { "id": "p036864", "target_protected_bytes": 36864 },
+    { "id": "p037976", "target_protected_bytes": 37976 },
+    { "id": "p040960", "target_protected_bytes": 40960 }
+  ],
+  "historical_observations": [
+    {
+      "protected_payload_bytes": 25468,
+      "observation_label": "known_good_verified",
+      "source": "B07 compact canonical build, one dispatch and independent oracle pass",
+      "eligible_as_expectation": false,
+      "eligible_as_oracle": false
+    },
+    {
+      "protected_payload_bytes": 37976,
+      "observation_label": "silent_noop_observed",
+      "source": "B07 large audit, acknowledged in 4 ms with unchanged independent fingerprint",
+      "eligible_as_expectation": false,
+      "eligible_as_oracle": false
+    }
+  ],
+  "safety": {
+    "retry_policy": "never",
+    "mutating_dispatches_per_trial": 1,
+    "abort_on": [
+      "partial",
+      "contaminated",
+      "document_drift",
+      "restoration_failure"
+    ]
+  }
+}

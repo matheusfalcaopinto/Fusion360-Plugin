@@ -1,0 +1,226 @@
+{
+  "schema_version": "fusion_parametric_case.v2",
+  "case_id": "b06_robot_arm_assembly",
+  "title": "Parametric multi-component industrial robot arm",
+  "complexity_tier": 6,
+  "time_limit_minutes": 60,
+  "maximum_autonomous_repairs": 2,
+  "source_inspiration": {
+    "name": "WorldSkills Lyon 2024 Skill 05 M1 Mechanical Design Challenge",
+    "url": "https://worldskillsindia.co.in/world_skills_test_project_isc_2024.php",
+    "adaptation": "Clean-room sixteen-component robot fixture; official solution and marking files remain oracle-only and are not redistributed."
+  },
+  "risk_domains": [
+    "multi_component_additive_creation",
+    "identity_occurrence_architecture",
+    "parametric_kinematic_chain",
+    "as_built_joint_graph",
+    "orthogonal_axis_motor_envelopes",
+    "cable_harness_propagation",
+    "end_effector_continuity",
+    "post_build_eco_regeneration"
+  ],
+  "future_targets": [
+    {
+      "id": "future_reference",
+      "entity_type": "sketch",
+      "selector": {"component_path": "root", "name": "SK00_Kinematic_Envelope"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_base_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP01_Base"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_upper_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP04_Upper_Arm"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_gripper_component",
+      "bind_target": false,
+      "entity_type": "component",
+      "selector": {"name": "CMP11_Gripper_Palm"},
+      "fields": ["exists", "valid"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_base_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B01_Base"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 160.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 160.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 20.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_upper_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B04_Upper_Arm"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 160.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 36.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 44.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_forearm_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B06_Forearm"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 40.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 130.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_wrist_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B08_Wrist_Link"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 70.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 36.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_finger_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B12_Gripper_Finger_Upper"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 70.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 15.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 15.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_cable_body",
+      "bind_target": false,
+      "entity_type": "body",
+      "selector": {"name": "B14_Cable_Upper"},
+      "fields": ["exists", "valid", "bounding_box_mm"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true},
+        {"field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 128.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.1", "operator": "approx", "expected": 8.0, "tolerance": 0.2},
+        {"field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 8.0, "tolerance": 0.2}
+      ]
+    },
+    {
+      "id": "future_upper_feature",
+      "bind_target": false,
+      "entity_type": "feature",
+      "selector": {"name": "EX01_Upper_Arm"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    },
+    {
+      "id": "future_roll_feature",
+      "bind_target": false,
+      "entity_type": "feature",
+      "selector": {"name": "EX01_Wrist_Roll_Motor"},
+      "fields": ["exists", "valid", "health"],
+      "assertions": [
+        {"field": "exists", "operator": "eq", "expected": true},
+        {"field": "valid", "operator": "eq", "expected": true}
+      ]
+    }
+  ],
+  "api_references": [
+    "adsk.fusion.Occurrences.addNewComponent",
+    "adsk.fusion.ExtrudeFeatures.createInput",
+    "adsk.fusion.ExtrudeFeatureInput.setSymmetricExtent",
+    "adsk.fusion.ConstructionPlaneInput.setByOffset",
+    "adsk.fusion.AsBuiltJoints.createInput",
+    "adsk.fusion.AsBuiltJointInput.setAsRevoluteJointMotion",
+    "adsk.fusion.JointGeometry.createByPoint",
+    "adsk.fusion.SketchDimensions.addDistanceDimension"
+  ],
+  "expected": {
+    "parameters": 36,
+    "root_components_excluding_root": 16,
+    "root_occurrences": 16,
+    "root_bodies": 0,
+    "solid_bodies": 16,
+    "lumps_per_body": 1,
+    "as_built_joints": 12,
+    "revolute_joints": 4,
+    "bbox_mm": {"min": [-80.0, -80.0, 0.0], "max": [400.0, 80.0, 290.0], "tolerance": 0.3}
+  },
+  "eco": {
+    "id": "eco_b06_extend_kinematic_chain",
+    "intent": "Extend the upper arm, forearm and wrist while preserving the complete joint-to-tool chain and component count.",
+    "target_query_ids": ["eco_wrist_length", "eco_forearm_length", "eco_upper_arm_length"],
+    "api_references": ["adsk.fusion.UserParameter.expression"],
+    "verification": {
+      "queries": [
+        {"id": "eco_wrist_length", "entity_type": "parameter", "selector": {"name": "WristLength"}, "fields": ["exists", "expression"]},
+        {"id": "eco_forearm_length", "entity_type": "parameter", "selector": {"name": "ForearmLength"}, "fields": ["exists", "expression"]},
+        {"id": "eco_upper_arm_length", "entity_type": "parameter", "selector": {"name": "UpperArmLength"}, "fields": ["exists", "expression"]},
+        {"id": "eco_upper_body", "entity_type": "body", "selector": {"name": "B04_Upper_Arm"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_forearm_body", "entity_type": "body", "selector": {"name": "B06_Forearm"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_wrist_body", "entity_type": "body", "selector": {"name": "B08_Wrist_Link"}, "fields": ["exists", "valid", "bounding_box_mm"]},
+        {"id": "eco_finger", "entity_type": "body", "selector": {"name": "B12_Gripper_Finger_Upper"}, "fields": ["exists", "valid", "bounding_box_mm"]}
+      ],
+      "assertions": [
+        {"id": "eco_wrist_expression", "query_id": "eco_wrist_length", "field": "expression", "operator": "eq", "expected": "85 mm"},
+        {"id": "eco_forearm_expression", "query_id": "eco_forearm_length", "field": "expression", "operator": "eq", "expected": "155 mm"},
+        {"id": "eco_upper_expression", "query_id": "eco_upper_arm_length", "field": "expression", "operator": "eq", "expected": "195 mm"},
+        {"id": "eco_upper_valid", "query_id": "eco_upper_body", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_upper_length", "query_id": "eco_upper_body", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 195.0, "tolerance": 0.3},
+        {"id": "eco_forearm_valid", "query_id": "eco_forearm_body", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_forearm_length_check", "query_id": "eco_forearm_body", "field": "bounding_box_mm.size_mm.2", "operator": "approx", "expected": 155.0, "tolerance": 0.3},
+        {"id": "eco_wrist_valid", "query_id": "eco_wrist_body", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_wrist_length_check", "query_id": "eco_wrist_body", "field": "bounding_box_mm.size_mm.0", "operator": "approx", "expected": 85.0, "tolerance": 0.3},
+        {"id": "eco_finger_valid", "query_id": "eco_finger", "field": "valid", "operator": "eq", "expected": true},
+        {"id": "eco_tool_tip_x", "query_id": "eco_finger", "field": "bounding_box_mm.max_mm.0", "operator": "approx", "expected": 450.0, "tolerance": 0.4},
+        {"id": "eco_tool_tip_z", "query_id": "eco_finger", "field": "bounding_box_mm.max_mm.2", "operator": "approx", "expected": 315.0, "tolerance": 0.4}
+      ],
+      "limit_per_query": 20,
+      "include_screenshot": false
+    }
+  }
+}

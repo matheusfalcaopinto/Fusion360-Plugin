@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import runpy
 import subprocess
@@ -82,6 +83,18 @@ def bundled_wheels(plugin: Path) -> list[Path]:
     return sorted(wheels_dir.glob("fusion_agent_harness-*.whl"), key=lambda path: path.name, reverse=True)
 
 
+def plugin_version(plugin: Path) -> str:
+    """Read the installed plugin/cachebuster version without importing the harness."""
+
+    manifest = plugin / ".codex-plugin" / "plugin.json"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return "unknown"
+    value = payload.get("version") if isinstance(payload, dict) else None
+    return str(value or "unknown")
+
+
 def installed_server_available(python: Path) -> bool:
     """Return whether the target interpreter can import the MCP server."""
 
@@ -107,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     harness_root = resolve_dev_harness_root(root)
     python = resolve_python(root, harness_root)
     os.environ.setdefault("FUSION_AGENT_CODEX", "1")
+    os.environ.setdefault("FUSION_AGENT_PLUGIN_VERSION", plugin_version(root))
     if harness_root:
         os.environ["PYTHONPATH"] = build_pythonpath(harness_root, os.environ.get("PYTHONPATH"))
 
@@ -117,9 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         if harness_root:
             print(f"pythonpath={os.environ['PYTHONPATH']}")
         print(f"bundled_wheels={len(bundled_wheels(root))}")
-        print(f"installed_server_available={installed_server_available(python)}")
+        server_available = installed_server_available(python)
+        print(f"installed_server_available={server_available}")
         print(f"fusion_agent_codex={os.environ['FUSION_AGENT_CODEX']}")
-        return 0
+        print(f"fusion_agent_plugin_version={os.environ['FUSION_AGENT_PLUGIN_VERSION']}")
+        return 0 if server_available else 1
 
     if python == Path(sys.executable).resolve():
         os.chdir(harness_root or root)
