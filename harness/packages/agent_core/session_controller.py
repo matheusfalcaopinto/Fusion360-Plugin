@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -12,9 +13,18 @@ from pydantic import BaseModel, Field
 
 from agent_core.executor import ExecutionContext, ExecutionResult, Executor
 from agent_core.fusion_scripts import compact_snapshot_script, hub_inventory_script, safe_delete_apply_script, safe_visibility_apply_script
-from agent_core.guardrails import compact_mock_snapshot, classify_safe_change, diff_snapshots, normalize_operation
+from agent_core.guardrails import (
+    bind_safe_change_targets,
+    canonical_snapshot_fingerprint,
+    classify_safe_change,
+    compact_mock_snapshot,
+    diff_snapshots,
+    normalize_operation,
+    snapshot_document_identity,
+)
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
 from agent_core.repair_loop import RepairLoop
+from cad_spec.models import CadSpec
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.mock_client import MOCK_NATIVE_TOOLS, MockMcpClient
@@ -106,6 +116,7 @@ class SessionController:
         self.real_client = real_client or RealMcpClient()
         self._owns_real_client = real_client is None
         self.manifest_store = manifest_store
+        self._safe_change_locks: dict[str, asyncio.Lock] = {}
 
     def _real_client(self) -> RealMcpClient:
         return self.real_client
@@ -141,10 +152,7 @@ class SessionController:
         options = options or SessionOptions(mode=mode, project=project or "default")
         options.mode = mode
         options.project = project or options.project
-        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        workspace_root = options.workspace_root
-        output_dir = options.output_dir
-        memory_store = MemoryStore(workspace_root=workspace_root)
+        memory_store = MemoryStore(workspace_root=options.workspace_root)
         memory_store.seed_global()
         retriever = MemoryRetriever(memory_store)
         retrieved = retriever.retrieve(user_prompt, project=options.project)
@@ -159,6 +167,42 @@ class SessionController:
                 skills=[skill.name for skill in skills],
             )
         )
+
+        return await self.run_spec(
+            spec,
+            user_prompt=user_prompt,
+            project=options.project,
+            mode=mode,
+            options=options,
+            memory_store=memory_store,
+        )
+
+    async def run_spec(
+        self,
+        spec: CadSpec,
+        *,
+        user_prompt: str | None = None,
+        project: str | None = None,
+        mode: str = "mock",
+        options: SessionOptions | None = None,
+        memory_store: MemoryStore | None = None,
+    ) -> SessionResult:
+        """Run an already validated legacy CadSpec without replanning it.
+
+        This compatibility boundary ensures that a caller-supplied CadSpec v1
+        is the document that is executed.  It is never replaced by a new plan
+        derived from the spec's intent.
+        """
+
+        options = options or SessionOptions(mode=mode, project=project or "default")
+        options.mode = mode
+        options.project = project or options.project
+        prompt_text = user_prompt or spec.intent
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        workspace_root = options.workspace_root
+        output_dir = options.output_dir
+        memory_store = memory_store or MemoryStore(workspace_root=workspace_root)
+        memory_store.seed_global()
 
         journal = SessionJournal(workspace_root, options.project, session_id)
         trace_logger = JsonlTraceLogger(journal.trace_path)
@@ -199,18 +243,18 @@ class SessionController:
             status = "success" if verification.passed else "failed"
 
         cad_spec_path = journal.write_text("cad_spec.json", spec.to_json_text())
-        journal.write_text("prompt.md", user_prompt)
+        journal.write_text("prompt.md", prompt_text)
 
         memory_updates = MemoryWriter(memory_store).write_session_memory(
             project=options.project,
             session_id=session_id,
-            prompt=user_prompt,
+            prompt=prompt_text,
             verification=verification,
         )
         journal.write_json("verification.json", verification)
         journal_path = journal.finalize(
             mode=mode,
-            user_prompt=user_prompt,
+            user_prompt=prompt_text,
             cad_spec_path=cad_spec_path,
             verification=verification,
             final_status=status,
@@ -626,6 +670,9 @@ class SessionController:
         baseline_snapshot = baseline.get("snapshot", {})
         baseline_complete = _snapshot_is_complete(baseline_snapshot)
         classification = classify_safe_change(operation, targets, policy, baseline_snapshot)
+        document_identity = snapshot_document_identity(baseline_snapshot)
+        state_fingerprint = canonical_snapshot_fingerprint(baseline_snapshot)
+        bound_targets, binding_errors = bind_safe_change_targets(targets, baseline_snapshot)
         if not baseline_complete:
             classification = {
                 **classification,
@@ -636,12 +683,35 @@ class SessionController:
                 "reasons": list(classification.get("reasons") or [])
                 + ["The bounded baseline is incomplete; increase the explicit inspection budget before applying any change."],
             }
+        elif not document_identity or not state_fingerprint:
+            classification = {
+                **classification,
+                "allow_apply": False,
+                "blocked": True,
+                "classification": "document_identity_unavailable",
+                "risk_level": "high",
+                "reasons": list(classification.get("reasons") or [])
+                + ["The active document has no stable data-file or unsaved-session identity."],
+            }
+        elif binding_errors:
+            classification = {
+                **classification,
+                "allow_apply": False,
+                "blocked": True,
+                "classification": "target_binding_failed",
+                "risk_level": "high",
+                "reasons": list(classification.get("reasons") or [])
+                + ["Every mutation target must resolve to exactly one stable snapshot entity."],
+            }
         preview_id = datetime.now(timezone.utc).strftime("preview_%Y%m%dT%H%M%S%fZ")
         preview_dir = options.output_dir / "safe_change_previews"
         preview_dir.mkdir(parents=True, exist_ok=True)
         preview_path = preview_dir / f"{preview_id}.json"
         payload = {
+            "schema_version": "safe_change_preview.v2",
             "preview_id": preview_id,
+            "preview_status": "ready",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "project": options.project,
             "mode": mode,
             "operation": operation,
@@ -653,9 +723,15 @@ class SessionController:
             "baseline_stop_reason": baseline_snapshot.get("stop_reason"),
             "baseline_id": baseline["snapshot_id"],
             "before_snapshot_path": baseline["snapshot_path"],
+            "document_identity": document_identity,
+            "state_fingerprint": state_fingerprint,
+            "bound_targets": bound_targets,
+            "binding_errors": binding_errors,
+            "inspection_budget": _snapshot_budget(policy),
+            "requirements": _normalize_safe_change_requirements(policy.get("requirements") or []),
             "negative_impact": False,
         }
-        preview_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        _atomic_write_json(preview_path, payload)
         return {**payload, "preview_path": str(preview_path)}
 
     async def safe_change_apply(
@@ -681,145 +757,322 @@ class SessionController:
         preview_path = options.output_dir / "safe_change_previews" / f"{preview_id}.json"
         if not preview_path.exists():
             raise FileNotFoundError(preview_path)
-        preview = json.loads(preview_path.read_text(encoding="utf-8"))
-        operation = normalize_operation(preview["operation"])
-        classification = dict(preview.get("classification") or {})
-        if classification.get("blocked"):
-            return _aborted_change(preview, "preview_blocked", "Review the preview classification and adjust targets/policy before applying.")
-        before_payload = _read_json_path(Path(preview["before_snapshot_path"]))
-        before_snapshot = before_payload.get("snapshot", before_payload)
-        if not _snapshot_is_complete(before_snapshot):
-            return _aborted_change(
-                preview,
-                "incomplete_baseline",
-                "No change was applied. Capture a complete baseline with a larger explicit budget before retrying.",
-            )
-        if operation == "delete":
-            if not confirm_destructive:
-                return _aborted_change(preview, "confirm_destructive_required", "Set confirm_destructive=true only after reviewing the baseline and targets.")
-            if batch_size > 5:
-                return _aborted_change(preview, "delete_batch_too_large", "Run the first destructive batch with batch_size<=5.")
-            before = before_payload
-            batch_targets = list(preview.get("targets") or [])[: max(1, int(batch_size))]
-            session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            if mode == "mock":
-                applied = {"success": True, "deleted": [], "deleted_count": 0, "skipped": []}
-            else:
-                trace_logger = JsonlTraceLogger(Path("logs") / f"safe_change_delete_{session_id}.jsonl")
-                facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
-                if not isinstance(facade, VendorFusionFacade):
-                    return _aborted_change(preview, "unsupported_facade", "Safe delete apply requires the Fusion CRUD script profile.")
-                applied = await facade._execute_script_json(safe_delete_apply_script({"targets": batch_targets}))
-            if int(applied.get("deleted_count", 0)) == 0:
+        lock_key = str(preview_path.resolve())
+        lock = self._safe_change_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            preview = json.loads(preview_path.read_text(encoding="utf-8"))
+            if preview.get("schema_version") != "safe_change_preview.v2":
+                return _aborted_change(
+                    preview,
+                    "legacy_preview_requires_refresh",
+                    "No change was applied. Create and review a new v2 preview.",
+                )
+            if preview.get("project") != options.project or preview.get("mode") != mode:
+                return _aborted_change(preview, "preview_context_mismatch", "Apply the preview in its original project and mode.")
+            if preview.get("preview_status") == "applying":
+                if preview.get("dispatch_phase") == "claimed":
+                    # The durable claim was written, but the backend invocation
+                    # marker was not.  This is a proven pre-dispatch crash: do
+                    # not reuse the old intent against potentially drifted state.
+                    preview.update(
+                        {
+                            "preview_status": "stale",
+                            "stale_at": datetime.now(timezone.utc).isoformat(),
+                            "dispatched": False,
+                            "may_have_applied": False,
+                            "post_dispatch_replay_suppressed": False,
+                            "mutation_outcome": "known",
+                        }
+                    )
+                    _atomic_write_json(preview_path, preview)
+                    preview_path.with_suffix(".claim").unlink(missing_ok=True)
+                    return _aborted_change(
+                        preview,
+                        "interrupted_before_backend_invocation",
+                        "No mutation was dispatched. Inspect current state and create a fresh preview.",
+                    )
                 return {
                     **preview,
-                    "applied": applied,
-                    "status": "aborted_before_verification",
-                    "negative_impact": False,
-                    "abort_reason": "no_delete_targets_applied",
-                    "recovery_instructions": "No scoped delete target was applied. Review skipped targets, use component/body keys, and rerun preview.",
+                    "status": "mutation_outcome_unknown",
+                    "error_code": "MUTATION_OUTCOME_UNKNOWN",
+                    "dispatched": bool(preview.get("dispatched", False)),
+                    "may_have_applied": True,
+                    "post_dispatch_replay_suppressed": bool(
+                        preview.get("post_dispatch_replay_suppressed", True)
+                    ),
+                    "mutation_outcome": "unknown",
+                    "mutation_status": "outcome_unknown",
+                    "assertion_status": "not_run",
+                    "intent_coverage": "none",
+                    "verification_level": "assertions_only",
+                    "recovery_instructions": (
+                        "Do not replay this preview. Perform a bounded readback of the bound targets; "
+                        "then create a fresh preview only if the mutation is proven absent."
+                    ),
                 }
+            if preview.get("preview_status") != "ready":
+                return _aborted_change(
+                    preview,
+                    f"preview_{preview.get('preview_status') or 'invalid'}",
+                    "This preview cannot be replayed. Create a new preview after inspecting the active design.",
+                )
+
+            operation = normalize_operation(preview["operation"])
+            classification = dict(preview.get("classification") or {})
+            if classification.get("blocked"):
+                return _aborted_change(preview, "preview_blocked", "Review the preview classification and adjust targets/policy before applying.")
+            if operation == "delete" and not confirm_destructive:
+                return _aborted_change(preview, "confirm_destructive_required", "Set confirm_destructive=true only after reviewing the baseline and targets.")
+            if operation == "delete" and batch_size > 5:
+                return _aborted_change(preview, "delete_batch_too_large", "Run the first destructive batch with batch_size<=5.")
+            if operation in {"move", "componentize"}:
+                return _aborted_change(preview, f"{operation}_execution_not_implemented", "Use preview output to build a specialized reversible workflow.")
+            if operation not in {"visibility", "delete"}:
+                return _aborted_change(preview, "unsupported_operation", "Only visibility and bounded delete applies are currently executable.")
+
+            before_payload = _read_json_path(Path(preview["before_snapshot_path"]))
+            before_snapshot = before_payload.get("snapshot", before_payload)
+            if not _snapshot_is_complete(before_snapshot):
+                return _aborted_change(preview, "incomplete_baseline", "Capture a complete baseline with a larger explicit budget before retrying.")
+            if (
+                canonical_snapshot_fingerprint(before_snapshot) != preview.get("state_fingerprint")
+                or snapshot_document_identity(before_snapshot) != preview.get("document_identity")
+            ):
+                preview.update(
+                    {
+                        "preview_status": "stale",
+                        "stale_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                _atomic_write_json(preview_path, preview)
+                return _aborted_change(
+                    preview,
+                    "preview_baseline_integrity_failed",
+                    "No mutation was dispatched. Create a new preview and keep its baseline artifact unchanged.",
+                )
+
+            preapply = await self.compact_snapshot(
+                project=options.project,
+                mode=mode,
+                options=options,
+                **_snapshot_budget(preview.get("inspection_budget") or preview.get("policy") or {}),
+                label="preapply",
+            )
+            preapply_snapshot = preapply.get("snapshot", preapply)
+            fresh_bindings, fresh_binding_errors = bind_safe_change_targets(preview.get("targets") or [], preapply_snapshot)
+            guard = {
+                "complete": _snapshot_is_complete(preapply_snapshot),
+                "document_matches": snapshot_document_identity(preapply_snapshot) == preview.get("document_identity"),
+                "fingerprint_matches": canonical_snapshot_fingerprint(preapply_snapshot) == preview.get("state_fingerprint"),
+                "bindings_match": _binding_identities(fresh_bindings) == _binding_identities(preview.get("bound_targets") or []),
+                "binding_errors": fresh_binding_errors,
+            }
+            guard["passed"] = bool(
+                guard["complete"]
+                and guard["document_matches"]
+                and guard["fingerprint_matches"]
+                and guard["bindings_match"]
+                and not fresh_binding_errors
+            )
+            if not guard["passed"]:
+                preview.update(
+                    {
+                        "preview_status": "stale",
+                        "stale_at": datetime.now(timezone.utc).isoformat(),
+                        "preapply_snapshot_id": preapply.get("snapshot_id"),
+                        "preapply_snapshot_path": preapply.get("snapshot_path"),
+                        "preapply_guard": guard,
+                    }
+                )
+                _atomic_write_json(preview_path, preview)
+                return _aborted_change(preview, "preview_state_drift", "No mutation was dispatched. Create a new preview from the current design state.")
+
+            binding_by_index = {
+                int(binding["target_index"]): binding
+                for binding in fresh_bindings
+                if isinstance(binding, dict) and "target_index" in binding
+            }
+            batch_targets = []
+            for target_index, target in enumerate(list(preview.get("targets") or [])[: max(1, int(batch_size))]):
+                binding = binding_by_index.get(target_index, {})
+                batch_targets.append(
+                    {
+                        **target,
+                        "entity_token": binding.get("entity_token") or target.get("entity_token"),
+                        "key": binding.get("key") or target.get("key"),
+                        "path": binding.get("path") or target.get("path"),
+                    }
+                )
+            session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            facade = None
+            if mode != "mock":
+                trace_logger = JsonlTraceLogger(Path("logs") / f"safe_change_{operation}_{session_id}.jsonl")
+                facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+                if not isinstance(facade, VendorFusionFacade):
+                    return _aborted_change(preview, "unsupported_facade", "Safe-change apply requires the Fusion CRUD script profile.")
+
+            claim_path = preview_path.with_suffix(".claim")
+            try:
+                claim_fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(claim_fd)
+            except FileExistsError:
+                return _aborted_change(preview, "preview_already_claimed", "This preview is already applying or consumed; create a new preview.")
+
+            preview.update(
+                {
+                    "preview_status": "applying",
+                    "dispatch_phase": "claimed",
+                    "applying_at": datetime.now(timezone.utc).isoformat(),
+                    "dispatch_operation_id": f"safe-change:{preview_id}",
+                    "preapply_snapshot_id": preapply.get("snapshot_id"),
+                    "preapply_snapshot_path": preapply.get("snapshot_path"),
+                    "preapply_guard": guard,
+                }
+            )
+            _atomic_write_json(preview_path, preview)
+
+            applied: dict[str, object]
+            error: str | None = None
+            explicit_transport: dict[str, object] = {}
+            if mode == "mock":
+                applied = {
+                    "success": True,
+                    "changed": [] if operation == "visibility" else None,
+                    "changed_count": 0,
+                    "deleted": [] if operation == "delete" else None,
+                    "deleted_count": 0,
+                }
+            else:
+                try:
+                    script = (
+                        safe_delete_apply_script({"targets": batch_targets})
+                        if operation == "delete"
+                        else safe_visibility_apply_script({"targets": batch_targets})
+                    )
+                    preview.update(
+                        {
+                            "dispatch_phase": "backend_invocation_started",
+                            "backend_invocation_started_at": datetime.now(
+                                timezone.utc
+                            ).isoformat(),
+                        }
+                    )
+                    _atomic_write_json(preview_path, preview)
+                    applied = await facade._execute_script_json(  # type: ignore[union-attr]
+                        script,
+                        operation_id=str(preview["dispatch_operation_id"]),
+                    )
+                    value = applied.get("fusion_agent_transport")
+                    if isinstance(value, dict):
+                        explicit_transport = value
+                except RuntimeError as exc:
+                    error = str(exc)
+                    value = getattr(exc, "transport", None)
+                    if isinstance(value, dict):
+                        explicit_transport = value
+                    applied = {"success": False, "error": error}
+
+            transport = _safe_change_transport_fields(
+                mode=mode,
+                diagnostics=(self.real_client.diagnostics if mode != "mock" and hasattr(self.real_client, "diagnostics") else {}),
+                invoked=mode != "mock",
+                error=error,
+                expected_operation_id=str(preview.get("dispatch_operation_id") or ""),
+                explicit_transport=explicit_transport,
+            )
+            must_consume = bool(
+                mode == "mock"
+                or transport["dispatched"]
+                or transport["may_have_applied"]
+            )
+            preview.update(
+                {
+                    "preview_status": "consumed" if must_consume else "ready",
+                    "consumed_at": datetime.now(timezone.utc).isoformat() if must_consume else None,
+                    **transport,
+                }
+            )
+            _atomic_write_json(preview_path, preview)
+            if preview["preview_status"] == "ready":
+                claim_path.unlink(missing_ok=True)
+            if error:
+                outcome_unknown = transport["mutation_outcome"] == "unknown"
+                status = "mutation_outcome_unknown" if outcome_unknown else "execution_failed"
+                return {
+                    **preview,
+                    "status": status,
+                    "error_code": "MUTATION_OUTCOME_UNKNOWN" if outcome_unknown else "FUSION_OPERATION_FAILED",
+                    "error": error,
+                    "applied": applied,
+                    "negative_impact": False,
+                    "recovery_instructions": "Do not replay this preview. Inspect the active design before deciding whether to undo." if transport["dispatched"] else "Correct the pre-dispatch failure and create a fresh preview.",
+                }
+
             after = await self.compact_snapshot(
                 project=options.project,
                 mode=mode,
                 options=options,
-                max_occurrences=int(preview.get("policy", {}).get("max_occurrences", 500)),
-                max_bodies=int(preview.get("policy", {}).get("max_bodies", 500)),
-                include_transforms=bool(preview.get("policy", {}).get("include_transforms", False)),
-                max_entities_visited=int(preview.get("policy", {}).get("max_entities_visited", 1000)),
-                deadline_ms=int(preview.get("policy", {}).get("deadline_ms", 1500)),
-                max_response_bytes=int(preview.get("policy", {}).get("max_response_bytes", 1024 * 1024)),
+                **_snapshot_budget(preview.get("inspection_budget") or {}),
                 label="after",
             )
-            if not _snapshot_is_complete(after.get("snapshot", after)):
+            after_snapshot = after.get("snapshot", after)
+            if not _snapshot_is_complete(after_snapshot):
                 return {
                     **preview,
                     "applied": applied,
                     "status": "applied_unverified",
                     "verification_complete": False,
+                    "mutation_status": (
+                        "outcome_unknown"
+                        if transport["mutation_outcome"] == "unknown"
+                        else "unknown"
+                    ),
+                    "assertion_status": "incomplete",
+                    "intent_coverage": "none",
+                    "verification_level": "assertions_only",
                     "negative_impact": False,
                     "after_snapshot_path": after["snapshot_path"],
                     "abort_reason": "incomplete_readback",
                     "recovery_instructions": "Do not save. The bounded readback was incomplete; inspect with a larger explicit budget before deciding whether to undo.",
                 }
-            diff = diff_snapshots(before.get("snapshot", before), after.get("snapshot", after))
-            if diff["negative_impact"]:
-                return {
-                    **preview,
-                    **diff,
-                    "applied": applied,
-                    "status": "aborted_after_verification",
-                    "abort_reason": "visible_snapshot_regression",
-                    "after_snapshot_path": after["snapshot_path"],
-                    "recovery_instructions": "Do not save. Use Fusion Undo for this destructive batch, then rerun fusion_agent_compact_snapshot.",
-                }
-            return {
-                **preview,
-                **diff,
-                "applied": applied,
-                "status": "applied_verified",
-                "after_snapshot_path": after["snapshot_path"],
-                "recovery_instructions": "",
-            }
-        if operation in {"move", "componentize"}:
-            return _aborted_change(preview, f"{operation}_execution_not_implemented", "Use preview output to build a specialized reversible workflow.")
-        if operation != "visibility":
-            return _aborted_change(preview, "unsupported_operation", "Only reversible visibility apply is currently executable.")
 
-        before = before_payload
-        batch_targets = list(preview.get("targets") or [])[: max(1, int(batch_size))]
-        session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        applied: dict
-        if mode == "mock":
-            applied = {"success": True, "changed": [], "changed_count": 0}
-        else:
-            trace_logger = JsonlTraceLogger(Path("logs") / f"safe_change_apply_{session_id}.jsonl")
-            facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
-            if not isinstance(facade, VendorFusionFacade):
-                return _aborted_change(preview, "unsupported_facade", "Safe-change apply requires the Fusion CRUD script profile.")
-            applied = await facade._execute_script_json(safe_visibility_apply_script({"targets": batch_targets}))
-        after = await self.compact_snapshot(
-            project=options.project,
-            mode=mode,
-            options=options,
-            max_occurrences=int(preview.get("policy", {}).get("max_occurrences", 500)),
-            max_bodies=int(preview.get("policy", {}).get("max_bodies", 500)),
-            include_transforms=bool(preview.get("policy", {}).get("include_transforms", False)),
-            max_entities_visited=int(preview.get("policy", {}).get("max_entities_visited", 1000)),
-            deadline_ms=int(preview.get("policy", {}).get("deadline_ms", 1500)),
-            max_response_bytes=int(preview.get("policy", {}).get("max_response_bytes", 1024 * 1024)),
-            label="after",
-        )
-        if not _snapshot_is_complete(after.get("snapshot", after)):
-            return {
-                **preview,
-                "applied": applied,
-                "status": "applied_unverified",
-                "verification_complete": False,
-                "negative_impact": False,
-                "after_snapshot_path": after["snapshot_path"],
-                "abort_reason": "incomplete_readback",
-                "recovery_instructions": "Do not save. The bounded readback was incomplete; inspect with a larger explicit budget before deciding whether to undo.",
-            }
-        diff = diff_snapshots(before.get("snapshot", before), after.get("snapshot", after))
-        if diff["negative_impact"]:
+            diff = diff_snapshots(before_snapshot, after_snapshot)
+            verification = _safe_change_verification(preview, applied, diff, len(batch_targets))
+            verification["mutation_status"] = "observed_in_readback"
+            if transport["mutation_outcome"] == "unknown":
+                verification["mutation_status"] = "outcome_unknown"
+                verification["contract_verified"] = False
+                nested = verification.get("verification")
+                if isinstance(nested, dict):
+                    nested["transport_outcome_unknown"] = True
+                status = "mutation_outcome_unknown"
+                recovery = "Do not replay this preview. Preserve the readback and resolve the unknown transport outcome explicitly."
+            elif diff["negative_impact"]:
+                status = "aborted_after_verification"
+                recovery = "Do not save. Use Fusion Undo for the last batch, then capture a fresh compact snapshot."
+            elif verification["contract_verified"]:
+                status = "applied_verified"
+                recovery = ""
+            elif verification["assertion_status"] == "passed":
+                status = "applied_partially_verified"
+                recovery = "Review uncovered intent requirements before saving."
+            else:
+                status = "applied_unverified"
+                recovery = "Do not save until the intended result has been independently verified."
             return {
                 **preview,
                 **diff,
+                **verification,
                 "applied": applied,
-                "status": "aborted_after_verification",
-                "abort_reason": "visible_snapshot_regression",
+                "status": status,
+                "error_code": (
+                    "MUTATION_OUTCOME_UNKNOWN"
+                    if status == "mutation_outcome_unknown"
+                    else None
+                ),
                 "after_snapshot_path": after["snapshot_path"],
-                "recovery_instructions": "Do not save. Use Fusion Undo for the last batch, then rerun fusion_agent_compact_snapshot.",
+                "recovery_instructions": recovery,
             }
-        return {
-            **preview,
-            **diff,
-            "applied": applied,
-            "status": "applied_verified",
-            "after_snapshot_path": after["snapshot_path"],
-            "recovery_instructions": "",
-        }
 
     async def _build_facade(
         self,
@@ -925,10 +1178,204 @@ def _snapshot_is_complete(snapshot: dict) -> bool:
     )
 
 
+def _snapshot_budget(source: dict) -> dict[str, int | bool]:
+    """Normalize the exact bounded-inspection budget reused by preview/apply."""
+
+    return {
+        "max_occurrences": int(source.get("max_occurrences", 500)),
+        "max_bodies": int(source.get("max_bodies", 500)),
+        "include_transforms": bool(source.get("include_transforms", False)),
+        "max_entities_visited": int(source.get("max_entities_visited", 1000)),
+        "deadline_ms": int(source.get("deadline_ms", 1500)),
+        "max_response_bytes": int(source.get("max_response_bytes", 1024 * 1024)),
+    }
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Persist a preview transition atomically within its output directory."""
+
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _binding_identities(bindings: list[dict]) -> list[tuple[str, str]]:
+    return sorted(
+        (str(binding.get("kind") or ""), str(binding.get("identifier") or ""))
+        for binding in bindings
+        if isinstance(binding, dict)
+    )
+
+
+def _normalize_safe_change_requirements(requirements: object) -> list[dict]:
+    if not isinstance(requirements, list):
+        raise ValueError("policy.requirements must be an array")
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for index, item in enumerate(requirements):
+        if not isinstance(item, dict):
+            raise ValueError(f"policy.requirements[{index}] must be an object")
+        requirement_id = str(item.get("id") or "").strip()
+        assertion_ids = item.get("assertion_ids") or []
+        if not requirement_id or requirement_id in seen:
+            raise ValueError("policy requirement ids must be present and unique")
+        if not isinstance(assertion_ids, list) or not all(isinstance(value, str) and value for value in assertion_ids):
+            raise ValueError(f"policy.requirements[{index}].assertion_ids must be an array of ids")
+        oracle = str(item.get("oracle") or "contract")
+        if oracle not in {"contract", "independent_oracle"}:
+            raise ValueError(
+                f"policy.requirements[{index}].oracle must be contract or independent_oracle"
+            )
+        seen.add(requirement_id)
+        normalized.append(
+            {
+                "id": requirement_id,
+                "description": str(item.get("description") or ""),
+                "required": bool(item.get("required", True)),
+                "assertion_ids": list(dict.fromkeys(assertion_ids)),
+                "oracle": oracle,
+            }
+        )
+    return normalized
+
+
+def _safe_change_transport_fields(
+    *,
+    mode: str,
+    diagnostics: dict,
+    invoked: bool,
+    error: str | None,
+    expected_operation_id: str,
+    explicit_transport: dict[str, object] | None = None,
+) -> dict[str, object]:
+    explicit_transport = (
+        explicit_transport if isinstance(explicit_transport, dict) else {}
+    )
+    diagnostic_call = (
+        diagnostics.get("last_call_outcome") if isinstance(diagnostics, dict) else None
+    )
+    diagnostic_call = diagnostic_call if isinstance(diagnostic_call, dict) else {}
+    last_call = explicit_transport or diagnostic_call
+    event_matches = bool(
+        last_call
+        and (
+            not last_call.get("operation_id")
+            or last_call.get("operation_id") == expected_operation_id
+        )
+        and (
+            not last_call.get("semantics")
+            or last_call.get("semantics") == "mutating"
+        )
+    )
+    dispatched = bool(event_matches and last_call.get("dispatched")) if mode != "mock" else False
+    outcome_event_missing = bool(mode != "mock" and invoked and not event_matches)
+    unknown = bool(
+        (event_matches and last_call.get("mutation_outcome") == "unknown")
+        or (error and "MUTATION_OUTCOME_UNKNOWN" in error)
+        or outcome_event_missing
+    )
+    replay_suppressed = bool(
+        (dispatched or outcome_event_missing)
+        and last_call.get("post_dispatch_replay_suppressed", True)
+    )
+    return {
+        "dispatched": dispatched,
+        "may_have_applied": bool(unknown and (dispatched or outcome_event_missing)),
+        "post_dispatch_replay_suppressed": replay_suppressed,
+        "mutation_outcome": "unknown" if unknown else "known",
+        "dispatch_event_correlated": event_matches,
+        "dispatch_operation_id": expected_operation_id,
+    }
+
+
+def _safe_change_verification(
+    preview: dict,
+    applied: dict,
+    diff: dict,
+    expected_target_count: int,
+) -> dict[str, object]:
+    actual_count = int(
+        applied.get("deleted_count", applied.get("changed_count", 0)) or 0
+    )
+    assertions = [
+        {"id": "readback_complete", "passed": True},
+        {"id": "no_visible_regression", "passed": not bool(diff.get("negative_impact"))},
+        {
+            "id": "expected_target_count",
+            "passed": actual_count == expected_target_count,
+            "expected": expected_target_count,
+            "actual": actual_count,
+        },
+    ]
+    assertions_by_id = {item["id"]: item for item in assertions}
+    requirements = preview.get("requirements") or []
+    required = [item for item in requirements if item.get("required", True)]
+    requirement_results = []
+    for requirement in requirements:
+        assertion_ids = list(requirement.get("assertion_ids") or [])
+        covered = bool(assertion_ids) and all(assertion_id in assertions_by_id for assertion_id in assertion_ids)
+        passed = covered and all(assertions_by_id[assertion_id]["passed"] for assertion_id in assertion_ids)
+        independent = requirement.get("oracle") == "independent_oracle"
+        requirement_results.append(
+            {
+                **requirement,
+                "covered": covered and not independent,
+                "passed": passed and not independent,
+                **({"oracle_evidence": "not_available"} if independent else {}),
+            }
+        )
+    required_results = [item for item in requirement_results if item.get("required", True)]
+    if not required:
+        coverage = "none"
+    elif all(item["covered"] for item in required_results):
+        coverage = "complete"
+    else:
+        coverage = "partial" if any(item["covered"] for item in required_results) else "none"
+    assertion_status = "passed" if assertions and all(item["passed"] for item in assertions) else "failed"
+    contract_verified = bool(
+        required
+        and coverage == "complete"
+        and assertion_status == "passed"
+        and all(item["passed"] for item in required_results)
+    )
+    independent_declared = any(
+        item.get("oracle") == "independent_oracle" for item in required_results
+    )
+    if independent_declared:
+        contract_verified = False
+    verification_level = (
+        "independent_oracle"
+        if independent_declared
+        else "contract"
+        if required
+        else "assertions_only"
+    )
+    return {
+        "mutation_status": "observed_in_readback",
+        "assertion_status": assertion_status,
+        "intent_coverage": coverage,
+        "verification_level": verification_level,
+        "contract_verified": contract_verified,
+        "verification": {
+            "assertions": assertions,
+            "requirements": requirement_results,
+            "readback_complete": True,
+        },
+    }
+
+
 def _aborted_change(preview: dict, reason: str, recovery: str) -> dict:
     return {
         **preview,
         "status": "aborted_before_apply",
+        "dispatched": False,
+        "may_have_applied": False,
+        "post_dispatch_replay_suppressed": False,
+        "mutation_outcome": "known",
+        "mutation_status": "not_dispatched",
+        "assertion_status": "not_run",
+        "intent_coverage": "none",
+        "verification_level": "assertions_only",
         "negative_impact": False,
         "abort_reason": reason,
         "recovery_instructions": recovery,

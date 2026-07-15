@@ -58,7 +58,7 @@ def test_server_advertises_harness_version() -> None:
     app = server.build_server()
 
     assert app.name == "fusion-agent-harness"
-    assert app.version == "0.2.1"
+    assert app.version == "0.2.2"
 
 
 def test_read_only_fast_execute_schema_allows_queries_without_assertions() -> None:
@@ -133,11 +133,11 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
         runtime=runtime,
     )
 
-    assert response.payload["status"] == "applied_verified"
+    assert response.payload["status"] == "applied_partially_verified"
     assert response.payload["native_call_count"] == 4
     assert response.payload["mutating_call_count"] == 0
     assert response.payload["declared_mutation_count"] == 0
-    assert response.payload["transport_mutating_dispatch_count"] == 1
+    assert response.payload["transport_mutating_dispatch_count"] == 0
     artifact_root = tmp_path / "fast_path" / response.payload["operation_id"]
     assert not (artifact_root / "script.py").exists()
     audit = json.loads((artifact_root / "audit.json").read_text(encoding="utf-8"))
@@ -243,7 +243,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
         },
         runtime=runtime,
     )
-    assert applied.payload["status"] == "applied_verified"
+    assert applied.payload["status"] == "applied_partially_verified"
 
     recovered = await server.execute_tool_response(
         "fusion_agent_recover_change",
@@ -332,7 +332,7 @@ async def test_recovery_blocks_same_count_drift_outside_target_queries(monkeypat
         },
         runtime=runtime,
     )
-    assert applied.payload["status"] == "applied_verified"
+    assert applied.payload["status"] == "applied_partially_verified"
     runtime._mock_backend.entities[("parameter", "Unrelated")]["expression"] = "11 mm"
 
     recovered = await server.execute_tool_response(

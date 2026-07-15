@@ -147,7 +147,7 @@ def validate(wheel_path: Path, version: str) -> None:
 
             definitions = server.list_tool_definitions()
             if len(definitions) != 35:
-                raise RuntimeError(f"installed wheel must expose exactly 35 tools, found {len(definitions)}")
+                raise RuntimeError(f"installed wheel must expose exactly 35 legacy tools, found {len(definitions)}")
             if any(not tool.name.startswith("fusion_agent_") for tool in definitions):
                 raise RuntimeError("installed wheel exposes a non-fusion_agent public tool")
             if any(tool.outputSchema is None for tool in definitions):

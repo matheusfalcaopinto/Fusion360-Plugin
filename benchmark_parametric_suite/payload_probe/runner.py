@@ -203,8 +203,8 @@ class PayloadProbeRunner:
     ) -> None:
         if capabilities.retry_policy != "never":
             raise PayloadProbeConfigurationError("dispatcher retry policy must be never")
-        if not capabilities.exactly_once_dispatch:
-            raise PayloadProbeConfigurationError("dispatcher must guarantee one dispatch invocation")
+        if not capabilities.post_dispatch_replay_suppressed:
+            raise PayloadProbeConfigurationError("dispatcher must suppress replay after dispatch")
         if not capabilities.supports_fresh_process and "fresh_process" in self.matrix.process_modes:
             raise PayloadProbeConfigurationError("dispatcher does not support the fresh_process arm")
         if capabilities.configured_payload_limit_bytes < self.matrix.maximum_target_bytes:
@@ -472,7 +472,7 @@ def classify_probe_observation(
     receipt: DispatchReceipt,
     readback: ProbeReadback,
 ) -> tuple[ProbeClassification, tuple[str, ...]]:
-    """Classify only independent state plus exactly-once transport facts."""
+    """Classify only independent state plus dispatch/replay transport facts."""
 
     canaries = context.canaries
     contamination: list[str] = []

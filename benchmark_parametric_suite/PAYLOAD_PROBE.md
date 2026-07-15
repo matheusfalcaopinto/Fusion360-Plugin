@@ -70,7 +70,7 @@ de `success=true`, duração curta ou stdout.
 O integrador deve fornecer dois objetos:
 
 - `ProbeDispatcher.dispatch_once(request)`, com capabilities declarando
-  `retry_policy="never"` e exactly-once;
+  `retry_policy="never"` e supressao de replay depois do dispatch;
 - `ProbeLifecycle`, que cria um documento novo e não salvo, instala o marcador
   de fixture, faz readback independente, fecha sem salvar e restaura documento,
   fingerprint e conjunto de documentos abertos.

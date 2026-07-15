@@ -16,11 +16,18 @@ from datetime import timedelta
 from json import JSONDecodeError
 from typing import Any, Callable
 
+import httpx
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.exceptions import McpError
 
 from fusion_mcp_adapter.errors import ErrorCode, FusionHarnessError, RealMcpNotConfigured
+from fusion_mcp_adapter.endpoint_policy import (
+    EndpointDecision,
+    open_url_no_redirects,
+    revalidate_resolution,
+    validate_endpoint,
+)
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.post_only_transport import post_only_streamablehttp_client
 from fusion_mcp_adapter.semantics import (
@@ -71,6 +78,7 @@ class _WorkerCallResult:
     duration_ms: int
     reconnected: bool
     connection_ms: int
+    dispatched: bool
 
 
 class RealMcpClient:
@@ -157,6 +165,8 @@ class RealMcpClient:
         self._last_error: str | None = None
         self._last_persistence_error: str | None = None
         self._last_connect_ms = 0
+        self._last_call_outcome: dict[str, Any] = {}
+        self._endpoint_decision: EndpointDecision | None = None
 
     async def __aenter__(self) -> "RealMcpClient":
         # Deliberately lazy: entering the runtime must work with Fusion closed.
@@ -194,6 +204,20 @@ class RealMcpClient:
             "auto_canary_count": self._auto_canary_count,
             "auto_canary_ms": self._auto_canary_ms,
             "mutation_dispatched": self._mutation_dispatched,
+            "last_call_outcome": dict(self._last_call_outcome),
+            "endpoint_policy": (
+                {
+                    "policy": self._endpoint_decision.policy,
+                    "host": self._endpoint_decision.host,
+                    "port": self._endpoint_decision.port,
+                    "scheme": self._endpoint_decision.scheme,
+                    "resolved_ips": list(self._endpoint_decision.resolved_ips),
+                    "loopback": self._endpoint_decision.loopback,
+                    "authenticated": self._endpoint_decision.requires_bearer_token,
+                }
+                if self._endpoint_decision
+                else None
+            ),
         })
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
@@ -290,10 +314,17 @@ class RealMcpClient:
                     duration_ms=outcome.duration_ms,
                     reconnected=outcome.reconnected,
                     connection_ms=outcome.connection_ms,
+                    dispatched=outcome.dispatched,
                 )
                 return outcome.result
 
             async with self._operation_lock:
+                dispatched = False
+
+                def mark_dispatched() -> None:
+                    nonlocal dispatched
+                    dispatched = True
+
                 queue_ms = int((time.perf_counter() - queued_at) * 1000)
                 if self._closing:
                     return ToolResult.failure(ErrorCode.CLIENT_CLOSED, "Fusion MCP client is closing")
@@ -304,9 +335,19 @@ class RealMcpClient:
                 generation_before = self.connection_generation
                 reconnects_before = self._reconnect_count
                 if self.command:
-                    result, attempts = await self._command_call(name, arguments, call_options)
+                    result, attempts = await self._command_call(
+                        name,
+                        arguments,
+                        call_options,
+                        on_dispatch=mark_dispatched,
+                    )
                 elif self._effective_transport_mode == "legacy":
-                    result, attempts = await self._legacy_call(name, arguments, call_options)
+                    result, attempts = await self._legacy_call(
+                        name,
+                        arguments,
+                        call_options,
+                        on_dispatch=mark_dispatched,
+                    )
                 else:
                     raise AssertionError("persistent calls must run on the transport worker")
                 duration_ms = int((time.perf_counter() - started) * 1000)
@@ -324,6 +365,7 @@ class RealMcpClient:
                         if self.connection_generation != generation_before
                         else 0
                     ),
+                    dispatched=dispatched,
                 )
                 return result
         except asyncio.CancelledError:
@@ -344,6 +386,7 @@ class RealMcpClient:
                 duration_ms=elapsed_ms,
                 reconnected=False,
                 connection_ms=0,
+                dispatched=False,
             )
             return result
         finally:
@@ -422,12 +465,12 @@ class RealMcpClient:
         cooldown = self._cooldown_result()
         if cooldown is not None:
             elapsed_ms = int((time.perf_counter() - queued_at) * 1000)
-            return _WorkerCallResult(cooldown, 0, elapsed_ms, 0, False, 0)
+            return _WorkerCallResult(cooldown, 0, elapsed_ms, 0, False, 0, False)
         await self._ensure_worker()
         queue = self._worker_queue
         if queue is None:
             result = ToolResult.failure(ErrorCode.CONNECTION_UNAVAILABLE, "MCP transport worker unavailable")
-            return _WorkerCallResult(result, 0, 0, 0, False, 0)
+            return _WorkerCallResult(result, 0, 0, 0, False, 0, False)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         request = _WorkerRequest(
             "call",
@@ -456,9 +499,9 @@ class RealMcpClient:
                         ErrorCode.CALL_CANCELLED,
                         "read cancelled after dispatch; native work may still be running",
                     )
-                return _WorkerCallResult(result, 1, 0, elapsed_ms, False, 0)
+                return _WorkerCallResult(result, 1, 0, elapsed_ms, False, 0, True)
             result = ToolResult.failure(ErrorCode.CALL_CANCELLED, "Fusion MCP call cancelled before dispatch")
-            return _WorkerCallResult(result, 0, elapsed_ms, elapsed_ms, False, 0)
+            return _WorkerCallResult(result, 0, elapsed_ms, elapsed_ms, False, 0, False)
 
     async def _worker_loop(self, queue: asyncio.Queue[_WorkerRequest]) -> None:
         """Own every persistent context, session operation, and close."""
@@ -538,9 +581,14 @@ class RealMcpClient:
         reconnects_before = self._reconnect_count
         cooldown = self._cooldown_result()
         if cooldown is not None:
-            return _WorkerCallResult(cooldown, 0, queue_ms, 0, False, 0)
+            return _WorkerCallResult(cooldown, 0, queue_ms, 0, False, 0, False)
         if self._effective_transport_mode == "legacy":
-            result, attempts = await self._legacy_call(request.name, request.arguments, options)
+            result, attempts = await self._legacy_call(
+                request.name,
+                request.arguments,
+                options,
+                on_dispatch=lambda: setattr(request, "dispatched", True),
+            )
         else:
             result, attempts = await self._persistent_call_owned(
                 request.name,
@@ -556,6 +604,7 @@ class RealMcpClient:
             duration_ms,
             self._reconnect_count > reconnects_before,
             self._last_connect_ms if self.connection_generation != generation_before else 0,
+            request.dispatched,
         )
 
     async def _owner_ensure_ready(self) -> None:
@@ -644,7 +693,12 @@ class RealMcpClient:
                 cooldown = self._cooldown_result()
                 if cooldown is not None:
                     return cooldown, 0
-                return await self._legacy_call(name, arguments, options)
+                return await self._legacy_call(
+                    name,
+                    arguments,
+                    options,
+                    on_dispatch=lambda: setattr(request, "dispatched", True),
+                )
 
         if self._manifest_drift:
             return (
@@ -668,7 +722,12 @@ class RealMcpClient:
                     cooldown = self._cooldown_result()
                     if cooldown is not None:
                         return cooldown, attempt - 1
-                    return await self._legacy_call(name, arguments, options)
+                    return await self._legacy_call(
+                        name,
+                        arguments,
+                        options,
+                        on_dispatch=lambda: setattr(request, "dispatched", True),
+                    )
                 if self._manifest_drift:
                     return ToolResult.failure(ErrorCode.MANIFEST_DRIFT, "native Fusion tool manifest changed"), attempt - 1
                 session = self._session
@@ -824,11 +883,7 @@ class RealMcpClient:
         stack = AsyncExitStack()
         try:
             transport_factory = self._transport_factory_for_effective_mode()
-            transport = transport_factory(
-                self.endpoint,
-                timeout=self.connect_timeout_seconds,
-                sse_read_timeout=self.sse_read_timeout_seconds,
-            )
+            transport = self._transport_context(transport_factory)
             read_stream, write_stream, get_session_id = await _await_with_timeout(
                 stack.enter_async_context(transport),
                 self.connect_timeout_seconds,
@@ -1060,11 +1115,11 @@ class RealMcpClient:
     async def _legacy_list_tools_once(self) -> ToolManifest:
         if not self.endpoint:
             raise RealMcpNotConfigured()
-        async with self._legacy_transport_factory()(
-            self.endpoint,
-            timeout=self.connect_timeout_seconds,
-            sse_read_timeout=self.sse_read_timeout_seconds,
-        ) as (read_stream, write_stream, _get_session_id):
+        async with self._transport_context(self._legacy_transport_factory()) as (
+            read_stream,
+            write_stream,
+            _get_session_id,
+        ):
             async with self._session_factory(
                 read_stream,
                 write_stream,
@@ -1081,6 +1136,8 @@ class RealMcpClient:
         name: str,
         arguments: dict[str, Any],
         options: McpCallOptions,
+        *,
+        on_dispatch: Callable[[], None] | None = None,
     ) -> tuple[ToolResult, int]:
         max_attempts = 2 if self._can_retry_after_dispatch(options) else 1
         for attempt in range(1, max_attempts + 1):
@@ -1088,11 +1145,11 @@ class RealMcpClient:
             try:
                 if not self.endpoint:
                     raise RealMcpNotConfigured()
-                async with self._legacy_transport_factory()(
-                    self.endpoint,
-                    timeout=self.connect_timeout_seconds,
-                    sse_read_timeout=self.sse_read_timeout_seconds,
-                ) as (read_stream, write_stream, _get_session_id):
+                async with self._transport_context(self._legacy_transport_factory()) as (
+                    read_stream,
+                    write_stream,
+                    _get_session_id,
+                ):
                     async with self._session_factory(
                         read_stream,
                         write_stream,
@@ -1110,6 +1167,8 @@ class RealMcpClient:
                         if options.semantics == CallSemantics.MUTATING:
                             await asyncio.wait_for(session.send_ping(), timeout=self.connect_timeout_seconds)
                         dispatched = True
+                        if on_dispatch is not None:
+                            on_dispatch()
                         if options.semantics == CallSemantics.MUTATING:
                             self._mutation_dispatched = True
                         self._call_count += 1
@@ -1188,6 +1247,8 @@ class RealMcpClient:
         name: str,
         arguments: dict[str, Any],
         options: McpCallOptions,
+        *,
+        on_dispatch: Callable[[], None] | None = None,
     ) -> tuple[ToolResult, int]:
         max_attempts = 2 if self._can_retry_after_dispatch(options) else 1
         for attempt in range(1, max_attempts + 1):
@@ -1195,6 +1256,8 @@ class RealMcpClient:
             # once launched, a mutating command has an unknown outcome on any
             # timeout/transport failure and therefore is never replayed.
             dispatched = True
+            if on_dispatch is not None:
+                on_dispatch()
             try:
                 if options.semantics == CallSemantics.MUTATING:
                     self._mutation_dispatched = True
@@ -1306,6 +1369,8 @@ class RealMcpClient:
             raise FusionHarnessError("Fusion MCP client is closed", ErrorCode.CLIENT_CLOSED)
         if not self.endpoint and not self.command:
             raise RealMcpNotConfigured()
+        if self.endpoint and not self.command:
+            self._validate_endpoint_policy(revalidate=False)
 
     def _register_current_task(self) -> asyncio.Task[Any]:
         task = asyncio.current_task()
@@ -1336,7 +1401,30 @@ class RealMcpClient:
         duration_ms: int,
         reconnected: bool,
         connection_ms: int,
+        dispatched: bool,
     ) -> None:
+        mutation_outcome = (
+            "unknown"
+            if result.error_code == ErrorCode.MUTATION_OUTCOME_UNKNOWN
+            else "known"
+        )
+        post_dispatch_replay_suppressed = bool(
+            dispatched and options.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
+        )
+        self._last_call_outcome = {
+            "operation_id": options.operation_id,
+            "semantics": options.semantics.value,
+            "dispatched": dispatched,
+            "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
+            "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
+            "mutation_outcome": mutation_outcome,
+            "error_code": result.error_code,
+            "attempts": attempts,
+        }
+        result.meta = {
+            **result.meta,
+            "fusion_agent_transport": dict(self._last_call_outcome),
+        }
         if self.trace_logger is None:
             return
         self.trace_logger.log_tool_call(
@@ -1358,6 +1446,10 @@ class RealMcpClient:
             operation_id=options.operation_id,
             outcome=result.error_code or "ok",
             transport_mode="command" if self.command else self._effective_transport_mode,
+            dispatched=dispatched,
+            may_have_applied=bool(dispatched and mutation_outcome == "unknown"),
+            post_dispatch_replay_suppressed=post_dispatch_replay_suppressed,
+            mutation_outcome=mutation_outcome,
         )
         self._trace_event(
             "call_replay_policy",
@@ -1367,9 +1459,9 @@ class RealMcpClient:
             effective_transport_mode=(
                 "command" if self.command else self._effective_transport_mode
             ),
-            dispatched=attempts > 0,
+            dispatched=dispatched,
             retry_suppressed=(
-                attempts > 0 and options.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
+                post_dispatch_replay_suppressed
             ),
         )
 
@@ -1380,15 +1472,85 @@ class RealMcpClient:
     def _http_jsonrpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Legacy raw HTTP helper retained for external diagnostic callers."""
 
+        self._validate_endpoint_policy(revalidate=True)
         request_data = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            **self._transport_headers(),
+        }
         request = urllib.request.Request(
             self.endpoint or "",
             data=request_data,
-            headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+            headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - local endpoint
+        # Revalidate immediately before the socket is opened. The opener never
+        # follows redirects, so credentials and authority cannot escape the
+        # endpoint approved above.
+        self._validate_endpoint_policy(revalidate=True)
+        with open_url_no_redirects(request, timeout=self.timeout_seconds) as response:
             return _load_json(response.read().decode("utf-8"))
+
+    def _validate_endpoint_policy(self, *, revalidate: bool) -> EndpointDecision | None:
+        """Validate configured network authority without exposing credentials."""
+
+        if not self.endpoint or self.command:
+            return None
+        # An explicitly injected transport is a unit-test/internal seam and
+        # never reachable from the public MCP schema. Keep it network-free.
+        if self._explicit_transport_factory is not None:
+            return None
+        if self._endpoint_decision is None or self._endpoint_decision.endpoint != self.endpoint:
+            self._endpoint_decision = validate_endpoint(self.endpoint)
+        elif revalidate:
+            revalidate_resolution(self._endpoint_decision)
+        return self._endpoint_decision
+
+    def _transport_headers(self) -> dict[str, str]:
+        decision = self._endpoint_decision
+        if decision is None or not decision.requires_bearer_token:
+            return {}
+        token = os.getenv("FUSION_MCP_BEARER_TOKEN", "").strip()
+        if not token:
+            # Re-run the policy validator to produce its stable fail-closed
+            # message rather than sending an unauthenticated remote request.
+            self._endpoint_decision = validate_endpoint(self.endpoint or "")
+            token = os.getenv("FUSION_MCP_BEARER_TOKEN", "").strip()
+        return {"Authorization": f"Bearer {token}"}
+
+    def _transport_context(self, factory: Callable[..., Any]) -> Any:
+        self._validate_endpoint_policy(revalidate=True)
+        kwargs: dict[str, Any] = {
+            "timeout": self.connect_timeout_seconds,
+            "sse_read_timeout": self.sse_read_timeout_seconds,
+        }
+        headers = self._transport_headers()
+        if headers:
+            kwargs["headers"] = headers
+        if self._explicit_transport_factory is None:
+            kwargs["httpx_client_factory"] = self._policy_httpx_client_factory
+        self._validate_endpoint_policy(revalidate=True)
+        return factory(self.endpoint, **kwargs)
+
+    def _policy_httpx_client_factory(
+        self,
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        """Create an MCP HTTP client with redirects disabled and DNS rechecks."""
+
+        async def revalidate_before_request(_: httpx.Request) -> None:
+            self._validate_endpoint_policy(revalidate=True)
+
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+            follow_redirects=False,
+            event_hooks={"request": [revalidate_before_request]},
+        )
 
     def _command_jsonrpc(
         self,

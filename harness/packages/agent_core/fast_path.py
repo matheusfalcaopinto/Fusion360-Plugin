@@ -774,8 +774,9 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("verification must be an object")
     queries = verification.get("queries") or []
     assertions = verification.get("assertions") or []
-    if len(queries) > 50 or len(assertions) > 100:
-        raise ValueError("verification supports at most 50 queries and 100 assertions")
+    requirements = verification.get("requirements") or []
+    if len(queries) > 50 or len(assertions) > 100 or not isinstance(requirements, list) or len(requirements) > 100:
+        raise ValueError("verification supports at most 50 queries, 100 assertions, and 100 requirements")
     target_query_ids = arguments.get("target_query_ids") or []
     if not isinstance(target_query_ids, list) or not all(isinstance(value, str) for value in target_query_ids):
         raise ValueError("target_query_ids must be an array of strings")
@@ -798,6 +799,7 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("every target_query_id must reference a verification query")
 
     normalized_assertions = _normalize_assertions(assertions, query_ids)
+    normalized_requirements = _normalize_requirements(requirements, normalized_assertions)
     if change_class != "read_only":
         asserted_query_ids = {assertion["query_id"] for assertion in normalized_assertions}
         if not set(target_query_ids).issubset(asserted_query_ids):
@@ -820,6 +822,7 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
         "verification": {
             **normalized_inspection,
             "assertions": normalized_assertions,
+            "requirements": normalized_requirements,
             "include_screenshot": bool(verification.get("include_screenshot", False)),
         },
     }
@@ -829,10 +832,14 @@ def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str
     if not isinstance(assertions, list) or len(assertions) > 100:
         raise ValueError("assertions must be an array with at most 100 entries")
     normalized_assertions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for index, raw in enumerate(assertions):
         if not isinstance(raw, dict):
             raise ValueError(f"assertions[{index}] must be an object")
         assertion_id = str(raw.get("id") or f"assertion_{index}")
+        if assertion_id in seen_ids:
+            raise ValueError("assertion ids must be unique")
+        seen_ids.add(assertion_id)
         query_id = str(raw.get("query_id") or "")
         field_name = str(raw.get("field") or "")
         operator = str(raw.get("operator") or "")
@@ -842,6 +849,9 @@ def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str
             raise ValueError(f"assertions[{index}] approx requires tolerance")
         if operator != "unchanged" and "expected" not in raw:
             raise ValueError(f"assertions[{index}] {operator} requires expected")
+        requirement_ids = raw.get("requirement_ids") or []
+        if not isinstance(requirement_ids, list) or not all(isinstance(value, str) and value for value in requirement_ids):
+            raise ValueError(f"assertions[{index}].requirement_ids must be an array of ids")
         normalized_assertions.append(
             {
                 "id": assertion_id,
@@ -850,9 +860,61 @@ def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str
                 "operator": operator,
                 "expected": raw.get("expected"),
                 "tolerance": raw.get("tolerance"),
+                "requirement_ids": list(
+                    dict.fromkeys(
+                        [str(value) for value in requirement_ids if str(value)]
+                    )
+                ),
             }
         )
     return normalized_assertions
+
+
+def _normalize_requirements(
+    requirements: Any,
+    assertions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not isinstance(requirements, list) or len(requirements) > 100:
+        raise ValueError("requirements must be an array with at most 100 entries")
+    assertion_ids = {assertion["id"] for assertion in assertions}
+    linked_from_assertions: dict[str, list[str]] = {}
+    for assertion in assertions:
+        for requirement_id in assertion.get("requirement_ids") or []:
+            linked_from_assertions.setdefault(requirement_id, []).append(assertion["id"])
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(requirements):
+        if not isinstance(raw, dict):
+            raise ValueError(f"requirements[{index}] must be an object")
+        requirement_id = str(raw.get("id") or "").strip()
+        if not requirement_id or requirement_id in seen:
+            raise ValueError("requirement ids must be present and unique")
+        seen.add(requirement_id)
+        explicit_assertions = raw.get("assertion_ids") or []
+        if not isinstance(explicit_assertions, list) or not all(isinstance(value, str) for value in explicit_assertions):
+            raise ValueError(f"requirements[{index}].assertion_ids must be an array of strings")
+        linked = list(dict.fromkeys([*explicit_assertions, *linked_from_assertions.get(requirement_id, [])]))
+        unknown = sorted(set(linked) - assertion_ids)
+        if unknown:
+            raise ValueError(f"requirements[{index}] references unknown assertions: {', '.join(unknown)}")
+        oracle = str(raw.get("oracle") or "contract")
+        if oracle not in {"contract", "independent_oracle"}:
+            raise ValueError(f"requirements[{index}].oracle must be contract or independent_oracle")
+        normalized.append(
+            {
+                "id": requirement_id,
+                "description": str(raw.get("description") or ""),
+                "required": bool(raw.get("required", True)),
+                "assertion_ids": linked,
+                "oracle": oracle,
+            }
+        )
+    unknown_requirement_links = sorted(set(linked_from_assertions) - seen)
+    if unknown_requirement_links:
+        raise ValueError(
+            "assertions reference unknown requirements: " + ", ".join(unknown_requirement_links)
+        )
+    return normalized
 
 
 def build_native_read_arguments(arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -1154,11 +1216,18 @@ class FastPathService:
             after,
             request["verification"]["assertions"],
             request["change_class"],
+            request["verification"].get("requirements") or [],
         )
         if readback_issue:
             verification = {
                 **verification,
                 "passed": False,
+                "assertions_passed": False,
+                "assertion_status": "incomplete",
+                "intent_coverage": (
+                    "partial" if verification.get("intent_coverage") == "complete" else verification.get("intent_coverage", "none")
+                ),
+                "contract_verified": False,
                 "readback_complete": False,
                 "readback_issue": readback_issue,
             }
@@ -1171,16 +1240,34 @@ class FastPathService:
         execution_error = None if _result_ok(execute_result) else _result_error(execute_result)
         error_code = _result_error_code(execute_result)
         execute_data = _result_data(execute_result)
-        dispatched = bool(execute_data.get("dispatched", True))
-        if error_code == "MUTATION_OUTCOME_UNKNOWN":
-            status = "applied_verified" if verification["passed"] and not readback_issue else "outcome_unknown"
-            verification_source = "post_reconnect" if status == "applied_verified" else "unavailable"
+        transport_meta = (_result_meta(execute_result).get("fusion_agent_transport") or {})
+        dispatched = bool(transport_meta.get("dispatched", execute_data.get("dispatched", True)))
+        mutation_outcome = str(
+            transport_meta.get("mutation_outcome")
+            or ("unknown" if error_code == "MUTATION_OUTCOME_UNKNOWN" else "known")
+        )
+        post_dispatch_replay_suppressed = bool(
+            transport_meta.get("post_dispatch_replay_suppressed", dispatched)
+        )
+        if mutation_outcome == "unknown":
+            # Positive readback can describe the current state, but it cannot
+            # prove whether this uncertain dispatch caused that state.  Keep
+            # contract assertions as useful evidence without promoting the
+            # mutation outcome or permitting automatic replay.
+            verification = {
+                **verification,
+                "contract_verified": False,
+                "mutation_outcome": "unknown",
+                "mutation_status": "outcome_unknown",
+            }
+            status = "mutation_outcome_unknown"
+            verification_source = "post_dispatch_readback" if not readback_issue else "unavailable"
         elif error_code == "CALL_CANCELLED":
             if not dispatched:
                 status = "blocked_before_apply"
                 verification_source = "pre_apply_cancelled"
             else:
-                status = "applied_verified" if verification["passed"] and not readback_issue else "outcome_unknown"
+                status = "applied_verified" if verification["contract_verified"] and not readback_issue else "outcome_unknown"
                 verification_source = "post_cancel_readback" if status == "applied_verified" else "unavailable"
         elif execution_error and "fusion agent document guard" in execution_error.lower():
             status = "blocked_before_apply"
@@ -1198,8 +1285,23 @@ class FastPathService:
             status = "applied_unverified"
             verification_source = "unavailable"
         else:
-            status = "applied_verified" if verification["passed"] else "applied_unverified"
+            if verification["contract_verified"]:
+                status = "applied_verified"
+            elif verification["passed"]:
+                status = "applied_partially_verified"
+            else:
+                status = "applied_unverified"
             verification_source = "post_apply"
+
+        if readback_issue:
+            drift_conclusion = "inconclusive"
+        elif verification.get("passed"):
+            drift_conclusion = "no_drift_in_observed_scope"
+        elif _snapshot_changed(baseline, after):
+            drift_conclusion = "drift_detected_in_observed_scope"
+        else:
+            drift_conclusion = "inconclusive"
+        verification = {**verification, "drift_conclusion": drift_conclusion}
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         evidence_content: list[dict[str, Any]] = []
@@ -1217,6 +1319,7 @@ class FastPathService:
             "intent": request["intent"],
             "change_class": request["change_class"],
             "status": status,
+            "error_code": error_code,
             "script_sha256": policy.script_sha256,
             "api_references": request["api_references"],
             "policy": policy.as_dict(),
@@ -1227,6 +1330,9 @@ class FastPathService:
                 "error": execution_error,
                 "error_code": error_code,
                 "dispatched": dispatched,
+                "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
+                "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
+                "mutation_outcome": mutation_outcome,
             },
             "after": after,
             "verification": {**verification, "source": verification_source},
@@ -1234,8 +1340,26 @@ class FastPathService:
             "duration_ms": duration_ms,
             "native_call_count": native_call_count,
             "declared_mutation_count": 0 if request["change_class"] == "read_only" else 1,
-            "transport_mutating_dispatch_count": 1,
-            "mutating_call_count": 0 if request["change_class"] == "read_only" else 1,
+            "transport_mutating_dispatch_count": int(dispatched and request["change_class"] != "read_only"),
+            "mutating_call_count": int(dispatched and request["change_class"] != "read_only"),
+            "dispatched": dispatched,
+            "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
+            "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
+            "mutation_outcome": mutation_outcome,
+            "mutation_status": (
+                "outcome_unknown"
+                if mutation_outcome == "unknown"
+                else "observed_in_readback"
+                if dispatched and not readback_issue and verification.get("passed")
+                else "observed_in_readback"
+                if dispatched and not readback_issue
+                else "not_dispatched"
+                if not dispatched
+                else "unknown"
+            ),
+            "assertion_status": verification["assertion_status"],
+            "intent_coverage": verification["intent_coverage"],
+            "verification_level": verification["verification_level"],
             "bindings": {
                 "targets": sorted(bindings["targets"]),
                 "target_components": sorted(bindings["target_components"]),
@@ -1248,7 +1372,7 @@ class FastPathService:
         }
         if screenshot_payload is not None:
             response["screenshot"] = screenshot_payload
-        if request["change_class"] != "read_only" and status in {"applied_verified", "applied_unverified", "partial_change_detected"}:
+        if request["change_class"] != "read_only" and status in {"applied_verified", "applied_partially_verified", "applied_unverified", "partial_change_detected"}:
             self._last_operation = {
                 "operation_id": operation_id,
                 "document": after.get("document") or baseline.get("document"),
@@ -1264,7 +1388,7 @@ class FastPathService:
         return FastPathResponse(
             response,
             content=evidence_content,
-            is_error=status in {"execution_failed", "outcome_unknown"},
+            is_error=status in {"execution_failed", "outcome_unknown", "mutation_outcome_unknown"},
             meta=copy.deepcopy(_result_meta(execute_result)),
         )
 
@@ -1472,7 +1596,7 @@ def _validate_targets(
         if request["change_class"] == "additive" and matches:
             return f"additive_target_already_exists:{query_id}", bindings
         if request["change_class"] == "scoped_update" and len(matches) != 1:
-            return f"scoped_target_must_match_exactly_once:{query_id}", bindings
+            return f"scoped_target_must_resolve_uniquely:{query_id}", bindings
         for match in matches:
             error = _target_record_error(match, query_id)
             if error:
@@ -1489,7 +1613,7 @@ def _validate_targets(
             result = by_id.get(query_id) or {}
             matches = result.get("matches") or []
             if result.get("ambiguous") or len(matches) != 1:
-                return f"target_component_must_match_exactly_once:{component_path}", bindings
+                return f"target_component_must_resolve_uniquely:{component_path}", bindings
             match = matches[0]
             error = _target_record_error(match, f"component:{component_path}")
             if error:
@@ -1513,6 +1637,7 @@ def evaluate_verification(
     after: dict[str, Any],
     assertions: list[dict[str, Any]],
     change_class: str,
+    requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the declared contract plus automatic document/count invariants."""
 
@@ -1578,7 +1703,58 @@ def evaluate_verification(
         and all(item["passed"] for item in details)
         and all(item["passed"] for item in invariants)
     )
-    return {"passed": passed, "assertions": details, "invariants": invariants}
+    requirements = requirements or []
+    assertion_results = {item["id"]: item for item in details}
+    requirement_results = []
+    for requirement in requirements:
+        assertion_ids = list(requirement.get("assertion_ids") or [])
+        covered = bool(assertion_ids) and all(assertion_id in assertion_results for assertion_id in assertion_ids)
+        requirement_passed = covered and all(assertion_results[assertion_id]["passed"] for assertion_id in assertion_ids)
+        independent = requirement.get("oracle") == "independent_oracle"
+        requirement_results.append(
+            {
+                **requirement,
+                "covered": covered and not independent,
+                "passed": requirement_passed and not independent,
+                **({"oracle_evidence": "not_available"} if independent else {}),
+            }
+        )
+    required_results = [item for item in requirement_results if item.get("required", True)]
+    if not required_results:
+        intent_coverage = "none"
+    elif all(item["covered"] for item in required_results):
+        intent_coverage = "complete"
+    else:
+        intent_coverage = "partial" if any(item["covered"] for item in required_results) else "none"
+    contract_verified = bool(
+        required_results
+        and intent_coverage == "complete"
+        and passed
+        and all(item["passed"] for item in required_results)
+    )
+    independent_declared = any(
+        item.get("oracle") == "independent_oracle" for item in required_results
+    )
+    if independent_declared:
+        # Public Fast Path assertions are contract checks.  They cannot elevate
+        # themselves to an independent oracle merely by labeling a requirement.
+        contract_verified = False
+        verification_level = "independent_oracle"
+    elif required_results:
+        verification_level = "contract"
+    else:
+        verification_level = "assertions_only"
+    return {
+        "passed": passed,
+        "assertions_passed": passed,
+        "assertion_status": "passed" if passed else "failed",
+        "assertions": details,
+        "invariants": invariants,
+        "requirements": requirement_results,
+        "intent_coverage": intent_coverage,
+        "verification_level": verification_level,
+        "contract_verified": contract_verified,
+    }
 
 
 def _valid_bbox(value: Any) -> bool:
@@ -1728,7 +1904,7 @@ def _guard_script(
         + "                    _items = [_found] if _found is not None else []\n"
         + "        _items = [_item for _item in _items if _item is not None]\n"
         + "        if len(_items) != 1:\n"
-        + "            raise RuntimeError('Fusion Agent target binding guard: entity token did not resolve exactly once')\n"
+        + "            raise RuntimeError('Fusion Agent target binding guard: entity token did not resolve uniquely')\n"
         + "        return _items[0]\n"
         + "    global targets, target_components\n"
         + "    targets = {_key: _resolve_bound_entity(_token) for _key, _token in _expected_targets.items()}\n"

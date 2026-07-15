@@ -234,9 +234,10 @@ wheels = [
 
 [[package]]
 name = "fusion-agent-harness"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -254,6 +255,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "mcp", specifier = ">=1.28,<2" },
     { name = "pydantic", specifier = ">=2.0" },

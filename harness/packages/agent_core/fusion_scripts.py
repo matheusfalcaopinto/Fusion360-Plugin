@@ -97,6 +97,7 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 "name": name,
                 "component": component.name if component else "",
                 "component_key": _component_key(component) if component else "",
+                "entity_token": _entity_token(occurrence),
                 "visible": visible,
             }
             if include_transforms:
@@ -157,6 +158,7 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 "name": name,
                 "component": component.name or "",
                 "component_key": component_key,
+                "entity_token": _entity_token(body),
                 "visible": visible,
                 "bbox_mm": bbox,
             }
@@ -325,6 +327,8 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
         r'''    design = _design()
     targets = list(PAYLOAD.get("targets") or [])
     changed = []
+    resolved = []
+    preflight_errors = []
 
     def target_visible(target):
         if "visible" in target:
@@ -337,6 +341,9 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
         name = body.name or ""
         component_name = component.name or ""
         key = "%s/%s#%d" % (component_name, name, body_index + 1)
+        target_token = target.get("entity_token") or target.get("token")
+        if target_token:
+            return target_token == _entity_token(body)
         if target.get("body_key") == key or target.get("key") == key:
             return True
         target_name = target.get("name") or target.get("body") or target.get("target")
@@ -345,11 +352,13 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
             return not target_component or target_component == component_name
         return False
 
-    for target in targets:
+    for target_index, target in enumerate(targets):
         kind = str(target.get("kind") or target.get("type") or "body").lower()
         desired_visible = target_visible(target)
         if kind not in ("body", "brepbody"):
+            preflight_errors.append({"target_index": target_index, "reason": "unsupported_visibility_kind"})
             continue
+        matches = []
         for component_index in range(design.allComponents.count):
             component = design.allComponents.item(component_index)
             if not component:
@@ -358,15 +367,24 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
             for body_index in range(bodies.count):
                 body = bodies.item(body_index)
                 if body and target_matches_body(target, component, body, body_index):
-                    body.isLightBulbOn = desired_visible
-                    changed.append(
-                        {
-                            "kind": "body",
-                            "component": component.name or "",
-                            "name": body.name or "",
-                            "visible": desired_visible,
-                        }
-                    )
+                    matches.append((component, body))
+        if len(matches) != 1:
+            preflight_errors.append({"target_index": target_index, "reason": "target_must_match_exactly_one_entity", "match_count": len(matches)})
+        else:
+            resolved.append((matches[0][0], matches[0][1], desired_visible))
+    if preflight_errors:
+        print(json.dumps({"success": False, "error_code": "TARGET_PREFLIGHT_FAILED", "changed": [], "changed_count": 0, "preflight_errors": preflight_errors}, sort_keys=True))
+        return
+    for component, body, desired_visible in resolved:
+        body.isLightBulbOn = desired_visible
+        changed.append(
+            {
+                "kind": "body",
+                "component": component.name or "",
+                "name": body.name or "",
+                "visible": desired_visible,
+            }
+        )
     print(json.dumps({"success": True, "changed": changed, "changed_count": len(changed)}, sort_keys=True))
 ''',
     )
@@ -381,6 +399,7 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
     targets = list(PAYLOAD.get("targets") or [])
     deleted = []
     skipped = []
+    resolved = []
 
     def _target_component(target):
         return target.get("component") or target.get("component_path") or ""
@@ -389,6 +408,9 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
         name = body.name or ""
         component_name = component.name or ""
         key = "%s/%s#%d" % (component_name, name, body_index + 1)
+        target_token = target.get("entity_token") or target.get("token")
+        if target_token:
+            return target_token == _entity_token(body)
         if target.get("body_key") == key or target.get("key") == key:
             return True
         target_name = target.get("name") or target.get("body") or target.get("target")
@@ -415,10 +437,15 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
 
     occurrences_by_path = {}
     occurrence_path_map(design.rootComponent.occurrences, "", occurrences_by_path)
-    for target in targets:
+    occurrences_by_token = {}
+    for occurrence in occurrences_by_path.values():
+        token = _entity_token(occurrence)
+        if token:
+            occurrences_by_token[token] = occurrence
+    for target_index, target in enumerate(targets):
         kind = str(target.get("kind") or target.get("type") or "body").lower()
         if kind in ("body", "brepbody"):
-            found = False
+            matches = []
             for component_index in range(design.allComponents.count):
                 component = design.allComponents.item(component_index)
                 if not component:
@@ -427,24 +454,30 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
                 for body_index in range(bodies.count):
                     body = bodies.item(body_index)
                     if body and target_matches_body(target, component, body, body_index):
-                        deleted.append({"kind": "body", "component": component.name or "", "name": body.name or ""})
-                        body.deleteMe()
-                        found = True
-                        break
-                if found:
-                    break
-            if not found:
-                skipped.append({"target": target, "reason": "body_not_found_or_not_scoped"})
+                        matches.append((component, body))
+            if len(matches) == 1:
+                resolved.append(("body", matches[0][0], matches[0][1], None))
+            else:
+                skipped.append({"target_index": target_index, "target": target, "reason": "target_must_match_exactly_one_entity", "match_count": len(matches)})
         elif kind == "occurrence":
             path = target.get("path") or target.get("occurrence_path")
-            occurrence = occurrences_by_path.get(path)
+            token = target.get("entity_token") or target.get("token")
+            occurrence = occurrences_by_token.get(token) if token else occurrences_by_path.get(path)
             if occurrence:
-                deleted.append({"kind": "occurrence", "path": path})
-                occurrence.deleteMe()
+                resolved.append(("occurrence", None, occurrence, path))
             else:
-                skipped.append({"target": target, "reason": "occurrence_not_found"})
+                skipped.append({"target_index": target_index, "target": target, "reason": "occurrence_not_found"})
         else:
-            skipped.append({"target": target, "reason": "unsupported_delete_kind"})
+            skipped.append({"target_index": target_index, "target": target, "reason": "unsupported_delete_kind"})
+    if skipped:
+        print(json.dumps({"success": False, "error_code": "TARGET_PREFLIGHT_FAILED", "deleted": [], "deleted_count": 0, "skipped": skipped}, sort_keys=True))
+        return
+    for kind, component, entity, path in resolved:
+        if kind == "body":
+            deleted.append({"kind": "body", "component": component.name or "", "name": entity.name or ""})
+        else:
+            deleted.append({"kind": "occurrence", "path": path})
+        entity.deleteMe()
     print(json.dumps({"success": True, "deleted": deleted, "deleted_count": len(deleted), "skipped": skipped}, sort_keys=True))
 ''',
     )
@@ -479,9 +512,31 @@ def _document_payload():
         if data_file:
             payload["id"] = getattr(data_file, "id", "") or ""
             payload["version"] = getattr(data_file, "versionNumber", None)
+            if payload["id"]:
+                payload["identity_kind"] = "data_file"
+                payload["stable_id"] = payload["id"]
     except Exception:
         pass
+    if document and not payload.get("stable_id"):
+        root_token = ""
+        try:
+            root_token = _entity_token(_design().rootComponent)
+        except Exception:
+            pass
+        payload["identity_kind"] = "unsaved_session"
+        payload["stable_id"] = (
+            "unsaved-root:%s" % root_token
+            if root_token
+            else "unsaved-process:%s" % id(document)
+        )
     return payload
+
+
+def _entity_token(entity):
+    try:
+        return getattr(entity, "entityToken", "") or ""
+    except Exception:
+        return ""
 
 
 def _visible(entity):

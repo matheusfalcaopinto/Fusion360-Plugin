@@ -303,6 +303,12 @@ async def test_read_reconnects_once_but_mutation_is_never_replayed() -> None:
     assert mutation_result.error_code == ErrorCode.MUTATION_OUTCOME_UNKNOWN
     assert mutation_state.call_count == 1
     assert mutation_state.ping_count == 1
+    outcome = mutation_client.diagnostics["last_call_outcome"]
+    assert outcome["dispatched"] is True
+    assert outcome["may_have_applied"] is True
+    assert outcome["post_dispatch_replay_suppressed"] is True
+    assert outcome["mutation_outcome"] == "unknown"
+    assert mutation_result.meta["fusion_agent_transport"] == outcome
     await mutation_client.aclose()
 
 
@@ -435,6 +441,8 @@ async def test_cancelled_while_queued_is_not_dispatched_and_is_traced(tmp_path: 
     cancellation = next(event for event in events if event.get("error_code") == ErrorCode.CALL_CANCELLED)
     assert cancellation["attempt_count"] == 0
     assert cancellation["outcome"] == ErrorCode.CALL_CANCELLED
+    assert cancellation["dispatched"] is False
+    assert cancellation["mutation_outcome"] == "known"
     await client.aclose()
 
 

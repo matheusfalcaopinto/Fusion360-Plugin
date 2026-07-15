@@ -193,6 +193,11 @@ def compact_mock_snapshot(
                 "path": component_name,
                 "name": component_name,
                 "component": component_name,
+                "entity_token": (
+                    component.get("entity_token") or component.get("token") or f"mock:occurrence:{component_name}"
+                    if isinstance(component, dict)
+                    else f"mock:occurrence:{component_name}"
+                ),
                 "visible": True,
             }
         )
@@ -216,6 +221,11 @@ def compact_mock_snapshot(
                 "key": key,
                 "name": name,
                 "component": component_name,
+                "entity_token": (
+                    body.get("entity_token") or body.get("token") or f"mock:body:{key}"
+                    if isinstance(body, dict)
+                    else f"mock:body:{key}"
+                ),
                 "visible": True,
                 "bbox_mm": body.get("bounding_box_mm", []) if isinstance(body, dict) else [],
             }
@@ -231,6 +241,10 @@ def compact_mock_snapshot(
         "schema_version": "compact_snapshot.v2",
         "schema_compatibility": ["compact_snapshot.v1"],
         "source": "mock",
+        "document": {
+            "identity_kind": "mock_session",
+            "stable_id": "mock:active-design",
+        },
         "payload_capped": stop_reason is not None or len(components) > max_occurrences or len(bodies) > max_bodies,
         "counts": {
             "components_total": len(components),
@@ -289,6 +303,185 @@ def compact_mock_snapshot(
     return snapshot
 
 
+def snapshot_document_identity(snapshot: dict[str, Any]) -> dict[str, str]:
+    """Return a stable document identity without falling back to its display name."""
+
+    document = snapshot.get("document") if isinstance(snapshot, dict) else None
+    if not isinstance(document, dict):
+        return {}
+    data_file_id = str(document.get("id") or "").strip()
+    if data_file_id:
+        return {"kind": "data_file", "stable_id": data_file_id}
+    runtime_id = str(
+        document.get("stable_id")
+        or document.get("runtime_id")
+        or document.get("unsaved_session_id")
+        or ""
+    ).strip()
+    if runtime_id:
+        return {
+            "kind": str(document.get("identity_kind") or "unsaved_session"),
+            "stable_id": runtime_id,
+        }
+    return {}
+
+
+def canonical_snapshot_fingerprint(snapshot: dict[str, Any]) -> str | None:
+    """Hash mutation-relevant snapshot state while excluding volatile diagnostics."""
+
+    identity = snapshot_document_identity(snapshot)
+    if not identity:
+        return None
+
+    def occurrence(item: Any) -> dict[str, Any]:
+        value = item if isinstance(item, dict) else {}
+        return {
+            "path": value.get("path"),
+            "name": value.get("name"),
+            "component": value.get("component"),
+            "entity_token": value.get("entity_token") or value.get("token"),
+            "visible": value.get("visible"),
+            "bbox_mm": value.get("bbox_mm"),
+            "transform": value.get("transform"),
+        }
+
+    def body(item: Any) -> dict[str, Any]:
+        value = item if isinstance(item, dict) else {}
+        return {
+            "key": value.get("key"),
+            "name": value.get("name"),
+            "component": value.get("component"),
+            "component_key": value.get("component_key"),
+            "entity_token": value.get("entity_token") or value.get("token"),
+            "visible": value.get("visible"),
+            "bbox_mm": value.get("bbox_mm"),
+        }
+
+    payload = {
+        "document": identity,
+        "counts": snapshot.get("counts") or {},
+        "occurrences": sorted(
+            (occurrence(item) for item in snapshot.get("occurrences") or []),
+            key=lambda item: (str(item.get("path") or ""), str(item.get("entity_token") or "")),
+        ),
+        "bodies": sorted(
+            (body(item) for item in snapshot.get("bodies") or []),
+            key=lambda item: (str(item.get("key") or ""), str(item.get("entity_token") or "")),
+        ),
+        "duplicate_body_names": snapshot.get("duplicate_body_names") or {},
+        "visible_occurrence_paths": sorted(snapshot.get("visible_occurrence_paths") or []),
+        "visible_body_keys": sorted(snapshot.get("visible_body_keys") or []),
+        "visible_component_keys": sorted(snapshot.get("visible_component_keys") or []),
+        "visible_body_bbox_mm": snapshot.get("visible_body_bbox_mm"),
+        "complete": snapshot.get("complete"),
+        "counts_exact": snapshot.get("counts_exact"),
+        "truncated": snapshot.get("truncated"),
+    }
+    return snapshot_hash(payload)
+
+
+def bind_safe_change_targets(
+    targets: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve every target to one stable snapshot entity before mutation."""
+
+    bodies = [item for item in snapshot.get("bodies") or [] if isinstance(item, dict)]
+    occurrences = [item for item in snapshot.get("occurrences") or [] if isinstance(item, dict)]
+    bindings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    seen_entities: set[tuple[str, str]] = set()
+
+    for index, target in enumerate(targets):
+        kind = str(target.get("kind") or target.get("type") or "body").lower()
+        if kind in {"body", "brepbody"}:
+            target_token = str(target.get("entity_token") or target.get("token") or "")
+            target_key = str(target.get("body_key") or target.get("key") or "")
+            target_name = str(target.get("name") or target.get("body") or target.get("target") or "")
+            target_component = str(target.get("component") or target.get("component_path") or "")
+            matches = [
+                item
+                for item in bodies
+                if (
+                    target_token
+                    and target_token == str(item.get("entity_token") or item.get("token") or "")
+                )
+                or (target_key and target_key == str(item.get("key") or ""))
+                or (
+                    not target_token
+                    and not target_key
+                    and target_name
+                    and target_name == str(item.get("name") or "")
+                    and (not target_component or target_component == str(item.get("component") or ""))
+                )
+            ]
+            normalized_kind = "body"
+            identifier = (
+                str(matches[0].get("entity_token") or matches[0].get("token") or matches[0].get("key") or "")
+                if len(matches) == 1
+                else target_token or target_key or f"{target_component}/{target_name}"
+            )
+        elif kind == "occurrence":
+            target_token = str(target.get("entity_token") or target.get("token") or "")
+            target_path = str(target.get("path") or target.get("occurrence_path") or "")
+            matches = [
+                item
+                for item in occurrences
+                if (
+                    target_token
+                    and target_token == str(item.get("entity_token") or item.get("token") or "")
+                )
+                or (target_path and target_path == str(item.get("path") or ""))
+            ]
+            normalized_kind = "occurrence"
+            identifier = (
+                str(matches[0].get("entity_token") or matches[0].get("token") or matches[0].get("path") or "")
+                if len(matches) == 1
+                else target_token or target_path
+            )
+        else:
+            matches = []
+            normalized_kind = kind
+            identifier = ""
+
+        if len(matches) != 1:
+            errors.append(
+                {
+                    "target_index": index,
+                    "kind": normalized_kind,
+                    "match_count": len(matches),
+                    "reason": "target_must_match_exactly_one_entity",
+                }
+            )
+            continue
+        entity_key = (normalized_kind, identifier)
+        if entity_key in seen_entities:
+            errors.append(
+                {
+                    "target_index": index,
+                    "kind": normalized_kind,
+                    "match_count": 1,
+                    "reason": "duplicate_target_binding",
+                }
+            )
+            continue
+        seen_entities.add(entity_key)
+        match = matches[0]
+        bindings.append(
+            {
+                "target_index": index,
+                "kind": normalized_kind,
+                "identifier": identifier,
+                "entity_token": match.get("entity_token") or match.get("token"),
+                "path": match.get("path"),
+                "key": match.get("key"),
+                "component": match.get("component"),
+                "name": match.get("name"),
+            }
+        )
+    return bindings, errors
+
+
 def classify_safe_change(
     operation: str,
     targets: list[dict[str, Any]],
@@ -314,6 +507,12 @@ def classify_safe_change(
         "ambiguous_target_warnings": duplicate_warnings,
         "reasons": [],
     }
+    if not targets:
+        result["blocked"] = True
+        result["classification"] = "empty_targets"
+        result["risk_level"] = "high"
+        result["reasons"].append("At least one explicitly scoped target is required.")
+        return result
     if duplicate_warnings:
         result["blocked"] = True
         result["classification"] = "ambiguous_targets"
@@ -393,8 +592,18 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
     }
     bbox_shrank = _bbox_shrank(before_view.get("visible_body_bbox_mm"), after_view.get("visible_body_bbox_mm"))
     negative_impact = bool(missing_occurrences or missing_bodies or missing_components or count_regressions or bbox_shrank)
+    globally_complete = _complete_global_snapshot(before) and _complete_global_snapshot(after)
+    drift_conclusion = (
+        "drift_detected"
+        if negative_impact
+        else "no_drift_in_complete_global_fingerprint"
+        if globally_complete
+        else "no_drift_in_observed_scope"
+    )
     return {
         "negative_impact": negative_impact,
+        "drift_conclusion": drift_conclusion,
+        "global_fingerprint_complete": globally_complete,
         "visible_occurrences_missing": missing_occurrences,
         "visible_bodies_missing": missing_bodies,
         "visible_component_keys_missing": missing_components,
@@ -403,6 +612,16 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
         "visible_body_bbox_after": after_view.get("visible_body_bbox_mm"),
         "visible_body_bbox_shrank": bbox_shrank,
     }
+
+
+def _complete_global_snapshot(snapshot: dict[str, Any]) -> bool:
+    return bool(
+        snapshot.get("complete") is True
+        and snapshot.get("counts_exact") is True
+        and not snapshot.get("truncated", False)
+        and not snapshot.get("payload_capped", False)
+        and not snapshot.get("stop_reason")
+    )
 
 
 def ambiguous_target_warnings(targets: list[dict[str, Any]], snapshot: dict[str, Any]) -> list[dict[str, Any]]:

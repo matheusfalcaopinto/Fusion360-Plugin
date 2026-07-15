@@ -70,6 +70,24 @@ def test_safe_change_diff_detects_visible_losses() -> None:
     assert diff["visible_bodies_missing"] == ["B/body#1"]
     assert diff["visible_component_keys_missing"] == ["B"]
     assert diff["visible_body_bbox_shrank"] is True
+    assert diff["drift_conclusion"] == "drift_detected"
+
+
+def test_safe_change_diff_limits_no_drift_claim_to_observed_scope() -> None:
+    partial = {
+        "complete": False,
+        "counts_exact": False,
+        "truncated": True,
+        "visible_occurrence_paths": ["root/A"],
+        "visible_body_keys": ["A/body#1"],
+        "visible_component_keys": ["A"],
+    }
+
+    diff = diff_snapshots(partial, partial)
+
+    assert diff["negative_impact"] is False
+    assert diff["global_fingerprint_complete"] is False
+    assert diff["drift_conclusion"] == "no_drift_in_observed_scope"
 
 
 def test_duplicate_body_names_are_ambiguous_without_component_scope() -> None:

@@ -119,6 +119,10 @@ class JsonlTraceLogger:
         executor_transmitted_sha256: str | None = None,
         executor_transmitted_bytes: int | None = None,
         executor_preamble_version: int | None = None,
+        dispatched: bool | None = None,
+        may_have_applied: bool | None = None,
+        post_dispatch_replay_suppressed: bool | None = None,
+        mutation_outcome: str | None = None,
     ) -> None:
         """Record one tool call and transport diagnostics without raw payloads."""
 
@@ -152,6 +156,10 @@ class JsonlTraceLogger:
             "executor_transmitted_sha256": executor_transmitted_sha256,
             "executor_transmitted_bytes": executor_transmitted_bytes,
             "executor_preamble_version": executor_preamble_version,
+            "dispatched": dispatched,
+            "may_have_applied": may_have_applied,
+            "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
+            "mutation_outcome": mutation_outcome,
         }
         event.update({key: value for key, value in optional.items() if value is not None})
         self.log(event)

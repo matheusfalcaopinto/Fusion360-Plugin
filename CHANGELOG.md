@@ -2,7 +2,25 @@
 
 Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
-## 0.2.1 - 2026-07-14
+## 0.2.2 - 2026-07-15
+
+- Substitui a promessa de exactly-once por `no automatic replay after
+  dispatch`, com `dispatched`, `may_have_applied`,
+  `post_dispatch_replay_suppressed` e `mutation_outcome` autoritativos.
+- Mantem `exactly_once_dispatch` somente como alias depreciado nesta release;
+  ele nao significa idempotencia end-to-end.
+- Implementa Safe Change preview v2 com identidade estavel, fingerprint,
+  bindings, budget/completude e maquina `ready -> applying -> consumed`, mais
+  `stale` para drift; legacy preview exige refresh.
+- Elimina TOCTOU sob lock, valida todos os alvos antes da primeira mutacao e
+  consome permanentemente qualquer preview que tenha sido despachado.
+- Separa mutation/assertion status, intent coverage e verification level;
+  `applied_verified` requer readback completo e cobertura obrigatoria total.
+- Adiciona release por tag com versoes cruzadas, build duplo determinista,
+  comparacao do wheel rastreado e publicacao de plugin, wheel e SHA256SUMS.
+- A 0.2.1 nao foi publicada: seu trabalho foi absorvido por esta release.
+
+## 0.2.1 - nao publicada; absorvida pela 0.2.2
 
 - Mantem `legacy` como transporte instalado padrao e adiciona os modos
   `persistent_post_only` e `auto` para validar persistencia sem depender do
@@ -33,8 +51,8 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   do wheel `fusion-agent-harness 0.2.0`, com `RECORD` e hashes verificados.
 - Introduz runtime unico e conexao MCP persistente lazy, serializacao de
   operacoes, shutdown limitado, timeouts por semantica e fallback `legacy`.
-- Garante exactly-once para mutacoes: falha apos dispatch retorna
-  `MUTATION_OUTCOME_UNKNOWN` e nunca reenvia o script.
+- Suprime replay automatico depois do dispatch: falha nessa janela retorna
+  `MUTATION_OUTCOME_UNKNOWN` e exige readback antes de uma nova intencao.
 - Migra manifests para schema v2 com fingerprint canonico, persistencia atomica,
   deteccao de drift e migracao do alias real legado.
 - Adiciona `fusion_agent_native_read`, `fusion_agent_targeted_inspect`,

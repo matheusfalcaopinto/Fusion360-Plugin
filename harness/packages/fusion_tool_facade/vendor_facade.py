@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 import json
 import os
+import hashlib
+import hmac
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +44,31 @@ VENDOR_FACADE_NATIVE_TOOLS = {
 _VENDOR_SIGNATURE_TOOLS = {"get_scene_info", "create_sketch", "extrude", "create_parameter"}
 _CRUD_SIGNATURE_TOOLS = {"fusion_mcp_read", "fusion_mcp_execute"}
 _UNIT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in|deg|rad)\s*$", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFusionOperation:
+    """One repository-owned Fusion script compiled during graph preflight.
+
+    ``payload_json`` contains data only.  Before dispatch, the facade rebuilds
+    the script from the allowlisted builder and compares both the exact source
+    and its digest.  A caller therefore cannot substitute model-authored code
+    through this typed backend boundary.
+    """
+
+    kind: str
+    payload_json: str
+    script: str
+    sha256: str
+
+
+class FusionOperationDispatchError(RuntimeError):
+    """Typed backend failure carrying authoritative transport evidence."""
+
+    def __init__(self, message: str, *, error_code: str | None, transport: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.transport = transport
 
 
 def is_vendor_manifest(tool_names: set[str]) -> bool:
@@ -1248,19 +1276,31 @@ class VendorFusionFacade:
             result = {"state": state, **meta}
         return result
 
-    async def create_named_parameter(self, name: str, expression: str, comment: str | None = None) -> dict[str, Any]:
+    async def create_named_parameter(
+        self,
+        name: str,
+        expression: str,
+        comment: str | None = None,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Create a named parameter using value/unit payload fields."""
 
         if self._uses_crud_profile():
             _split_unit_expression(expression)
             result = await self._execute_script_json(
-                _crud_create_parameter_script({"name": name, "expression": expression, "comment": comment or ""})
+                _crud_create_parameter_script({"name": name, "expression": expression, "comment": comment or ""}),
+                operation_id=operation_id,
             )
             self.parameters[name] = expression
             return result
 
         value, unit = _split_unit_expression(expression)
-        result = await self._call("create_parameter", {"name": name, "value": value, "unit": unit, "comment": comment or ""})
+        result = await self._call(
+            "create_parameter",
+            {"name": name, "value": value, "unit": unit, "comment": comment or ""},
+            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+        )
         self.parameters[name] = expression
         return result
 
@@ -1279,11 +1319,14 @@ class VendorFusionFacade:
         self.parameters[name] = expression
         return result
 
-    async def create_component(self, name: str) -> dict[str, Any]:
+    async def create_component(self, name: str, *, operation_id: str | None = None) -> dict[str, Any]:
         """Create and mark a component as active."""
 
         if self._uses_crud_profile():
-            result = await self._execute_script_json(_crud_create_component_script({"name": name}))
+            result = await self._execute_script_json(
+                _crud_create_component_script({"name": name}),
+                operation_id=operation_id,
+            )
             self.active_component = name
             return result
 
@@ -1297,12 +1340,20 @@ class VendorFusionFacade:
         self.active_component = name
         return {"active_component": name, "noop": "vendor_schema_has_no_activate_component"}
 
-    async def create_sketch_on_plane(self, component: str, plane: str, name: str) -> dict[str, Any]:
+    async def create_sketch_on_plane(
+        self,
+        component: str,
+        plane: str,
+        name: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Create a sketch on a principal plane."""
 
         if self._uses_crud_profile():
             return await self._execute_script_json(
-                _crud_create_sketch_script({"component": component, "plane": plane, "name": name})
+                _crud_create_sketch_script({"component": component, "plane": plane, "name": name}),
+                operation_id=operation_id,
             )
 
         _ = component
@@ -1310,12 +1361,20 @@ class VendorFusionFacade:
         result.setdefault("requested_name", name)
         return result
 
-    async def draw_constrained_rectangle(self, sketch: str, center: list[str], width: str, height: str) -> dict[str, Any]:
+    async def draw_constrained_rectangle(
+        self,
+        sketch: str,
+        center: list[str],
+        width: str,
+        height: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Draw a rectangle after converting dimensions to centimeters."""
 
         center_cm = [_expr_to_cm(value, self.parameters) for value in center]
         if self._uses_crud_profile():
-            await self._execute_script_json(
+            execution = await self._execute_script_json(
                 _crud_draw_rectangle_script(
                     {
                         "sketch": sketch,
@@ -1324,9 +1383,13 @@ class VendorFusionFacade:
                         "width": _expr_to_cm(width, self.parameters),
                         "height": _expr_to_cm(height, self.parameters),
                     }
-                )
+                ),
+                operation_id=operation_id,
             )
-            return {"profile_ref": f"{sketch}:rectangle:0"}
+            return {
+                "profile_ref": f"{sketch}:rectangle:0",
+                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
+            }
 
         result = await self._call(
             "draw_rectangle",
@@ -1340,12 +1403,19 @@ class VendorFusionFacade:
         result.setdefault("profile_ref", f"{sketch}:rectangle:0")
         return result
 
-    async def draw_constrained_circle(self, sketch: str, center: list[str], diameter: str) -> dict[str, Any]:
+    async def draw_constrained_circle(
+        self,
+        sketch: str,
+        center: list[str],
+        diameter: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Draw a circle after converting diameter to radius centimeters."""
 
         center_cm = [_expr_to_cm(value, self.parameters) for value in center]
         if self._uses_crud_profile():
-            await self._execute_script_json(
+            execution = await self._execute_script_json(
                 _crud_draw_circle_script(
                     {
                         "sketch": sketch,
@@ -1353,9 +1423,13 @@ class VendorFusionFacade:
                         "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
                         "radius": _expr_to_cm(diameter, self.parameters) / 2.0,
                     }
-                )
+                ),
+                operation_id=operation_id,
             )
-            return {"profile_ref": f"{sketch}:circle:0"}
+            return {
+                "profile_ref": f"{sketch}:circle:0",
+                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
+            }
 
         result = await self._call(
             "draw_circle",
@@ -1378,13 +1452,14 @@ class VendorFusionFacade:
         operation: str,
         body_name: str,
         shape: str = "rectangle",
+        operation_id: str | None = None,
         **shape_inputs: Any,
     ) -> dict[str, Any]:
         """Extrude the most recent vendor sketch and rename the created body."""
 
         _ = component, profile_ref, name
         if self._uses_crud_profile():
-            await self._execute_script_json(
+            execution = await self._execute_script_json(
                 _crud_extrude_script(
                     {
                         "sketch": profile_ref.split(":", maxsplit=1)[0],
@@ -1393,10 +1468,15 @@ class VendorFusionFacade:
                         "feature_name": name,
                         "body_name": body_name,
                     }
-                )
+                ),
+                operation_id=operation_id,
             )
             self.body_dimensions_cm[body_name] = _shape_dimensions_cm(shape, distance, shape_inputs, self.parameters)
-            return {"body": {"name": body_name}, "feature": {"name": name}}
+            return {
+                "body": {"name": body_name},
+                "feature": {"name": name},
+                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
+            }
 
         result = await self._call(
             "extrude",
@@ -1928,12 +2008,20 @@ class VendorFusionFacade:
         self._last_scene.setdefault("component_metadata", {}).update(result.get("component_metadata", {}))
         return result
 
-    async def create_assembly_joints(self, joints: list[dict[str, Any]]) -> dict[str, Any]:
+    async def create_assembly_joints(
+        self,
+        joints: list[dict[str, Any]],
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Create assembly joint contracts through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
             raise RuntimeError("assembly joint creation requires the Fusion CRUD script profile")
-        result = await self._execute_script_json(_crud_create_assembly_joints_script({"joints": joints}))
+        result = await self._execute_script_json(
+            _crud_create_assembly_joints_script({"joints": joints}),
+            operation_id=operation_id,
+        )
         self._last_scene.setdefault("joints", {}).update(result.get("joints", {}))
         return result
 
@@ -1975,21 +2063,43 @@ class VendorFusionFacade:
         self._last_scene.setdefault("screenshots", {})[name] = result.get("screenshot", {})
         return result
 
-    async def analyze_interference(self, target: str | None = None) -> dict[str, Any]:
+    async def analyze_interference(
+        self,
+        target: str | None = None,
+        *,
+        trusted_read: bool = False,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Analyze interference in the active design."""
 
         if not self._uses_crud_profile():
             return {"interference": self._last_scene.get("interference", {"count": 0, "pairs": []})}
-        result = await self._execute_script_json(_crud_analyze_interference_script({"target": target}))
+        script = _crud_analyze_interference_script({"target": target})
+        result = (
+            await self._execute_trusted_read_script_json(script, operation_id=operation_id)
+            if trusted_read
+            else await self._execute_script_json(script, operation_id=operation_id)
+        )
         self._last_scene["interference"] = result.get("interference", {})
         return result
 
-    async def measure_physical_properties(self, targets: list[str] | None = None) -> dict[str, Any]:
+    async def measure_physical_properties(
+        self,
+        targets: list[str] | None = None,
+        *,
+        trusted_read: bool = False,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Measure physical properties in the active design."""
 
         if not self._uses_crud_profile():
             return {"physical_properties": self._last_scene.get("physical_properties", {})}
-        result = await self._execute_script_json(_crud_measure_physical_properties_script({"targets": targets or []}))
+        script = _crud_measure_physical_properties_script({"targets": targets or []})
+        result = (
+            await self._execute_trusted_read_script_json(script, operation_id=operation_id)
+            if trusted_read
+            else await self._execute_script_json(script, operation_id=operation_id)
+        )
         self._last_scene.setdefault("physical_properties", {}).update(result.get("physical_properties", {}))
         return result
 
@@ -2032,15 +2142,101 @@ class VendorFusionFacade:
         invalid = [name for name in tracked if not name or name[0].isupper()]
         return {"valid": not invalid, "invalid": invalid}
 
-    async def export_step(self, target: str, path: Path | str) -> dict[str, Any]:
+    async def export_step(
+        self,
+        target: str,
+        path: Path | str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Export a STEP file through the vendor tool."""
 
-        return await self._call("export_step", {"body_name": target, "file_path": str(path)})
+        if self._uses_crud_profile():
+            plan = self.prepare_typed_operation(
+                "export",
+                {"target": target, "path": str(path), "format": "step"},
+            )
+            return await self.execute_prepared_typed_operation(
+                plan,
+                operation_id=operation_id or f"export_step:{target}",
+            )
+        return await self._call(
+            "export_step",
+            {"body_name": target, "file_path": str(path)},
+            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+        )
 
-    async def export_stl(self, target: str, path: Path | str) -> dict[str, Any]:
+    async def export_stl(
+        self,
+        target: str,
+        path: Path | str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Export an STL file through the vendor tool."""
 
-        return await self._call("export_stl", {"body_name": target, "file_path": str(path)})
+        if self._uses_crud_profile():
+            plan = self.prepare_typed_operation(
+                "export",
+                {"target": target, "path": str(path), "format": "stl"},
+            )
+            return await self.execute_prepared_typed_operation(
+                plan,
+                operation_id=operation_id or f"export_stl:{target}",
+            )
+        return await self._call(
+            "export_stl",
+            {"body_name": target, "file_path": str(path)},
+            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+        )
+
+    def prepare_typed_operation(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+    ) -> PreparedFusionOperation:
+        """Compile one allowlisted, repository-owned Autodesk operation.
+
+        This method is deliberately synchronous so the complete CadSpec graph
+        can be compiled without any MCP call.  Unknown operation kinds fail
+        before the first mutation can be dispatched.
+        """
+
+        if not self._uses_crud_profile():
+            raise RuntimeError("typed Autodesk operations require the Fusion CRUD profile")
+        builder = _TYPED_CRUD_SCRIPT_BUILDERS.get(kind)
+        if builder is None:
+            raise ValueError(f"unknown typed Autodesk facade operation: {kind}")
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        normalized_payload = json.loads(payload_json)
+        script = builder(normalized_payload)
+        compile(script, f"<fusion-agent:{kind}>", "exec")
+        return PreparedFusionOperation(
+            kind=kind,
+            payload_json=payload_json,
+            script=script,
+            sha256=hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        )
+
+    async def execute_prepared_typed_operation(
+        self,
+        plan: PreparedFusionOperation,
+        *,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Dispatch a preflighted plan only when it still matches its builder."""
+
+        builder = _TYPED_CRUD_SCRIPT_BUILDERS.get(plan.kind)
+        if builder is None:
+            raise ValueError(f"unknown typed Autodesk facade operation: {plan.kind}")
+        rebuilt = builder(json.loads(plan.payload_json))
+        rebuilt_digest = hashlib.sha256(rebuilt.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(rebuilt_digest, plan.sha256) or rebuilt != plan.script:
+            raise RuntimeError("prepared Autodesk facade operation failed integrity validation")
+        return await self._execute_script_json(
+            rebuilt,
+            operation_id=operation_id,
+        )
 
     def _hole_centers(self, target_body: str, count: int, offset: str | None) -> list[tuple[float, float]]:
         if count != 4 or target_body not in self.body_dimensions_cm or not offset:
@@ -2059,26 +2255,70 @@ class VendorFusionFacade:
         except ToolNotAllowed:
             return {}
 
-    async def _call(self, native_tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        result: ToolResult = await self.adapter.call(native_tool, {"_facade_tool": native_tool, **args})
+    async def _call(
+        self,
+        native_tool: str,
+        args: dict[str, Any],
+        *,
+        options: McpCallOptions | None = None,
+    ) -> dict[str, Any]:
+        result: ToolResult = await self.adapter.call(
+            native_tool,
+            {"_facade_tool": native_tool, **args},
+            options=options,
+        )
         if not result.ok:
-            raise RuntimeError(f"{native_tool} failed: {result.error_code}: {result.error_message}")
-        return result.data
+            raise FusionOperationDispatchError(
+                f"{native_tool} failed: {result.error_code}: {result.error_message}",
+                error_code=result.error_code,
+                transport=_transport_evidence(result),
+            )
+        return _with_transport(result.data, result)
 
     def _uses_crud_profile(self) -> bool:
         return _CRUD_SIGNATURE_TOOLS.issubset(self.available_tools)
 
-    async def _execute_script_json(self, script: str) -> dict[str, Any]:
-        payload = await self._call(
+    async def _execute_script_json(
+        self,
+        script: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        if operation_id is None:
+            payload = await self._call(
+                "fusion_mcp_execute",
+                {
+                    "featureType": "script",
+                    "object": {"script": script},
+                },
+            )
+            decoded = _decode_script_payload(payload)
+            if isinstance(payload.get("fusion_agent_transport"), dict):
+                decoded["fusion_agent_transport"] = payload["fusion_agent_transport"]
+            return decoded
+        result: ToolResult = await self.adapter.call(
             "fusion_mcp_execute",
             {
+                "_facade_tool": "fusion_mcp_execute",
                 "featureType": "script",
                 "object": {"script": script},
             },
+            options=McpCallOptions.for_mutation(operation_id=operation_id),
         )
-        return _decode_script_payload(payload)
+        if not result.ok:
+            raise FusionOperationDispatchError(
+                f"fusion_mcp_execute failed: {result.error_code}: {result.error_message}",
+                error_code=result.error_code,
+                transport=_transport_evidence(result),
+            )
+        return _with_transport(_decode_script_payload(result.data), result)
 
-    async def _execute_trusted_read_script_json(self, script: str) -> dict[str, Any]:
+    async def _execute_trusted_read_script_json(
+        self,
+        script: str,
+        *,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
         """Execute a harness-owned read template once, without post-dispatch replay."""
 
         result: ToolResult = await self.adapter.call(
@@ -2089,14 +2329,51 @@ class VendorFusionFacade:
                 "object": {"script": script},
             },
             options=McpCallOptions.for_trusted_internal_read(
-                timeout_seconds=float(os.getenv("FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS", "10"))
+                timeout_seconds=float(os.getenv("FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS", "10")),
+                operation_id=operation_id,
             ),
         )
         if not result.ok:
-            raise RuntimeError(
-                f"fusion_mcp_execute failed: {result.error_code}: {result.error_message}"
+            raise FusionOperationDispatchError(
+                f"fusion_mcp_execute failed: {result.error_code}: {result.error_message}",
+                error_code=result.error_code,
+                transport=_transport_evidence(result),
             )
-        return _decode_script_payload(result.data)
+        return _with_transport(_decode_script_payload(result.data), result)
+
+
+def _transport_evidence(result: ToolResult) -> dict[str, Any]:
+    transport = result.meta.get("fusion_agent_transport")
+    if isinstance(transport, dict):
+        return dict(transport)
+    if isinstance(result.data, dict) and any(
+        key in result.data
+        for key in (
+            "dispatched",
+            "may_have_applied",
+            "post_dispatch_replay_suppressed",
+            "mutation_outcome",
+        )
+    ):
+        return {
+            key: result.data[key]
+            for key in (
+                "dispatched",
+                "may_have_applied",
+                "post_dispatch_replay_suppressed",
+                "mutation_outcome",
+            )
+            if key in result.data
+        }
+    return {}
+
+
+def _with_transport(payload: dict[str, Any], result: ToolResult) -> dict[str, Any]:
+    value = dict(payload)
+    transport = _transport_evidence(result)
+    if transport:
+        value["fusion_agent_transport"] = transport
+    return value
 
 
 def _decode_script_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5107,3 +5384,582 @@ def _crud_measure_physical_properties_script(payload: dict[str, Any]) -> str:
     print(json.dumps({"success": True, "physical_properties": measured}, sort_keys=True))
 """,
     )
+
+
+_TYPED_CRUD_HELPERS = r'''
+
+
+def _design():
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if not design:
+        raise RuntimeError("active product is not a Fusion design")
+    return design
+
+
+def _component(design, name):
+    expected = str(name or "")
+    if expected.lower() in ("root", "rootcomponent"):
+        return design.rootComponent
+    matches = []
+    for index in range(design.allComponents.count):
+        component = design.allComponents.item(index)
+        if component and component.name == expected:
+            matches.append(component)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"component reference must resolve uniquely: {expected!r}; matches={len(matches)}"
+        )
+    return matches[0]
+
+
+def _sketch(design, name):
+    matches = []
+    for component_index in range(design.allComponents.count):
+        component = design.allComponents.item(component_index)
+        if not component:
+            continue
+        for sketch_index in range(component.sketches.count):
+            sketch = component.sketches.item(sketch_index)
+            if sketch and sketch.name == name:
+                matches.append(sketch)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"sketch reference must resolve uniquely: {name!r}; matches={len(matches)}"
+        )
+    return matches[0]
+
+
+def _body(design, name):
+    matches = []
+    for component_index in range(design.allComponents.count):
+        component = design.allComponents.item(component_index)
+        if not component:
+            continue
+        for body_index in range(component.bRepBodies.count):
+            body = component.bRepBodies.item(body_index)
+            if body and body.name == name:
+                matches.append(body)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"body reference must resolve uniquely: {name!r}; matches={len(matches)}"
+        )
+    return matches[0]
+
+
+def _profile(design, reference):
+    sketch = _sketch(design, reference["sketch"])
+    index = int(reference["index"])
+    if index < 0 or index >= sketch.profiles.count:
+        raise RuntimeError(
+            f"profile index is out of range: {reference['sketch']}#{index}"
+        )
+    return sketch.profiles.item(index)
+
+
+def _sketch_entity(design, reference):
+    sketch = _sketch(design, reference["sketch"])
+    kind = reference["kind"]
+    index = int(reference["index"])
+    if kind == "line":
+        collection = sketch.sketchCurves.sketchLines
+    elif kind == "circle":
+        collection = sketch.sketchCurves.sketchCircles
+    elif kind == "arc":
+        collection = sketch.sketchCurves.sketchArcs
+    elif kind == "point":
+        collection = sketch.sketchPoints
+    elif kind == "curve":
+        collection = sketch.sketchCurves
+    else:
+        raise RuntimeError(f"unsupported sketch entity kind: {kind}")
+    if index < 0 or index >= collection.count:
+        raise RuntimeError(
+            f"sketch entity index is out of range: {reference['sketch']}/{kind}#{index}"
+        )
+    return collection.item(index)
+
+
+def _feature_operation(value):
+    operations = adsk.fusion.FeatureOperations
+    mapping = {
+        "new_body": operations.NewBodyFeatureOperation,
+        "join": operations.JoinFeatureOperation,
+        "cut": operations.CutFeatureOperation,
+        "intersect": operations.IntersectFeatureOperation,
+    }
+    if value not in mapping:
+        raise RuntimeError(f"unsupported feature operation: {value}")
+    return mapping[value]
+
+
+def _axis(component, reference):
+    value = str(reference or "").lower()
+    if value == "x":
+        return component.xConstructionAxis
+    if value == "y":
+        return component.yConstructionAxis
+    if value == "z":
+        return component.zConstructionAxis
+    raise RuntimeError(f"unsupported principal axis reference: {reference!r}")
+
+
+def _plane(component, reference):
+    value = str(reference or "").lower()
+    if value == "xy":
+        return component.xYConstructionPlane
+    if value == "xz":
+        return component.xZConstructionPlane
+    if value == "yz":
+        return component.yZConstructionPlane
+    raise RuntimeError(f"unsupported principal plane reference: {reference!r}")
+
+
+def _object_collection(values):
+    collection = adsk.core.ObjectCollection.create()
+    for value in values:
+        collection.add(value)
+    return collection
+
+
+def _path(design, reference):
+    entity = _sketch_entity(design, reference)
+    component = entity.parentSketch.parentComponent
+    return component.features.createPath(entity, False)
+
+
+def _walk_occurrences(occurrences):
+    found = []
+    for index in range(occurrences.count):
+        occurrence = occurrences.item(index)
+        if not occurrence:
+            continue
+        found.append(occurrence)
+        if occurrence.childOccurrences:
+            found.extend(_walk_occurrences(occurrence.childOccurrences))
+    return found
+
+
+def _occurrence(design, reference):
+    expected = str(reference or "")
+    matches = []
+    for occurrence in _walk_occurrences(design.rootComponent.occurrences):
+        values = {
+            str(getattr(occurrence, "name", "") or ""),
+            str(getattr(occurrence, "fullPathName", "") or ""),
+            str(getattr(getattr(occurrence, "component", None), "name", "") or ""),
+        }
+        if expected in values:
+            matches.append(occurrence)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"occurrence reference must resolve uniquely: {expected!r}; matches={len(matches)}"
+        )
+    return matches[0]
+
+
+def _export_target(design, reference):
+    candidates = []
+    try:
+        candidates.append(_body(design, reference))
+    except RuntimeError:
+        pass
+    try:
+        candidates.append(_component(design, reference))
+    except RuntimeError:
+        pass
+    unique = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    if len(unique) != 1:
+        raise RuntimeError(
+            f"export target must resolve to exactly one body or component: "
+            f"{reference!r}; matches={len(unique)}"
+        )
+    return unique[0]
+
+
+def _rename_feature_bodies(feature, name):
+    bodies = getattr(feature, "bodies", None)
+    if bodies and bodies.count:
+        if bodies.count == 1:
+            bodies.item(0).name = name
+        else:
+            for index in range(bodies.count):
+                bodies.item(index).name = f"{name}_{index + 1}"
+'''
+
+
+def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
+    """Build a fixed Autodesk script with strict, unique entity resolvers."""
+
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return (
+        "import json\n"
+        "import os\n"
+        "import adsk.core\n"
+        "import adsk.fusion\n\n"
+        f"PAYLOAD = json.loads({payload_json!r})\n"
+        + _TYPED_CRUD_HELPERS
+        + "\n\ndef run(_context: str):\n"
+        + body
+        + "\n"
+    )
+
+
+def _typed_sketch_constraint_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    sketch = _sketch(design, PAYLOAD["sketch"])
+    entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
+    constraints = sketch.geometricConstraints
+    kind = PAYLOAD["constraint"]
+    if kind == "coincident":
+        result = constraints.addCoincident(entities[0], entities[1])
+    elif kind == "horizontal":
+        result = constraints.addHorizontal(entities[0])
+    elif kind == "vertical":
+        result = constraints.addVertical(entities[0])
+    elif kind == "parallel":
+        result = constraints.addParallel(entities[0], entities[1])
+    elif kind == "perpendicular":
+        result = constraints.addPerpendicular(entities[0], entities[1])
+    elif kind == "tangent":
+        result = constraints.addTangent(entities[0], entities[1])
+    elif kind == "equal":
+        result = constraints.addEqual(entities[0], entities[1])
+    elif kind == "concentric":
+        result = constraints.addConcentric(entities[0], entities[1])
+    elif kind == "midpoint":
+        result = constraints.addMidPoint(entities[0], entities[1])
+    elif kind == "fixed":
+        entities[0].isFixed = True
+        result = entities[0]
+    else:
+        raise RuntimeError(f"unsupported sketch constraint: {kind}")
+    print(json.dumps({
+        "success": True,
+        "constraint": {"type": kind, "valid": bool(getattr(result, "isValid", True))},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_sketch_dimension_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    sketch = _sketch(design, PAYLOAD["sketch"])
+    entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
+    dimensions = sketch.sketchDimensions
+    kind = PAYLOAD["dimension"]
+    expression = PAYLOAD["expression"]
+    position = adsk.core.Point3D.create(0, 0, 0)
+    if kind == "distance" and len(entities) == 1:
+        line = entities[0]
+        result = dimensions.addDistanceDimension(
+            line.startSketchPoint,
+            line.endSketchPoint,
+            adsk.fusion.DimensionOrientations.AlignedDimensionOrientation,
+            position,
+        )
+    elif kind in ("distance", "horizontal", "vertical"):
+        orientation = adsk.fusion.DimensionOrientations.AlignedDimensionOrientation
+        if kind == "horizontal":
+            orientation = adsk.fusion.DimensionOrientations.HorizontalDimensionOrientation
+        elif kind == "vertical":
+            orientation = adsk.fusion.DimensionOrientations.VerticalDimensionOrientation
+        result = dimensions.addDistanceDimension(entities[0], entities[1], orientation, position)
+    elif kind == "diameter":
+        result = dimensions.addDiameterDimension(entities[0], position)
+    elif kind == "radius":
+        result = dimensions.addRadialDimension(entities[0], position)
+    elif kind == "angle":
+        result = dimensions.addAngularDimension(entities[0], entities[1], position)
+    else:
+        raise RuntimeError(f"unsupported sketch dimension: {kind}")
+    result.parameter.expression = expression
+    print(json.dumps({
+        "success": True,
+        "dimension": {"type": kind, "expression": result.parameter.expression},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_revolve_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    component = _component(design, PAYLOAD["component"])
+    profile = _profile(design, PAYLOAD["profile"])
+    axis = _axis(component, PAYLOAD["axis"])
+    features = component.features.revolveFeatures
+    revolve_input = features.createInput(profile, axis, _feature_operation(PAYLOAD["operation"]))
+    revolve_input.setAngleExtent(
+        False,
+        adsk.core.ValueInput.createByString(PAYLOAD["angle"]),
+    )
+    feature = features.add(revolve_input)
+    feature.name = PAYLOAD["feature_name"]
+    _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": "revolve"},
+        "body": {"name": PAYLOAD["result_name"]},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_sweep_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    component = _component(design, PAYLOAD["component"])
+    profile = _profile(design, PAYLOAD["profile"])
+    path = _path(design, PAYLOAD["path"])
+    features = component.features.sweepFeatures
+    sweep_input = features.createInput(profile, path, _feature_operation(PAYLOAD["operation"]))
+    orientations = adsk.fusion.SweepOrientationTypes
+    if PAYLOAD["orientation"] == "parallel":
+        sweep_input.orientation = orientations.ParallelOrientationType
+    else:
+        sweep_input.orientation = orientations.PerpendicularOrientationType
+    feature = features.add(sweep_input)
+    feature.name = PAYLOAD["feature_name"]
+    _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": "sweep"},
+        "body": {"name": PAYLOAD["result_name"]},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_loft_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    component = _component(design, PAYLOAD["component"])
+    features = component.features.loftFeatures
+    loft_input = features.createInput(_feature_operation(PAYLOAD["operation"]))
+    for reference in PAYLOAD["profiles"]:
+        loft_input.loftSections.add(_profile(design, reference))
+    for reference in PAYLOAD.get("guides") or []:
+        loft_input.centerLineOrRails.addRail(_path(design, reference))
+    feature = features.add(loft_input)
+    feature.name = PAYLOAD["feature_name"]
+    _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": "loft"},
+        "body": {"name": PAYLOAD["result_name"]},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_pattern_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    bodies = [_body(design, name) for name in PAYLOAD["targets"]]
+    component = bodies[0].parentComponent
+    if any(body.parentComponent != component for body in bodies):
+        raise RuntimeError("all pattern targets must belong to one component")
+    entities = _object_collection(bodies)
+    quantity = adsk.core.ValueInput.createByString(str(PAYLOAD["count"]))
+    spacing = adsk.core.ValueInput.createByString(PAYLOAD.get("spacing") or "0 mm")
+    pattern_kind = PAYLOAD["pattern"]
+    if pattern_kind == "rectangular":
+        features = component.features.rectangularPatternFeatures
+        pattern_input = features.createInput(
+            entities,
+            _axis(component, PAYLOAD["axis"]),
+            quantity,
+            spacing,
+            adsk.fusion.PatternDistanceType.SpacingPatternDistanceType,
+        )
+    elif pattern_kind == "circular":
+        features = component.features.circularPatternFeatures
+        pattern_input = features.createInput(entities, _axis(component, PAYLOAD["axis"]))
+        pattern_input.quantity = quantity
+        pattern_input.totalAngle = adsk.core.ValueInput.createByString("360 deg")
+        pattern_input.isSymmetric = False
+    elif pattern_kind == "path":
+        features = component.features.pathPatternFeatures
+        pattern_input = features.createInput(
+            entities,
+            _path(design, PAYLOAD["path"]),
+            quantity,
+            spacing,
+            adsk.fusion.PatternDistanceType.SpacingPatternDistanceType,
+        )
+    else:
+        raise RuntimeError(f"unsupported pattern type: {pattern_kind}")
+    feature = features.add(pattern_input)
+    feature.name = PAYLOAD["feature_name"]
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": f"{pattern_kind}_pattern"},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_mirror_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    bodies = [_body(design, name) for name in PAYLOAD["targets"]]
+    component = bodies[0].parentComponent
+    if any(body.parentComponent != component for body in bodies):
+        raise RuntimeError("all mirror targets must belong to one component")
+    features = component.features.mirrorFeatures
+    mirror_input = features.createInput(
+        _object_collection(bodies),
+        _plane(component, PAYLOAD["plane"]),
+    )
+    feature = features.add(mirror_input)
+    feature.name = PAYLOAD["feature_name"]
+    prefix = PAYLOAD.get("result_prefix")
+    if prefix:
+        _rename_feature_bodies(feature, prefix)
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": "mirror"},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_boolean_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    target = _body(design, PAYLOAD["target"])
+    tools = [_body(design, name) for name in PAYLOAD["tools"]]
+    if any(body.parentComponent != target.parentComponent for body in tools):
+        raise RuntimeError("boolean target and tools must belong to one component")
+    component = target.parentComponent
+    operation = PAYLOAD["operation"]
+    if operation == "split":
+        features = component.features.splitBodyFeatures
+        split_input = features.createInput(target, tools[0], True)
+        feature = features.add(split_input)
+    else:
+        features = component.features.combineFeatures
+        combine_input = features.createInput(target, _object_collection(tools))
+        combine_input.operation = _feature_operation(operation)
+        combine_input.isKeepToolBodies = bool(PAYLOAD.get("keep_tools", False))
+        feature = features.add(combine_input)
+    feature.name = PAYLOAD["feature_name"]
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": feature.name, "type": operation},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_rigid_group_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    root = design.rootComponent
+    occurrences = [_occurrence(design, reference) for reference in PAYLOAD["occurrences"]]
+    rigid_group = root.rigidGroups.add(_object_collection(occurrences), True)
+    rigid_group.name = PAYLOAD["name"]
+    print(json.dumps({
+        "success": True,
+        "rigid_group": {"name": rigid_group.name, "occurrence_count": len(occurrences)},
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_import_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    app = adsk.core.Application.get()
+    design = _design()
+    path = PAYLOAD["path"]
+    if not os.path.isfile(path):
+        raise RuntimeError(f"import file does not exist on the Fusion host: {path}")
+    import_manager = app.importManager
+    format_name = PAYLOAD["format"]
+    if format_name in ("step", "stp"):
+        options = import_manager.createSTEPImportOptions(path)
+    elif format_name in ("iges", "igs"):
+        options = import_manager.createIGESImportOptions(path)
+    elif format_name == "sat":
+        options = import_manager.createSATImportOptions(path)
+    elif format_name == "f3d":
+        options = import_manager.createFusionArchiveImportOptions(path)
+    else:
+        raise RuntimeError(f"unsupported import format: {format_name}")
+    occurrence = design.rootComponent.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    component = occurrence.component
+    component.name = PAYLOAD["component_name"]
+    try:
+        imported = import_manager.importToTarget2(options, component)
+        if not imported:
+            raise RuntimeError(f"Fusion import returned no entities: {path}")
+    except Exception:
+        occurrence.deleteMe()
+        raise
+    print(json.dumps({
+        "success": True,
+        "import": {
+            "format": format_name,
+            "path": path,
+            "component": component.name,
+            "entity_count": imported.count,
+        },
+    }, sort_keys=True))''',
+    )
+
+
+def _typed_export_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r'''    design = _design()
+    path = PAYLOAD["path"]
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        raise RuntimeError(f"export directory does not exist on the Fusion host: {parent}")
+    manager = design.exportManager
+    format_name = PAYLOAD["format"]
+    if format_name in ("step", "stp"):
+        target = _component(design, PAYLOAD["target"])
+        options = manager.createSTEPExportOptions(path, target)
+    elif format_name in ("iges", "igs"):
+        target = _component(design, PAYLOAD["target"])
+        options = manager.createIGESExportOptions(path, target)
+    elif format_name == "stl":
+        target = _body(design, PAYLOAD["target"])
+        options = manager.createSTLExportOptions(target, path)
+    elif format_name == "f3d":
+        target = _component(design, PAYLOAD["target"])
+        options = manager.createFusionArchiveExportOptions(path, target)
+    else:
+        raise RuntimeError(f"unsupported export format: {format_name}")
+    if not manager.execute(options):
+        raise RuntimeError(f"Fusion export failed: {path}")
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError(f"Fusion export did not create a non-empty file: {path}")
+    print(json.dumps({
+        "success": True,
+        "export": {"format": format_name, "path": path, "bytes": os.path.getsize(path)},
+    }, sort_keys=True))''',
+    )
+
+
+_TYPED_CRUD_SCRIPT_BUILDERS = {
+    "sketch_constraint": _typed_sketch_constraint_script,
+    "sketch_dimension": _typed_sketch_dimension_script,
+    "revolve": _typed_revolve_script,
+    "sweep": _typed_sweep_script,
+    "loft": _typed_loft_script,
+    "pattern": _typed_pattern_script,
+    "mirror": _typed_mirror_script,
+    "boolean": _typed_boolean_script,
+    "rigid_group": _typed_rigid_group_script,
+    "import": _typed_import_script,
+    "export": _typed_export_script,
+}

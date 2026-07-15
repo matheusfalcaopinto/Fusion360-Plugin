@@ -220,7 +220,7 @@ def tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             "fusion_agent_fast_execute",
-            "Lint, bind declared targets, execute exactly once, and programmatically verify a bounded native Fusion script. Scoped updates must mutate targets[query_id]; additive scripts must create only through target_components[component_path]. Delete, move, visibility, componentize, bulk, hidden/shared, and ambiguous work remains Safe Harness only.",
+            "Lint, bind declared targets, dispatch at most once without automatic post-dispatch replay, and programmatically verify a bounded native Fusion script. Scoped updates must mutate targets[query_id]; additive scripts must create only through target_components[component_path]. Delete, move, visibility, componentize, bulk, hidden/shared, and ambiguous work remains Safe Harness only.",
             _fast_execute_schema(),
             _fast_execute_tool,
             output_schema=_fast_path_output_schema(),
@@ -339,7 +339,7 @@ async def _fast_execute_tool(args: JsonDict) -> FastPathResponse:
                 "status": "blocked_before_apply",
                 "reason": "fast_path_read_only",
                 "recommended_path": "safe_harness",
-                "message": "Fusion Agent 0.2.1 enables mutating Fast Execute only when FUSION_AGENT_FAST_PATH_MODE=enabled.",
+                "message": "Fusion Agent 0.2.2 enables mutating Fast Execute only when FUSION_AGENT_FAST_PATH_MODE=enabled.",
             }
         )
     mode = _mode(args, default="real")
@@ -669,7 +669,7 @@ async def _run_benchmark_tool(args: JsonDict) -> JsonDict:
         oracle_observer=bridge if bridge is not None else None,
         real_lifecycle=bridge,
         environment_metadata={
-            "plugin_version": os.getenv("FUSION_AGENT_PLUGIN_VERSION", "0.2.1"),
+            "plugin_version": os.getenv("FUSION_AGENT_PLUGIN_VERSION", "0.2.2"),
             "mcp_fingerprint": diagnostics.get("fingerprint"),
             "connection_generation": diagnostics.get("connection_generation"),
         },

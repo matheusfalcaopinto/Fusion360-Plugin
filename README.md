@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/matheusfalcaopinto/Fusion360-Plugin"><img alt="Repository" src="https://img.shields.io/badge/GitHub-Fusion360--Plugin-181717?logo=github"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.1-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.2.2-2563eb">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-plugin-111827">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-fusion__agent-0f766e">
@@ -80,7 +80,7 @@ Path com lint, baseline e readback programatico.
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
 | Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
 | Fonte canônica | `harness/` | Fonte rastreada usada para testes e build reproduzivel. |
-| Runtime Python | `wheels/fusion_agent_harness-0.2.1-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
+| Runtime Python | `wheels/fusion_agent_harness-0.2.2-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
 
@@ -391,7 +391,7 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_PYTHON` | Opcional | Caminho explicito para o Python que hospeda o MCP server. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
 | `FUSION_MCP_ENDPOINT` | Real Fusion | Endpoint HTTP de um servidor MCP/Fusion real. |
-| `FUSION_MCP_TRANSPORT_MODE` | Opcional | `legacy` (padrao 0.2.1), `persistent_post_only`, `auto` ou `persistent` diagnostico. |
+| `FUSION_MCP_TRANSPORT_MODE` | Opcional | `legacy` (padrao 0.2.2), `persistent_post_only`, `auto` ou `persistent` diagnostico. |
 | `FUSION_MCP_CONNECT_TIMEOUT_SECONDS` | Opcional | Timeout de conexao; padrao `5`. |
 | `FUSION_MCP_READ_TIMEOUT_SECONDS` | Opcional | Timeout de leitura; padrao `120`. |
 | `FUSION_MCP_MUTATION_TIMEOUT_SECONDS` | Opcional | Timeout de mutacao; padrao `240`. |
@@ -402,7 +402,7 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_INSPECTION_MAX_ENTITIES` | Opcional | Budget default de entidades visitadas; padrao `1000`. |
 | `FUSION_AGENT_INSPECTION_DEADLINE_MS` | Opcional | Deadline default de inspecao; padrao `1500`. |
 | `FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES` | Opcional | Teto default de resposta; padrao `1048576`. |
-| `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` (padrao em 0.2.1) ou `enabled`. |
+| `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` (padrao em 0.2.2) ou `enabled`. |
 | `FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES` | Opcional | Limite fail-closed do script final transmitido pelo Fast Execute, depois dos guards; padrao `28672` (28 KiB). |
 | `FUSION_AGENT_EXECUTION_PATH` | Teste/benchmark | `auto` (padrao), `native_fast` ou `safe_harness`; valores fixos travam a rota. |
 | `FUSION_AGENT_TELEMETRY` | Opcional | Quando `1`, grava telemetria local redigida; nenhum conteudo e enviado externamente. |
@@ -421,6 +421,18 @@ Scripts internos de inspecao e mutacoes usam replay
 `BEFORE_DISPATCH_ONLY`. Se uma leitura desse tipo expirar depois do dispatch,
 o harness retorna `READ_TIMEOUT_MAY_STILL_BE_RUNNING`, invalida a sessao e
 aplica cooldown; o script nao e reenviado automaticamente.
+
+Para mutacoes, a garantia publica e somente **no automatic replay after
+dispatch**. Os campos `dispatched`, `may_have_applied`,
+`post_dispatch_replay_suppressed` e `mutation_outcome` sao autoritativos. Um
+timeout depois do envio retorna `MUTATION_OUTCOME_UNKNOWN`; a recuperacao exige
+inspecao/readback e nunca repete automaticamente a intencao anterior.
+
+Safe Change usa preview v2 com identidade estavel do documento, fingerprint,
+bindings e budget de inspecao. O apply revalida tudo sob lock e consome o
+preview depois de qualquer dispatch. `applied_verified` significa contrato
+declarado coberto por readback completo, nao uma promessa irrestrita sobre a
+intencao do usuario.
 
 ### Orcamentos de inspecao
 
@@ -596,7 +608,7 @@ capture viewport.
 |   |-- packages/
 |   `-- tests/
 |-- wheels/
-|   `-- fusion_agent_harness-0.2.1-py3-none-any.whl
+|   `-- fusion_agent_harness-0.2.2-py3-none-any.whl
 |-- .editorconfig
 |-- .gitattributes
 |-- .gitignore
@@ -644,7 +656,7 @@ Confirme se o arquivo existe em `wheels/`. Este repositorio deve publicar o
 wheel porque ele faz parte da distribuicao do plugin.
 
 ```text
-wheels/fusion_agent_harness-0.2.1-py3-none-any.whl
+wheels/fusion_agent_harness-0.2.2-py3-none-any.whl
 ```
 
 </details>
@@ -735,7 +747,7 @@ variavel vazia para usar o wheel embutido.
 
 ## Publicacao
 
-Versao atual: `0.2.1`.
+Versao atual: `0.2.2`.
 
 Checklist de release:
 
@@ -745,15 +757,15 @@ Checklist de release:
 3. Gere
    `fusion_agent_harness-<versao>-py3-none-any.whl`.
 4. Mantenha exatamente um wheel intencional em `wheels/`.
-5. Rode o validator do repositorio, o validator de plugin e o `quick_validate`
-   da skill.
-6. Aplique o cachebuster `0.2.1+codex.<timestamp-UTC>` somente depois desses
+5. Rode `python scripts/validate_plugin.py`, a suite Pytest e o launcher com
+   `--check`.
+6. Aplique o cachebuster `0.2.2+codex.<timestamp-UTC>` somente depois desses
    gates.
 7. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
    `fusion-agent-codex@personal`.
 8. Confirme no cache instalado a versao exata, 35 ferramentas, output schemas e
    somente nomes `fusion_agent_*`.
-9. Atualize `README.md` e `CHANGELOG.md` e crie a tag, por exemplo `v0.2.1`.
+9. Atualize `README.md` e `CHANGELOG.md` e crie a tag, por exemplo `v0.2.2`.
 
 ## Licenca
 

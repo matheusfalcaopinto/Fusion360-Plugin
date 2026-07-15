@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Validate tag and package versions
+        id: version
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast, json, os, pathlib, re, tomllib
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tomllib.loads(pathlib.Path("harness/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          plugin = json.loads(pathlib.Path(".codex-plugin/plugin.json").read_text(encoding="utf-8"))["version"].split("+", 1)[0]
+          module = ast.parse(pathlib.Path("harness/apps/fusion_agent_mcp/__init__.py").read_text(encoding="utf-8"))
+          module_version = next(
+              ast.literal_eval(node.value)
+              for node in module.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+          )
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          changelog_match = re.search(r"(?m)^##\s+" + re.escape(version) + r"(?:\s+-\s+\d{4}-\d{2}-\d{2})?\s*$", changelog)
+          if tag != f"v{version}" or plugin != version or module_version != version or not changelog_match:
+              raise SystemExit(
+                  "release version mismatch: "
+                  f"tag={tag} package={version} plugin={plugin} module={module_version} "
+                  f"changelog_entry={bool(changelog_match)}"
+              )
+          if version == "0.2.1":
+              raise SystemExit("0.2.1 is intentionally not publishable; release 0.2.2 or newer")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+          PY
+      - name: Require three consecutive real scheduled nightlies for 0.4.x
+        if: startsWith(github.ref_name, 'v0.4.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-nightly-release-gate.py --repository "${{ github.repository }}" --commit "${{ github.sha }}"
+      - name: Install canonical harness
+        run: python -m pip install -e "./harness[test]"
+      - name: Run complete test suite
+        run: python -m pytest -q -p no:cacheprovider
+      - name: Build twice from clean tracked source and compare
+        shell: bash
+        run: |
+          mkdir -p /tmp/fusion-build-a /tmp/fusion-build-b
+          git archive HEAD | tar -x -C /tmp/fusion-build-a
+          git archive HEAD | tar -x -C /tmp/fusion-build-b
+          (cd /tmp/fusion-build-a && python scripts/build-distribution.py)
+          (cd /tmp/fusion-build-b && python scripts/build-distribution.py)
+          cmp /tmp/fusion-build-a/wheels/*.whl /tmp/fusion-build-b/wheels/*.whl
+          cmp /tmp/fusion-build-a/wheels/*.whl wheels/*.whl
+      - name: Validate plugin bundle
+        run: python scripts/validate_plugin.py
+      - name: Assemble immutable release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp wheels/*.whl release-assets/
+          git archive --format=zip --output="release-assets/fusion-agent-codex-${{ steps.version.outputs.version }}.zip" HEAD
+          cd release-assets
+          sha256sum *.whl *.zip > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" release-assets/* \
+            --verify-tag \
+            --generate-notes \
+            --title "Fusion Agent Codex ${{ steps.version.outputs.version }}"

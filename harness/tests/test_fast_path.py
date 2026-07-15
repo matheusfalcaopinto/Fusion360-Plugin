@@ -14,6 +14,7 @@ from agent_core.fast_path import (
     _guard_script,
     _mutation_baseline_issue,
     _validate_targets,
+    evaluate_verification,
     lint_fusion_script,
     validate_fast_execute_request,
 )
@@ -609,6 +610,9 @@ async def test_fast_execute_uses_one_mutation_between_baseline_and_readback() ->
             "assertions": [
                 {"id": "body_exists", "query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}
             ],
+            "requirements": [
+                {"id": "body_created", "assertion_ids": ["body_exists"], "required": True}
+            ],
         },
     }
     validate_fast_execute_request(request)
@@ -626,6 +630,75 @@ async def test_fast_execute_uses_one_mutation_between_baseline_and_readback() ->
         "preserve_current_ns_writer_collapse_original_chain"
     )
     assert response.payload["executor_guard"]["fallback_streams"] == "sys.__stdout__/sys.__stderr__"
+
+
+@pytest.mark.asyncio
+async def test_post_dispatch_timeout_stays_unknown_even_when_readback_assertions_pass() -> None:
+    class UnknownOutcomeNative(FakeNative):
+        async def __call__(self, name, arguments, *, semantics, operation_id):
+            result = await super().__call__(
+                name,
+                arguments,
+                semantics=semantics,
+                operation_id=operation_id,
+            )
+            if name == "fusion_mcp_execute" and semantics == "mutating":
+                return {
+                    "ok": False,
+                    "error_code": ErrorCode.MUTATION_OUTCOME_UNKNOWN.value,
+                    "error_message": "timeout after dispatch",
+                    "data": {"dispatched": True},
+                    "_meta": {
+                        "fusion_agent_transport": {
+                            "operation_id": operation_id,
+                            "dispatched": True,
+                            "mutation_outcome": "unknown",
+                            "post_dispatch_replay_suppressed": True,
+                        }
+                    },
+                }
+            return result
+
+    response = await FastPathService(UnknownOutcomeNative()).fast_execute(
+        {
+            "intent": "Create Body1",
+            "change_class": "additive",
+            "script": ADDITIVE_SCRIPT,
+            "target_query_ids": ["body_target"],
+            "verification": {
+                "queries": [
+                    {
+                        "id": "body_target",
+                        "entity_type": "body",
+                        "selector": {"component_path": "root", "name": "Body1"},
+                        "fields": ["exists"],
+                    }
+                ],
+                "assertions": [
+                    {
+                        "id": "body_exists",
+                        "query_id": "body_target",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
+                ],
+                "requirements": [
+                    {"id": "body_created", "assertion_ids": ["body_exists"], "required": True}
+                ],
+            },
+        }
+    )
+
+    assert response.payload["status"] == "mutation_outcome_unknown"
+    assert response.payload["error_code"] == ErrorCode.MUTATION_OUTCOME_UNKNOWN.value
+    assert response.payload["mutation_outcome"] == "unknown"
+    assert response.payload["mutation_status"] == "outcome_unknown"
+    assert response.payload["verification"]["contract_verified"] is False
+    assert response.payload["verification"]["assertion_status"] == "passed"
+    assert response.payload["verification"]["drift_conclusion"] == "no_drift_in_observed_scope"
+    assert response.payload["post_dispatch_replay_suppressed"] is True
+    assert response.is_error is True
 
 
 @pytest.mark.asyncio
@@ -690,6 +763,7 @@ async def test_fast_execute_never_verifies_from_partial_readback() -> None:
     assert native.mutating_calls == 1
     assert response.payload["status"] == "applied_unverified"
     assert response.payload["verification"]["passed"] is False
+    assert response.payload["verification"]["assertion_status"] == "incomplete"
     assert response.payload["verification"]["readback_complete"] is False
     assert response.payload["verification"]["readback_issue"] == "complete_not_true"
     assert response.payload["verification"]["source"] == "partial_readback"
@@ -883,11 +957,15 @@ def run(_context: str):
                 ],
                 "assertions": [
                     {
+                        "id": "width_updated",
                         "query_id": "parameter_target",
                         "field": "expression",
                         "operator": "eq",
                         "expected": "12 mm",
                     }
+                ],
+                "requirements": [
+                    {"id": "requested_width", "assertion_ids": ["width_updated"], "required": True}
                 ],
             },
         }
@@ -1178,6 +1256,66 @@ def test_read_only_fast_execute_can_omit_mutation_verification_contract() -> Non
     assert normalized["target_query_ids"] == []
     assert normalized["verification"]["assertions"] == []
     assert normalized["verification"]["queries"][0]["entity_type"] == "document"
+
+
+def test_passing_assertions_without_requirement_coverage_are_not_contract_verified() -> None:
+    baseline = {
+        "document": {"id": "doc"},
+        "summary": {"components": 1},
+        "results": [{"query_id": "target", "matches": []}],
+    }
+    after = {
+        "document": {"id": "doc"},
+        "summary": {"components": 1},
+        "results": [{"query_id": "target", "matches": [{"name": "Body1"}]}],
+    }
+    result = evaluate_verification(
+        baseline,
+        after,
+        [{"id": "exists", "query_id": "target", "field": "exists", "operator": "eq", "expected": True}],
+        "scoped_update",
+        [{"id": "intent", "required": True, "assertion_ids": []}],
+    )
+
+    assert result["passed"] is True
+    assert result["assertion_status"] == "passed"
+    assert result["intent_coverage"] == "none"
+    assert result["verification_level"] == "contract"
+    assert result["contract_verified"] is False
+
+
+def test_independent_oracle_label_cannot_self_elevate_contract_assertions() -> None:
+    baseline = {
+        "document": {"id": "doc"},
+        "summary": {"components": 1},
+        "results": [{"query_id": "target", "matches": []}],
+    }
+    after = {
+        "document": {"id": "doc"},
+        "summary": {"components": 1},
+        "results": [{"query_id": "target", "matches": [{"name": "Body1"}]}],
+    }
+    result = evaluate_verification(
+        baseline,
+        after,
+        [{"id": "exists", "query_id": "target", "field": "exists", "operator": "eq", "expected": True}],
+        "scoped_update",
+        [
+            {
+                "id": "intent",
+                "required": True,
+                "assertion_ids": ["exists"],
+                "oracle": "independent_oracle",
+            }
+        ],
+    )
+
+    assert result["assertion_status"] == "passed"
+    assert result["verification_level"] == "independent_oracle"
+    assert result["intent_coverage"] == "none"
+    assert result["requirements"][0]["covered"] is False
+    assert result["contract_verified"] is False
+    assert result["requirements"][0]["oracle_evidence"] == "not_available"
 
 
 @pytest.mark.parametrize(
