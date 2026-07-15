@@ -2,6 +2,22 @@
 
 Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
+## 0.4.0 - 2026-07-15
+
+- Adiciona benchmark publico normalizado com adapters isolados e pinados para
+  Fusion Agent Codex, Autodesk oficial, Faust, FrankS e ndoo; execucoes sem
+  driver, licenca ou entitlement ficam honestamente como `not_run`.
+- Adiciona CI completa em Windows, Ubuntu e macOS/Python 3.11, smoke de pacote
+  em Python 3.12 e nightly/manual self-hosted para Fusion real em fixtures
+  descartaveis, com artifacts preservados tambem em falha.
+- Exige tres nightlies reais consecutivos para release 0.4.x.
+- Evolui memoria para schema v2 com source, provenance, trust, scope, hash,
+  expiracao, citacoes e taint; legado passa a `legacy_unverified`.
+- Bloqueia segredos, instrucoes executaveis, prompt injection e documentacao
+  remota nao pinada no fluxo de memoria.
+- Remove o alias depreciado `exactly_once_dispatch`; a semantica publica e
+  `post_dispatch_replay_suppressed`, sem promessa de idempotencia end-to-end.
+
 ## 0.3.0 - 2026-07-15
 
 - Adiciona perfis `normal`, `advanced`, `diagnostic`, `benchmark` e `all`, com

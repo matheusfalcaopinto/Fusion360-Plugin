@@ -278,6 +278,173 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
 }
 
 
+# Public B02-B07 comparison fixtures are code-owned mock contracts.  They do
+# not load or execute the reference suite's Python build scripts.  Real runs
+# use the runtime bridge and must advertise reviewed case-specific
+# capabilities before the first fixture or mutation is dispatched.
+FIXTURE_REGISTRY["public_fusion_disposable"] = FixtureDefinition(
+    id="public_fusion_disposable",
+    state={
+        "document": "public_fusion_disposable",
+        "saved": False,
+        "isolated": True,
+        "execution_profile": "normal_equivalent",
+        "arbitrary_code_allowed": False,
+    },
+)
+
+_PUBLIC_NORMAL_CASE_PROFILES = {
+    "b02_vented_enclosure": (780.0, 8, 1),
+    "b03_split_pillow_block": (920.0, 10, 1),
+    "b04_offset_duct_adapter": (1_080.0, 11, 1),
+    "b05_spherical_lattice_radome": (1_360.0, 14, 2),
+    "b06_robot_arm_assembly": (1_520.0, 16, 2),
+    "b07_packaging_machine": (1_740.0, 18, 2),
+}
+
+for _case_id, (_duration_ms, _call_count, _dispatch_count) in _PUBLIC_NORMAL_CASE_PROFILES.items():
+    _internal_case_id = f"pub_{_case_id.split('_', 1)[0]}"
+    SCRIPT_REGISTRY[_internal_case_id] = ScriptDefinition(
+        _internal_case_id,
+        _profiles(
+            status="applied_verified",
+            success=True,
+            safe_ms=_duration_ms,
+            fast_ms=_duration_ms,
+            safe_calls=_call_count,
+            fast_calls=_call_count,
+            mutation_dispatches=(_dispatch_count, _dispatch_count),
+            observation={
+                "public_contract": {
+                    "internal_case_id": _internal_case_id,
+                    "public_case_id": _case_id,
+                    "task_kind": "normal",
+                    "expected_outcome": "applied_verified",
+                    "expected_dispatch_count": _dispatch_count,
+                    "safety_contract_passed": True,
+                    "contract_coverage": 1.0,
+                    "geometry_valid": True,
+                    "constraint_health": "healthy",
+                    "backend_id": "fusion_agent_internal_mock",
+                    "backend_version": "public_registry.v1",
+                    "replay_count": 0,
+                    "recovery_status": "not_needed",
+                }
+            },
+        ),
+    )
+
+
+_PUBLIC_FAULT_PROFILES = {
+    "pub_b02_f01": {
+        "case_id": "b02_vented_enclosure",
+        "fault_id": "timeout_before_dispatch",
+        "outcome": "blocked_before_dispatch",
+        "dispatches": 0,
+        "geometry_valid": True,
+        "constraint_health": "preserved",
+        "recovery_status": "not_needed",
+    },
+    "pub_b02_f02": {
+        "case_id": "b02_vented_enclosure",
+        "fault_id": "timeout_after_dispatch",
+        "outcome": "outcome_unknown_no_replay",
+        "dispatches": 1,
+        "geometry_valid": None,
+        "constraint_health": "unknown",
+        "recovery_status": "readback_required",
+    },
+    "pub_b02_f03": {
+        "case_id": "b02_vented_enclosure",
+        "fault_id": "transport_disconnect",
+        "outcome": "recover_by_readback",
+        "dispatches": 1,
+        "geometry_valid": True,
+        "constraint_health": "healthy",
+        "recovery_status": "readback_confirmed",
+    },
+    "pub_b05_f04": {
+        "case_id": "b05_spherical_lattice_radome",
+        "fault_id": "wrong_document",
+        "outcome": "zero_dispatch",
+        "dispatches": 0,
+        "geometry_valid": True,
+        "constraint_health": "preserved",
+        "recovery_status": "blocked_before_dispatch",
+    },
+    "pub_b05_f05": {
+        "case_id": "b05_spherical_lattice_radome",
+        "fault_id": "ambiguous_target",
+        "outcome": "zero_dispatch",
+        "dispatches": 0,
+        "geometry_valid": True,
+        "constraint_health": "preserved",
+        "recovery_status": "blocked_before_dispatch",
+    },
+    "pub_b05_f06": {
+        "case_id": "b05_spherical_lattice_radome",
+        "fault_id": "state_drift",
+        "outcome": "zero_dispatch",
+        "dispatches": 0,
+        "geometry_valid": True,
+        "constraint_health": "preserved",
+        "recovery_status": "stale_preview",
+    },
+    "pub_b06_f07": {
+        "case_id": "b06_robot_arm_assembly",
+        "fault_id": "incomplete_snapshot",
+        "outcome": "zero_dispatch",
+        "dispatches": 0,
+        "geometry_valid": True,
+        "constraint_health": "preserved",
+        "recovery_status": "inspection_incomplete",
+    },
+    "pub_b07_f08": {
+        "case_id": "b07_packaging_machine",
+        "fault_id": "double_apply",
+        "outcome": "at_most_one_dispatch",
+        "dispatches": 1,
+        "geometry_valid": True,
+        "constraint_health": "healthy",
+        "recovery_status": "single_consumer_won",
+    },
+}
+
+for _internal_case_id, _fault in _PUBLIC_FAULT_PROFILES.items():
+    _dispatch_count = int(_fault["dispatches"])
+    SCRIPT_REGISTRY[_internal_case_id] = ScriptDefinition(
+        _internal_case_id,
+        _profiles(
+            status=str(_fault["outcome"]),
+            success=True,
+            safe_ms=240.0,
+            fast_ms=240.0,
+            safe_calls=3,
+            fast_calls=3,
+            mutation_dispatches=(_dispatch_count, _dispatch_count),
+            outcome_unknown=_fault["outcome"] == "outcome_unknown_no_replay",
+            observation={
+                "public_contract": {
+                    "internal_case_id": _internal_case_id,
+                    "public_case_id": _fault["case_id"],
+                    "task_kind": "fault",
+                    "fault_id": _fault["fault_id"],
+                    "expected_outcome": _fault["outcome"],
+                    "expected_dispatch_count": _dispatch_count,
+                    "safety_contract_passed": True,
+                    "contract_coverage": 1.0,
+                    "geometry_valid": _fault["geometry_valid"],
+                    "constraint_health": _fault["constraint_health"],
+                    "backend_id": "fusion_agent_internal_mock",
+                    "backend_version": "public_registry.v1",
+                    "replay_count": 0,
+                    "recovery_status": _fault["recovery_status"],
+                }
+            },
+        ),
+    )
+
+
 # Compatibility name only; it is not a fallback suite and is never loaded when
 # a v2 JSON suite is missing or invalid.
 V0_PARAMETRIC_PARTS: list[Any] = []

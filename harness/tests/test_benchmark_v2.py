@@ -249,7 +249,7 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
 
 
 @pytest.mark.asyncio
-async def test_rollout_requires_real_independent_expectation_and_exactly_once_evidence(
+async def test_rollout_requires_real_independent_expectation_and_dispatch_evidence(
     tmp_path: Path,
 ) -> None:
     source = await BenchmarkRunner(output_dir=tmp_path).run_suite(
@@ -314,7 +314,7 @@ async def test_rollout_requires_real_independent_expectation_and_exactly_once_ev
 
 
 @pytest.mark.asyncio
-async def test_independent_metrics_override_executor_and_gate_exactly_once_and_expectations(tmp_path: Path) -> None:
+async def test_independent_metrics_override_executor_and_gate_dispatch_and_expectations(tmp_path: Path) -> None:
     async def observer(context) -> IndependentEvidence:
         profile = SCRIPT_REGISTRY[context.case.script_id].profiles[context.execution_path]
         return IndependentEvidence(

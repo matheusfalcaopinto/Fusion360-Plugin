@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from agent_core.session_controller import SessionController, SessionOptions
+from benchmark.adapters import AdapterPrerequisites, build_public_adapter_registry
+from benchmark.fusion_agent_driver import FusionAgentCodexPublicDriver
 from benchmark.models import BenchmarkRunConfig
+from benchmark.public import PublicBenchmarkConfig, PublicBenchmarkRunner
 from benchmark.runner import BenchmarkRunner
+from fusion_agent_assets import asset_root
 from fusion_mcp_adapter.endpoint_policy import (
     EndpointDecision,
     EndpointPolicyError,
@@ -113,6 +117,64 @@ async def _benchmark_run(suite: str, mode: str, dry_run: bool) -> dict[str, Any]
         "trial_count": len(run.report.trials),
         "summary": run.report.summary,
     }
+
+
+async def _benchmark_public(
+    manifest: str,
+    output_dir: str,
+    mode: str,
+    confirm_real_benchmark: bool,
+    disposable_fixture_confirmed: bool,
+    include_faults: bool,
+) -> dict[str, Any]:
+    # Only our own code-owned driver is installed by the CLI. Competitor
+    # adapters remain policy wrappers with no executable driver and therefore
+    # report ``not_run`` until a trusted embedding injects one explicitly.
+    own_adapter_id = "fusion_agent_codex"
+    own_driver = FusionAgentCodexPublicDriver(
+        output_dir=Path(output_dir),
+        manifest_dir="manifests",
+    )
+    runner = PublicBenchmarkRunner(
+        build_public_adapter_registry(
+            drivers={own_adapter_id: own_driver},
+            prerequisites={
+                own_adapter_id: AdapterPrerequisites(
+                    subject_id=own_adapter_id,
+                    license_id="MIT",
+                    license_accepted=True,
+                    entitlement_confirmed=(
+                        mode == "mock"
+                        or (confirm_real_benchmark and disposable_fixture_confirmed)
+                    ),
+                    isolated_installation_confirmed=(
+                        mode == "mock" or disposable_fixture_confirmed
+                    ),
+                    normal_profile_equivalent_confirmed=True,
+                )
+            },
+        )
+    )
+    report = await runner.run(
+        manifest,
+        config=PublicBenchmarkConfig(
+            mode=mode,
+            confirm_real_benchmark=confirm_real_benchmark,
+            disposable_fixture_confirmed=disposable_fixture_confirmed,
+            include_faults=include_faults,
+        ),
+    )
+    json_path, markdown_path = runner.write(report, output_dir)
+    return {
+        "run_id": report.run_id,
+        "report_path": str(json_path),
+        "summary_path": str(markdown_path),
+        "summary": report.summary,
+    }
+
+
+def _default_public_manifest() -> str:
+    return str(asset_root("benchmarks") / "public_competitors_v1.json")
 
 
 async def _tools_discover(mode: str) -> dict[str, Any]:
@@ -228,10 +290,7 @@ def _memory_write(
     relative = Path(path)
     if relative.is_absolute() or relative.suffix.lower() != ".md":
         raise ValueError("memory path must be a relative .md path")
-    title = next(
-        (line.lstrip("# ").strip() for line in content.splitlines() if line.startswith("#")),
-        relative.stem,
-    )
+    title = next((line.lstrip("# ").strip() for line in content.splitlines() if line.startswith("#")), relative.stem)
     record = MemoryRecord(
         id=f"project:{project}:{relative.as_posix()}",
         scope=MemoryScope.PROJECT,
@@ -340,6 +399,9 @@ def _http_get_probe(uri: str, *, decision: EndpointDecision) -> dict[str, Any]:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(uri, headers=headers)
     try:
+        # Resolve again at the last possible point before opening the socket.
+        # Redirects are disabled so this validated authority cannot be swapped
+        # by a 3xx response.
         revalidate_resolution(decision)
         with open_url_no_redirects(request, timeout=3) as response:
             content = response.read(500).decode("utf-8", errors="replace")
@@ -411,6 +473,30 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
         """Run a benchmark suite."""
 
         _print_json(asyncio.run(_benchmark_run(suite, _mode(mock, real), dry_run)))
+
+    @benchmark_app.command("public")
+    def benchmark_public_command(
+        manifest: str = _default_public_manifest(),
+        output_dir: str = "outputs/public_benchmark",
+        mock: bool = False,
+        confirm_real_benchmark: bool = False,
+        disposable_fixture_confirmed: bool = False,
+        include_faults: bool = True,
+    ) -> None:
+        """Write an honest public comparison report; unavailable adapters remain not_run."""
+
+        _print_json(
+            asyncio.run(
+                _benchmark_public(
+                    manifest,
+                    output_dir,
+                    "mock" if mock else "real",
+                    confirm_real_benchmark,
+                    disposable_fixture_confirmed,
+                    include_faults,
+                )
+            )
+        )
 
     @tools_app.command("discover")
     def tools_discover_command(mock: bool = False, real: bool = False) -> None:
@@ -498,6 +584,13 @@ else:
         benchmark_run.add_argument("--mock", action="store_true")
         benchmark_run.add_argument("--real", action="store_true")
         benchmark_run.add_argument("--dry-run", action="store_true")
+        benchmark_public = benchmark_sub.add_parser("public")
+        benchmark_public.add_argument("--manifest", default=_default_public_manifest())
+        benchmark_public.add_argument("--output-dir", default="outputs/public_benchmark")
+        benchmark_public.add_argument("--mock", action="store_true")
+        benchmark_public.add_argument("--confirm-real-benchmark", action="store_true")
+        benchmark_public.add_argument("--disposable-fixture-confirmed", action="store_true")
+        benchmark_public.add_argument("--no-faults", action="store_true")
 
         tools_parser = subparsers.add_parser("tools")
         tools_sub = tools_parser.add_subparsers(dest="tools_command")
@@ -517,11 +610,7 @@ else:
         memory_write.add_argument("project")
         memory_write.add_argument("path")
         memory_write.add_argument("content")
-        memory_write.add_argument(
-            "--source",
-            default="user",
-            choices=[item.value for item in MemorySource if item != MemorySource.LEGACY],
-        )
+        memory_write.add_argument("--source", default="user", choices=[item.value for item in MemorySource if item != MemorySource.LEGACY])
         memory_write.add_argument("--citation", action="append", default=[])
 
         subparsers.add_parser("doctor")
@@ -550,6 +639,19 @@ else:
             )
         elif args.command == "benchmark" and args.benchmark_command == "run":
             _print_json(asyncio.run(_benchmark_run(args.suite, _mode(args.mock, args.real), args.dry_run)))
+        elif args.command == "benchmark" and args.benchmark_command == "public":
+            _print_json(
+                asyncio.run(
+                    _benchmark_public(
+                        args.manifest,
+                        args.output_dir,
+                        "mock" if args.mock else "real",
+                        args.confirm_real_benchmark,
+                        args.disposable_fixture_confirmed,
+                        not args.no_faults,
+                    )
+                )
+            )
         elif args.command == "tools" and args.tools_command == "discover":
             _print_json(asyncio.run(_tools_discover(_mode(args.mock, args.real))))
         elif args.command == "tools" and args.tools_command == "probe":
@@ -559,15 +661,7 @@ else:
         elif args.command == "memory" and args.memory_command == "search":
             _print_json(_memory_search(args.query, args.project))
         elif args.command == "memory" and args.memory_command == "write":
-            _print_json(
-                _memory_write(
-                    args.project,
-                    args.path,
-                    args.content,
-                    args.source,
-                    args.citation,
-                )
-            )
+            _print_json(_memory_write(args.project, args.path, args.content, args.source, args.citation))
         elif args.command == "doctor":
             _print_json(_doctor())
         else:

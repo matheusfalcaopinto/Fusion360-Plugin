@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/matheusfalcaopinto/Fusion360-Plugin"><img alt="Repository" src="https://img.shields.io/badge/GitHub-Fusion360--Plugin-181717?logo=github"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.0-2563eb">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-plugin-111827">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-fusion__agent-0f766e">
@@ -71,6 +71,7 @@ Path com lint, baseline e readback programatico.
 | Reparos limitados | Classifica falhas e evita loops abertos. |
 | Memoria de projeto | Schema v2 com origem, proveniencia, confianca, hash, expiracao, citacoes e taint. |
 | Journals e traces | Produz artefatos para auditoria e diagnostico. |
+| Benchmark publico | Compara providers pinados com metricas normalizadas e separa mock, Fusion real e `not_run`. |
 
 ## O Que Vem No Plugin
 
@@ -84,7 +85,7 @@ Path com lint, baseline e readback programatico.
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
 | Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
 | Fonte canônica | `harness/` | Fonte rastreada usada para testes e build reproduzivel. |
-| Runtime Python | `wheels/fusion_agent_harness-0.3.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
+| Runtime Python | `wheels/fusion_agent_harness-0.4.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
 
@@ -668,7 +669,7 @@ capture viewport.
 |   |-- packages/
 |   `-- tests/
 |-- wheels/
-|   `-- fusion_agent_harness-0.3.0-py3-none-any.whl
+|   `-- fusion_agent_harness-0.4.0-py3-none-any.whl
 |-- .editorconfig
 |-- .gitattributes
 |-- .gitignore
@@ -716,7 +717,7 @@ Confirme se o arquivo existe em `wheels/`. Este repositorio deve publicar o
 wheel porque ele faz parte da distribuicao do plugin.
 
 ```text
-wheels/fusion_agent_harness-0.3.0-py3-none-any.whl
+wheels/fusion_agent_harness-0.4.0-py3-none-any.whl
 ```
 
 </details>
@@ -807,7 +808,7 @@ variavel vazia para usar o wheel embutido.
 
 ## Publicacao
 
-Versao atual: `0.3.0`.
+Versao atual: `0.4.0`.
 
 Checklist de release:
 
@@ -819,7 +820,7 @@ Checklist de release:
 4. Mantenha exatamente um wheel intencional em `wheels/`.
 5. Rode `python scripts/validate_plugin.py`, o launcher com `--check` e a suite
    `python -m pytest -q`.
-6. Aplique o cachebuster `0.3.0+codex.<timestamp-UTC>` exclusivamente com o
+6. Aplique o cachebuster `0.4.0+codex.<timestamp-UTC>` exclusivamente com o
    helper `update_plugin_cachebuster.py` do `plugin-creator`, somente depois desses
    gates.
 7. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
@@ -828,7 +829,7 @@ Checklist de release:
    ferramentas, output schemas e somente nomes `fusion_agent_*`; `all` deve
    manter 35 durante a serie 0.x.
 9. Atualize `README.md` e `CHANGELOG.md` e crie a tag correspondente, por
-   exemplo `v0.3.0`. O workflow da tag recompila duas vezes, compara o wheel
+   exemplo `v0.4.0`. O workflow da tag recompila duas vezes, compara o wheel
    rastreado e publica plugin, wheel, notas e `SHA256SUMS`.
 
 ## Licenca

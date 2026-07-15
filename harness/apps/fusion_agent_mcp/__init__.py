@@ -1,3 +1,3 @@
 """OpenCode-facing MCP wrapper for the Fusion agent harness."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

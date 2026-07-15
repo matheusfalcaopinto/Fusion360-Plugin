@@ -1,0 +1,205 @@
+name: Fusion real nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fusion-real-nightly
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.configuration.outputs.ready }}
+      reason: ${{ steps.configuration.outputs.reason }}
+    steps:
+      - id: configuration
+        name: Check declared runner and credential availability
+        shell: bash
+        env:
+          NIGHTLY_ENABLED: ${{ vars.FUSION_REAL_NIGHTLY_ENABLED }}
+          RUNNER_REGISTERED: ${{ vars.FUSION_REAL_RUNNER_REGISTERED }}
+          CREDENTIALS_CONFIGURED: ${{ vars.FUSION_REAL_CREDENTIALS_CONFIGURED }}
+        run: |
+          ready=true
+          reasons=()
+          [[ "${NIGHTLY_ENABLED,,}" == "true" ]] || { ready=false; reasons+=(nightly_disabled); }
+          [[ "${RUNNER_REGISTERED,,}" == "true" ]] || { ready=false; reasons+=(runner_not_registered); }
+          [[ "${CREDENTIALS_CONFIGURED,,}" == "true" ]] || { ready=false; reasons+=(credentials_not_configured); }
+          reason=$(IFS=,; echo "${reasons[*]}")
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason:-ready}" >> "$GITHUB_OUTPUT"
+      - name: Record honest not-run state
+        if: steps.configuration.outputs.ready != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.configuration.outputs.reason }}
+        run: |
+          mkdir -p nightly-artifacts
+          python -c "import json,os,pathlib; pathlib.Path('nightly-artifacts/nightly-status.json').write_text(json.dumps({'schema_version':'fusion_real_nightly.v1','status':'not_run','reason':os.environ['REASON']},indent=2)+'\n',encoding='utf-8')"
+      - uses: actions/upload-artifact@v4
+        if: steps.configuration.outputs.ready != 'true'
+        with:
+          name: fusion-real-nightly-not-run
+          path: nightly-artifacts/nightly-status.json
+
+  real-fusion:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: [self-hosted, Windows, X64, fusion-real]
+    timeout-minutes: 180
+    outputs:
+      run_state: ${{ steps.record_status.outputs.run_state }}
+    env:
+      FUSION_AGENT_DEFAULT_MODE: real
+      FUSION_AGENT_REQUIRE_REAL: "1"
+      FUSION_AGENT_ALLOW_DRY_RUN: "0"
+      FUSION_AGENT_BACKEND: autodesk_http
+      FUSION_AGENT_TELEMETRY: "1"
+      FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
+      FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
+      GIT_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install canonical harness
+        run: python -m pip install -e "./harness[test]"
+      - name: Prepare isolated artifact directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path nightly-artifacts | Out-Null
+      - id: runtime_configuration
+        name: Confirm runtime configuration on the Fusion runner
+        shell: pwsh
+        run: |
+          $ready = -not [string]::IsNullOrWhiteSpace($env:FUSION_MCP_ENDPOINT)
+          "ready=$($ready.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $ready) {
+            "reason=fusion_mcp_endpoint_missing" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+      - name: Doctor
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        run: fusion-agent doctor | Tee-Object -FilePath nightly-artifacts/doctor.json
+      - name: Probe real MCP transport
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        run: fusion-agent tools probe | Tee-Object -FilePath nightly-artifacts/probe.json
+      - name: Read-only active-design check
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        run: fusion-agent inspect --real | Tee-Object -FilePath nightly-artifacts/read-only-inspection.json
+      - id: reference_suite
+        name: Run B02-B07 only in disposable unsaved fixtures
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        env:
+          FUSION_AGENT_FAST_PATH_MODE: enabled
+          FUSION_AGENT_EXECUTION_PATH: native_fast
+          FUSION_AGENT_BENCHMARK_ROUTE_LOCK: native_fast
+          FUSION_AGENT_BENCHMARK_TRIAL_ID: fusion-real-nightly
+          FUSION_AGENT_BENCHMARK_MODE: real
+          FUSION_AGENT_BENCHMARK_CONFIRM_REAL: "1"
+        run: python benchmark_parametric_suite/run_reference_suite.py
+      - id: capability_packs
+        name: Run non-experimental CadSpec v2 packs in disposable unsaved fixtures
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        run: python scripts/run-real-capability-packs.py --artifact-root nightly-artifacts
+      - id: record_status
+        name: Preserve suite artifacts and status
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path benchmark_parametric_suite/reference_suite_result.json) {
+            Copy-Item benchmark_parametric_suite/reference_suite_result.json nightly-artifacts/reference_suite_result.json
+          }
+          if (-not (Test-Path nightly-artifacts/capability-packs.json)) {
+            $capabilityOutcome = "${{ steps.capability_packs.outcome }}"
+            $capabilityStatus = if ("${{ steps.runtime_configuration.outputs.ready }}" -ne "true" -or $capabilityOutcome -eq "skipped") {
+              "not_run"
+            } else {
+              "failed"
+            }
+            $capabilityReason = if ("${{ steps.runtime_configuration.outputs.ready }}" -ne "true") {
+              "runtime_configuration_unavailable"
+            } elseif ($capabilityOutcome -eq "skipped") {
+              "prerequisite_step_failed_or_was_skipped"
+            } else {
+              "runner_terminated_before_artifact"
+            }
+            @{
+              schema_version = "fusion_real_capability_packs.v1"
+              status = $capabilityStatus
+              reason = $capabilityReason
+              evidence_mode = "not_executed"
+              fixture_policy = "disposable_unsaved_only"
+              save_user_documents = $false
+            } | ConvertTo-Json | Set-Content -Encoding utf8 nightly-artifacts/capability-packs.json
+          }
+          $workflowStatus = if ("${{ steps.runtime_configuration.outputs.ready }}" -ne "true") {
+            "not_run"
+          } elseif ("${{ job.status }}" -eq "success") {
+            "passed"
+          } else {
+            "failed"
+          }
+          $payload = @{
+            schema_version = "fusion_real_nightly.v1"
+            status = $workflowStatus
+            git_commit = "${{ github.sha }}"
+            fixture_policy = "disposable_unsaved_only"
+            save_user_documents = $false
+          }
+          $payload | ConvertTo-Json | Set-Content -Encoding utf8 nightly-artifacts/nightly-status.json
+          "run_state=$workflowStatus" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fusion-real-nightly-status
+          path: |
+            nightly-artifacts/**
+            manifests/**
+            logs/**
+            harness/manifests/**
+            harness/logs/**
+            outputs/**
+            fusion_captures/**
+            benchmark_parametric_suite/reference_suite_result.json
+            benchmark_parametric_suite/cases/*/reference_result.json
+            benchmark_parametric_suite/cases/*/images/**
+          if-no-files-found: warn
+
+  outcome:
+    needs: [preflight, real-fusion]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize nightly outcome
+        shell: bash
+        env:
+          READY: ${{ needs.preflight.outputs.ready }}
+          REASON: ${{ needs.preflight.outputs.reason }}
+          REAL_RESULT: ${{ needs.real-fusion.result }}
+          RUN_STATE: ${{ needs.real-fusion.outputs.run_state }}
+        run: |
+          if [[ "$READY" != "true" ]]; then
+            echo "## Fusion real nightly: not_run" >> "$GITHUB_STEP_SUMMARY"
+            echo "Reason: $REASON" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$RUN_STATE" == "not_run" ]]; then
+            echo "## Fusion real nightly: not_run" >> "$GITHUB_STEP_SUMMARY"
+            echo "Reason: runtime configuration unavailable on runner" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$REAL_RESULT" == "success" && "$RUN_STATE" == "passed" ]]; then
+            echo "## Fusion real nightly: passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Fusion real nightly: failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

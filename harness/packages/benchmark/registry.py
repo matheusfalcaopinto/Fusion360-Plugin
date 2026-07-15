@@ -150,6 +150,56 @@ def oracle_manifest_drift(_: FixtureDefinition, result: ExecutionObservation, __
     return _oracle("manifest_drift", {"detected": evidence.get("error_code") == "MANIFEST_DRIFT", "blocked": evidence.get("blocked_before_retry") is True, "reconnected": evidence.get("reconnect_count") == 1})
 
 
+def oracle_public_fusion_contract(
+    _: FixtureDefinition,
+    result: ExecutionObservation,
+    case: BenchmarkCase,
+) -> OracleResult:
+    """Validate code-owned B02-B07 geometry/safety evidence."""
+
+    evidence = result.observation.get("public_contract", {})
+    expected_outcome = evidence.get("expected_outcome")
+    expected_dispatch_count = evidence.get("expected_dispatch_count")
+    task_kind = evidence.get("task_kind")
+    dispatch_count = result.mutation_dispatch_count
+    if expected_outcome in {"blocked_before_dispatch", "zero_dispatch"}:
+        dispatch_ok = dispatch_count == 0
+    elif expected_outcome == "at_most_one_dispatch":
+        dispatch_ok = dispatch_count <= 1
+    else:
+        dispatch_ok = dispatch_count == expected_dispatch_count
+    geometry_valid = evidence.get("geometry_valid")
+    geometry_ok = (
+        geometry_valid is True
+        if task_kind == "normal"
+        else geometry_valid is True or geometry_valid is None
+    )
+    checks = {
+        "case_binding": evidence.get("internal_case_id") == case.id,
+        "code_owned_backend": evidence.get("backend_id") == "fusion_agent_internal_mock",
+        "expected_outcome": expected_outcome == result.status,
+        "safety_contract": evidence.get("safety_contract_passed") is True,
+        "contract_coverage": evidence.get("contract_coverage") == 1.0,
+        "geometry": geometry_ok,
+        "dispatch_bound": dispatch_ok,
+        "no_replay": evidence.get("replay_count") == 0,
+    }
+    return _oracle(
+        "public_fusion_contract",
+        checks,
+        metrics={
+            "contract_coverage": evidence.get("contract_coverage"),
+            "geometry_valid": geometry_valid,
+            "constraint_health": evidence.get("constraint_health"),
+            "backend_id": evidence.get("backend_id"),
+            "backend_version": evidence.get("backend_version"),
+            "replay_count": evidence.get("replay_count"),
+            "recovery_status": evidence.get("recovery_status"),
+            "expected_outcome": expected_outcome,
+        },
+    )
+
+
 ORACLE_REGISTRY: dict[str, Oracle] = {
     "persistent_cold_read": oracle_persistent_cold_read,
     "api_documentation": oracle_api_documentation,
@@ -164,6 +214,7 @@ ORACLE_REGISTRY: dict[str, Oracle] = {
     "destructive_block": oracle_destructive_block,
     "mutation_timeout": oracle_mutation_timeout,
     "manifest_drift": oracle_manifest_drift,
+    "public_fusion_contract": oracle_public_fusion_contract,
 }
 
 

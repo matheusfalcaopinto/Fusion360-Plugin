@@ -86,10 +86,6 @@ class DispatcherCapabilities:
     configured_payload_limit_bytes: int
     retry_policy: str = "never"
     post_dispatch_replay_suppressed: bool = True
-    # Deprecated compatibility alias for the 0.x payload-probe schema.  This
-    # means only that the dispatcher will not replay after dispatch; it is not
-    # an end-to-end idempotency or exactly-once guarantee.
-    exactly_once_dispatch: bool | None = None
     supports_fresh_process: bool = True
 
 

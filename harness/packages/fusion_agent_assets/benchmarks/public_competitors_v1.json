@@ -1,0 +1,137 @@
+{
+  "schema_version": "public_benchmark.v1",
+  "generated_at": "2026-07-15T00:00:00Z",
+  "clean_room": true,
+  "subjects": [
+    {
+      "id": "fusion_agent_codex",
+      "display_name": "Fusion Agent Codex",
+      "source_url": "https://github.com/matheusfalcaopinto/Fusion360-Plugin",
+      "license": "MIT",
+      "redistributable": true,
+      "pin": {"kind": "workspace", "value": "runtime-git-commit"},
+      "entitlement": "Autodesk Fusion and the configured local CAD backend are required for real trials.",
+      "adapter_id": "fusion_agent_codex"
+    },
+    {
+      "id": "autodesk_fusion_official",
+      "display_name": "Autodesk Fusion MCP Server",
+      "source_url": "https://help.autodesk.com/view/fusion360/ENU/?guid=FMCP-OVERVIEW",
+      "license": "Autodesk product terms",
+      "redistributable": false,
+      "pin": {"kind": "runtime", "value": "fusion-runtime-version"},
+      "entitlement": "A Fusion edition entitled to use the official third-party AI integration is required.",
+      "adapter_id": "autodesk_fusion_official"
+    },
+    {
+      "id": "faust_fusion360_mcp",
+      "display_name": "Faust Fusion 360 MCP Server",
+      "source_url": "https://github.com/faust-machines/fusion360-mcp-server",
+      "license": "MIT",
+      "redistributable": true,
+      "pin": {"kind": "git", "value": "b44b667e440da070081795cfcbfaf75de2a44251"},
+      "entitlement": "Fusion, its add-in, and the pinned external server checkout are required.",
+      "adapter_id": "faust_fusion360_mcp"
+    },
+    {
+      "id": "frank_autodesk_fusion_mcp",
+      "display_name": "Frank Hommers Autodesk Fusion MCP",
+      "source_url": "https://github.com/frankhommers/autodesk-fusion-mcp",
+      "license": "MIT",
+      "redistributable": true,
+      "pin": {"kind": "git", "value": "3859d7e82faff70dcf056bd15be7e47c5cf912a0"},
+      "entitlement": "Fusion and a clean checkout at the pinned commit are required.",
+      "adapter_id": "frank_autodesk_fusion_mcp"
+    },
+    {
+      "id": "ndoo_fusion360_bridge",
+      "display_name": "ndoo Fusion 360 MCP Bridge",
+      "source_url": "https://github.com/ndoo/fusion360-mcp-bridge",
+      "license": "MIT",
+      "redistributable": true,
+      "pin": {"kind": "git", "value": "6bd42f48d815e06825e1d3b1f95860cee98d755c"},
+      "entitlement": "Fusion, the bridge add-in, and its local bearer secret are required.",
+      "adapter_id": "ndoo_fusion360_bridge"
+    }
+  ],
+  "cases": [
+    {
+      "id": "b02_vented_enclosure",
+      "fixture_path": "benchmark_parametric_suite/cases/b02_vented_enclosure",
+      "risk": "additive",
+      "oracle_required": true
+    },
+    {
+      "id": "b03_split_pillow_block",
+      "fixture_path": "benchmark_parametric_suite/cases/b03_split_pillow_block",
+      "risk": "additive",
+      "oracle_required": true
+    },
+    {
+      "id": "b04_offset_duct_adapter",
+      "fixture_path": "benchmark_parametric_suite/cases/b04_offset_duct_adapter",
+      "risk": "additive",
+      "oracle_required": true
+    },
+    {
+      "id": "b05_spherical_lattice_radome",
+      "fixture_path": "benchmark_parametric_suite/cases/b05_spherical_lattice_radome",
+      "risk": "scoped_update",
+      "oracle_required": true
+    },
+    {
+      "id": "b06_robot_arm_assembly",
+      "fixture_path": "benchmark_parametric_suite/cases/b06_robot_arm_assembly",
+      "risk": "scoped_update",
+      "oracle_required": true
+    },
+    {
+      "id": "b07_packaging_machine",
+      "fixture_path": "benchmark_parametric_suite/cases/b07_packaging_machine",
+      "risk": "scoped_update",
+      "oracle_required": true
+    }
+  ],
+  "faults": [
+    {
+      "id": "timeout_before_dispatch",
+      "case_ids": ["b02_vented_enclosure"],
+      "expected_outcome": "blocked_before_dispatch"
+    },
+    {
+      "id": "timeout_after_dispatch",
+      "case_ids": ["b02_vented_enclosure"],
+      "expected_outcome": "outcome_unknown_no_replay"
+    },
+    {
+      "id": "transport_disconnect",
+      "case_ids": ["b02_vented_enclosure"],
+      "expected_outcome": "recover_by_readback"
+    },
+    {
+      "id": "wrong_document",
+      "case_ids": ["b05_spherical_lattice_radome"],
+      "expected_outcome": "zero_dispatch"
+    },
+    {
+      "id": "ambiguous_target",
+      "case_ids": ["b05_spherical_lattice_radome"],
+      "expected_outcome": "zero_dispatch"
+    },
+    {
+      "id": "state_drift",
+      "case_ids": ["b05_spherical_lattice_radome"],
+      "expected_outcome": "zero_dispatch"
+    },
+    {
+      "id": "incomplete_snapshot",
+      "case_ids": ["b06_robot_arm_assembly"],
+      "expected_outcome": "zero_dispatch"
+    },
+    {
+      "id": "double_apply",
+      "case_ids": ["b07_packaging_machine"],
+      "expected_outcome": "at_most_one_dispatch"
+    }
+  ]
+}
