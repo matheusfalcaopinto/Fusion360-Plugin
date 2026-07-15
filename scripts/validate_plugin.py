@@ -9,6 +9,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 
 REQUIRED_TOOLS = {
@@ -24,6 +25,7 @@ REQUIRED_TOOLS = {
     "fusion_agent_recover_change",
 }
 EXPECTED_TOOL_COUNT = 35
+EXPECTED_NORMAL_TOOL_COUNT = 12
 
 
 def main() -> int:
@@ -48,13 +50,28 @@ def main() -> int:
         if not any(_is_launcher_arg(arg) for arg in args):
             errors.append(".mcp.json must launch scripts/fusion_agent_codex_mcp_launcher.py")
         if environment.get("FUSION_MCP_TRANSPORT_MODE") != "legacy":
-            errors.append("0.2.1 installed .mcp.json must default FUSION_MCP_TRANSPORT_MODE to legacy")
+            errors.append("installed .mcp.json must default FUSION_MCP_TRANSPORT_MODE to legacy")
+        expected_profile = os.getenv("FUSION_AGENT_EXPECTED_TOOL_PROFILE", "normal")
+        if environment.get("FUSION_AGENT_TOOL_PROFILE") != expected_profile:
+            errors.append(
+                "installed .mcp.json FUSION_AGENT_TOOL_PROFILE must be "
+                f"{expected_profile}"
+            )
+        expected_backend = os.getenv("FUSION_AGENT_EXPECTED_BACKEND", "autodesk_http")
+        if environment.get("FUSION_AGENT_BACKEND") != expected_backend:
+            errors.append(
+                "installed .mcp.json FUSION_AGENT_BACKEND must be "
+                f"{expected_backend}"
+            )
+        if environment.get("FUSION_AGENT_REMOTE_POLICY") != "loopback_only":
+            errors.append("installed .mcp.json must default FUSION_AGENT_REMOTE_POLICY to loopback_only")
         if platform.system().lower() == "windows" and command.lower() == "python":
             venv_python = root / ".venv" / "Scripts" / "python.exe"
             warnings.append(
                 "Windows installed configs should prefer explicit .venv Python: "
                 f"{venv_python}"
             )
+        _check_fusion_data(mcp_json, environment, errors)
     wheels = sorted((root / "wheels").glob("fusion_agent_harness-*.whl"))
     if not wheels:
         errors.append("missing bundled fusion_agent_harness wheel")
@@ -108,10 +125,31 @@ def _check_tools(root: Path, errors: list[str], warnings: list[str]) -> None:
     definitions = tool_specs()
     if any(not spec.input_schema for spec in definitions):
         errors.append("every MCP tool must have an input schema")
-    public_definitions = list_tool_definitions()
-    if any(tool.outputSchema is None for tool in public_definitions):
+    all_public_definitions = list_tool_definitions("all")
+    normal_definitions = list_tool_definitions("normal")
+    benchmark_definitions = list_tool_definitions("benchmark")
+    if len(normal_definitions) != EXPECTED_NORMAL_TOOL_COUNT:
+        errors.append(
+            f"expected {EXPECTED_NORMAL_TOOL_COUNT} normal-profile MCP tools, "
+            f"found {len(normal_definitions)}"
+        )
+    if any("script" in tool.inputSchema.get("properties", {}) for tool in normal_definitions):
+        errors.append("normal MCP profile must not expose arbitrary script input")
+    benchmark_names = {tool.name for tool in benchmark_definitions}
+    benchmark_direct_mutators = {
+        "fusion_agent_fast_execute",
+        "fusion_agent_run_session",
+        "fusion_agent_safe_change_apply",
+    }
+    leaked_mutators = sorted(benchmark_names & benchmark_direct_mutators)
+    if leaked_mutators:
+        errors.append(
+            "benchmark profile must mutate only through its isolated runner: "
+            + ", ".join(leaked_mutators)
+        )
+    if any(tool.outputSchema is None for tool in all_public_definitions):
         errors.append("every public MCP tool must have an output schema")
-    annotations_by_name = {tool.name: tool.annotations for tool in public_definitions}
+    annotations_by_name = {tool.name: tool.annotations for tool in all_public_definitions}
     for name in REQUIRED_TOOLS & {
         "fusion_agent_native_read",
         "fusion_agent_targeted_inspect",
@@ -149,10 +187,69 @@ def _check_wheel(root: Path, wheel: Path, plugin_json: dict, errors: list[str]) 
             missing = sorted(required - names)
             if missing:
                 errors.append(f"wheel missing canonical runtime files: {', '.join(missing)}")
+            metadata_name = f"fusion_agent_harness-{version}.dist-info/METADATA"
+            if metadata_name not in names:
+                errors.append("wheel is missing package METADATA")
+            else:
+                metadata = archive.read(metadata_name).decode("utf-8")
+                if "Provides-Extra: faust" not in metadata:
+                    errors.append("wheel METADATA is missing the pinned faust extra")
+                if 'Requires-Dist: fusion360-mcp-server==0.1.0; extra == "faust"' not in metadata:
+                    errors.append("wheel METADATA is missing fusion360-mcp-server==0.1.0 for faust")
             if any("work_unpacked_wheel" in name or ".dist-info/.dist-info" in name for name in names):
                 errors.append("wheel contains diagnostic or nested dist-info content")
     except Exception as exc:  # noqa: BLE001 - validator reports artifact failures
         errors.append(f"cannot inspect wheel {wheel}: {type(exc).__name__}: {exc}")
+
+
+def _check_fusion_data(
+    mcp_json: dict,
+    fusion_agent_environment: dict,
+    errors: list[str],
+) -> None:
+    """Validate the optional, Codex-managed Fusion Data OAuth server."""
+
+    server = (mcp_json.get("mcpServers") or {}).get("fusion_data")
+    if server is None:
+        return
+    if not isinstance(server, dict):
+        errors.append(".mcp.json fusion_data must be an MCP server object")
+        return
+    parsed = urlsplit(str(server.get("url") or ""))
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        errors.append("fusion_data.url must be an explicit official HTTPS endpoint")
+    if parsed.username or parsed.password or parsed.fragment:
+        errors.append("fusion_data.url must not contain credentials or a fragment")
+    sensitive_query_names = {
+        "access_token",
+        "api_key",
+        "authorization",
+        "client_secret",
+        "key",
+        "token",
+    }
+    if sensitive_query_names & {name.lower() for name, _ in parse_qsl(parsed.query)}:
+        errors.append("fusion_data.url must not contain token or secret query parameters")
+    if server.get("auth") != "oauth":
+        errors.append("fusion_data.auth must be oauth so Codex owns the token flow")
+    if not isinstance(server.get("enabled"), bool):
+        errors.append("fusion_data.enabled must be an explicit boolean")
+    if server.get("required") is not False:
+        errors.append("fusion_data.required must be false")
+    if server.get("default_tools_approval_mode") != "writes":
+        errors.append("fusion_data.default_tools_approval_mode must be writes")
+    if "env" in server or "headers" in server or "bearer_token" in server:
+        errors.append("fusion_data credentials must be managed by Codex OAuth, not plugin config")
+    leaked = sorted(
+        key
+        for key in fusion_agent_environment
+        if key.upper().startswith("FUSION_DATA_") or "AUTODESK_OAUTH" in key.upper()
+    )
+    if leaked:
+        errors.append(
+            "Fusion Data credentials must not pass through fusion_agent env: "
+            + ", ".join(leaked)
+        )
 
 
 def _is_launcher_arg(value: object) -> bool:

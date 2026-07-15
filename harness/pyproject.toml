@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fusion-agent-harness"
-version = "0.2.2"
+version = "0.3.0"
 description = "Safe, memory-backed CAD automation harness for Autodesk Fusion MCP sessions."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,9 @@ dependencies = [
 test = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
+]
+faust = [
+  "fusion360-mcp-server==0.1.0",
 ]
 
 [project.scripts]

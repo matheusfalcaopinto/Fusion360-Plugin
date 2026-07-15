@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from memory.schemas import MemoryRecord
+from memory.schemas import MemoryRecord, TrustLevel
 from memory.store import MemoryStore
 
 
@@ -24,7 +24,14 @@ class MemoryRetriever:
         records = []
         for record in self.store.iter_records(project=project):
             haystack = set(_tokens(f"{record.summary}\n{record.content}\n{' '.join(record.tags)}"))
-            score = len(query_tokens & haystack) / max(1, len(query_tokens))
+            lexical_score = len(query_tokens & haystack) / max(1, len(query_tokens))
+            trust_weight = {
+                TrustLevel.VERIFIED: 1.0,
+                TrustLevel.TRUSTED: 0.9,
+                TrustLevel.UNTRUSTED: 0.75,
+                TrustLevel.LEGACY_UNVERIFIED: 0.6,
+            }[record.trust_level]
+            score = lexical_score * trust_weight
             if score > 0:
                 record.relevance_score = score
                 records.append(record)

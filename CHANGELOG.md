@@ -2,13 +2,29 @@
 
 Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
+## 0.3.0 - 2026-07-15
+
+- Adiciona perfis `normal`, `advanced`, `diagnostic`, `benchmark` e `all`, com
+  filtro em listagem e chamada; `normal` passa a ser o padrao com 12 tools.
+- Publica output schemas dedicados, annotations conservadoras, resources
+  paginados e quatro prompts MCP de workflow.
+- Introduz CadSpec v2 estrito com dependencias, referencias tipadas,
+  requisitos verificaveis e capability preflight antes do primeiro dispatch.
+- Adiciona capability packs para sketch constraints/dimensions, revolve,
+  sweep, loft, patterns, mirror, boolean/split, joints/rigid groups, analises e
+  import/export. Sheet metal e CAM permanecem experimentais e gated.
+- Formaliza `autodesk_http` e `faust_stdio` sem fallback automatico; Faust usa
+  `fusion360-mcp-server==0.1.0`, subset tipado e nunca expoe `execute_code`.
+- Adiciona politica de endpoint loopback/allowlist com HTTPS, DNS revalidation,
+  token do ambiente e redacao de logs.
+- Prepara `fusion_data` como segundo MCP OAuth opcional gerenciado pelo Codex,
+  sem hard-code de URL, token no harness ou chamada cross-MCP.
+
 ## 0.2.2 - 2026-07-15
 
 - Substitui a promessa de exactly-once por `no automatic replay after
   dispatch`, com `dispatched`, `may_have_applied`,
   `post_dispatch_replay_suppressed` e `mutation_outcome` autoritativos.
-- Mantem `exactly_once_dispatch` somente como alias depreciado nesta release;
-  ele nao significa idempotencia end-to-end.
 - Implementa Safe Change preview v2 com identidade estavel, fingerprint,
   bindings, budget/completude e maquina `ready -> applying -> consumed`, mais
   `stale` para drift; legacy preview exige refresh.
@@ -51,8 +67,8 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   do wheel `fusion-agent-harness 0.2.0`, com `RECORD` e hashes verificados.
 - Introduz runtime unico e conexao MCP persistente lazy, serializacao de
   operacoes, shutdown limitado, timeouts por semantica e fallback `legacy`.
-- Suprime replay automatico depois do dispatch: falha nessa janela retorna
-  `MUTATION_OUTCOME_UNKNOWN` e exige readback antes de uma nova intencao.
+- Suprime replay automatico depois do dispatch de mutacoes: falha nesse ponto
+  retorna `MUTATION_OUTCOME_UNKNOWN` e exige readback antes de recuperacao.
 - Migra manifests para schema v2 com fingerprint canonico, persistencia atomica,
   deteccao de drift e migracao do alias real legado.
 - Adiciona `fusion_agent_native_read`, `fusion_agent_targeted_inspect`,

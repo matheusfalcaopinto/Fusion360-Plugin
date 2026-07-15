@@ -14,18 +14,69 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from agent_core.capability_executor import CapabilityExecutionResult, CapabilityExecutor
 from agent_core.fast_path import FastPathService
 from agent_core.session_controller import SessionController
+from cad_spec.v2 import CadSpecV2, OperationSpec
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
+from fusion_mcp_adapter.backend import create_fusion_client, selected_backend
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.policy import ToolPolicy
-from fusion_mcp_adapter.real_client import RealMcpClient
 from fusion_mcp_adapter.semantics import CallSemantics, ConnectionState, McpCallOptions
 from fusion_mcp_adapter.tool_result import ToolResult
+from fusion_tool_facade.autodesk_typed_backend import AutodeskTypedBackend
+from fusion_tool_facade.typed_backend import FaustTypedBackend
 from telemetry.trace import JsonlTraceLogger
 
 
 _READINESS_TTL_SECONDS = 60.0
+MOCK_IMPLEMENTED_CAPABILITIES = frozenset(
+    {
+        "parameters",
+        "components",
+        "sketch_create",
+        "sketch_rectangle",
+        "sketch_circle",
+        "extrude",
+        "sketch_constraints",
+        "sketch_dimensions",
+        "revolve",
+        "sweep",
+        "loft",
+        "pattern_rectangular",
+        "pattern_circular",
+        "pattern_path",
+        "mirror",
+        "boolean",
+        "split_body",
+        "joint",
+        "joint_with_limits",
+        "as_built_joint",
+        "rigid_groups",
+        "physical_properties",
+        "interference",
+        "import_step",
+        "import_stp",
+        "import_iges",
+        "import_igs",
+        "import_sat",
+        "import_f3d",
+        "export_step",
+        "export_stp",
+        "export_stl",
+        "export_iges",
+        "export_igs",
+        "export_f3d",
+        "sheet_metal_create_flange",
+        "sheet_metal_create_bend",
+        "sheet_metal_flat_pattern",
+        "sheet_metal_unfold",
+        "cam_setup",
+        "cam_operation",
+        "cam_generate_toolpath",
+        "cam_post_process",
+    }
+)
 _PNG_1X1 = base64.b64encode(
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8"
@@ -78,11 +129,11 @@ class FusionAgentRuntime:
 
             self.real_benchmark_backend = FusionRuntimeLifecycleBackend(self)
 
-    def _new_real_client(self) -> RealMcpClient:
+    def _new_real_client(self):
         logger = None
         if _env_bool("FUSION_AGENT_TELEMETRY", False):
             logger = JsonlTraceLogger(Path("logs") / "fusion_agent_runtime.jsonl")
-        return RealMcpClient(
+        return create_fusion_client(
             connect_timeout_seconds=_float_env("FUSION_MCP_CONNECT_TIMEOUT_SECONDS", 5.0),
             read_timeout_seconds=_float_env("FUSION_MCP_READ_TIMEOUT_SECONDS", 120.0),
             mutation_timeout_seconds=_float_env("FUSION_MCP_MUTATION_TIMEOUT_SECONDS", 240.0),
@@ -151,6 +202,40 @@ class FusionAgentRuntime:
         if mode == "mock":
             return self._mock_fast_path
         raise ValueError("mode must be 'mock' or 'real'")
+
+    async def execute_cad_spec_v2(
+        self,
+        spec: CadSpecV2,
+        *,
+        mode: str,
+        dry_run: bool = False,
+    ) -> CapabilityExecutionResult:
+        """Execute one strict v2 graph through the explicitly selected backend.
+
+        Capability and operation compilation preflight is performed by
+        ``CapabilityExecutor`` before the first provider call.  Provider
+        selection never falls back from Autodesk to Faust (or vice versa).
+        """
+
+        if dry_run:
+            return await CapabilityExecutor().execute(spec, dry_run=True)
+        if mode == "mock":
+            return await CapabilityExecutor(_MockCapabilityBackend()).execute(spec)
+        if mode != "real":
+            raise ValueError("mode must be 'mock' or 'real'")
+
+        await self.ensure_ready()
+        manifest = self.real_client.current_manifest
+        if manifest is None:
+            raise RuntimeError("typed capability backend requires a live tool manifest")
+        backend_name = selected_backend()
+        if backend_name == "faust_stdio":
+            backend = FaustTypedBackend.from_client(self.real_client, manifest)
+        elif backend_name == "autodesk_http":
+            backend = AutodeskTypedBackend.from_client(self.real_client, manifest)
+        else:  # selected_backend is fail-closed, retain a local safety check.
+            raise ValueError(f"unsupported Fusion backend: {backend_name}")
+        return await CapabilityExecutor(backend).execute(spec)
 
     async def _call_native_real(
         self,
@@ -233,6 +318,8 @@ class FusionAgentRuntime:
     def diagnostics(self) -> dict[str, Any]:
         return {
             **dict(self.real_client.diagnostics),
+            "backend": selected_backend(),
+            "frontend_transport": "stdio",
             "readiness_cached": bool(self._adapter and self._ready_at),
             "readiness_ttl_seconds": _READINESS_TTL_SECONDS,
             "manifest_status": self.manifest_store.latest_status(),
@@ -265,6 +352,9 @@ class FusionAgentRuntime:
             for name in (
                 "FUSION_MCP_ENDPOINT",
                 "FUSION_MCP_COMMAND",
+                "FUSION_AGENT_BACKEND",
+                "FUSION_FAUST_COMMAND",
+                "FUSION_FAUST_CWD",
                 "FUSION_MCP_TRANSPORT_MODE",
                 "FUSION_MCP_CONNECT_TIMEOUT_SECONDS",
                 "FUSION_MCP_READ_TIMEOUT_SECONDS",
@@ -279,6 +369,30 @@ class FusionAgentRuntime:
     def _ensure_open(self) -> None:
         if self._closing:
             raise RuntimeError("Fusion Agent runtime is closed")
+
+
+class _MockCapabilityBackend:
+    """Deterministic typed backend for v2 protocol and benchmark tests."""
+
+    provider = "mock"
+    capabilities = set(MOCK_IMPLEMENTED_CAPABILITIES)
+
+    def preflight_operations(self, operations: list[OperationSpec]) -> None:
+        del operations
+
+    async def execute_operation(self, operation: OperationSpec) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "mock": True,
+            "operation": operation.model_dump(mode="json"),
+        }
+        if operation.kind == "analysis.physical_properties":
+            payload["physical_properties"] = {
+                target: {"mass_kg": 1.0, "volume_mm3": 1000.0}
+                for target in operation.target_refs
+            }
+        elif operation.kind == "analysis.interference":
+            payload["interference"] = {"count": 0, "pairs": []}
+        return payload
 
 
 class _MockFastBackend:

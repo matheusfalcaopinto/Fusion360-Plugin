@@ -12,22 +12,27 @@ LEGACY_SCHEMA_HASHES = {
     "fusion_agent_capture_viewport": "95e6084194e3151cead39a4bff0799286e87b98378d828cc94242fa4c0306d1b",
     "fusion_agent_discover_tools": "d5e6bef98c3b05e7e5c71b93e1d63440bd3d736d2f4f8d32cd017f127fdf047f",
     "fusion_agent_doctor": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-    "fusion_agent_dry_run_session": "90cdf65ac4b637263430ac59c3261d134e3e5c5cfc8b4af4d830c4679abeb210",
+    # CadSpec v2 intentionally extends these two inputs with an exclusive
+    # prompt/spec_json choice while retaining every legacy prompt field.
+    "fusion_agent_dry_run_session": "183a3ab0797142f8035701aabf8427f2cee61f06fdf280085ce390fb5a51f2a4",
     "fusion_agent_export_spec_json": "7733a3184e47da097235e0ed9d9ec5ff3869b9e053c3b3e9f714b9712f7bec84",
     "fusion_agent_hub_inventory": "d1f4171db617980bfbe4ac9db93e95c0947010393dc01c4539196dbcdf422a22",
     "fusion_agent_list_benchmarks": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
     "fusion_agent_list_sessions": "992fc65b90ff75f1eb8e2ac43a8173b019346061902debb082d2e629b36d472f",
     "fusion_agent_memory_list_project": "3a960332eb096b6113061734b5d1cc9be2e6bb79cc8f7974eb47207bdfe75c20",
     "fusion_agent_memory_search": "571b5d7085a5bd81bd6e61a31c3a593fef9114c4c703aab9ef347c338c785a88",
-    "fusion_agent_memory_write": "5f4596b19236322b1af1a4acc8a5210895c1932be8dd07ac4509487bd07cdf10",
+    # Memory v2 adds source/provenance controls and taint-safe record kinds.
+    "fusion_agent_memory_write": "feebbaab96f8ff15720e871b23d334897425c3f9a00e8a8a870b0a6ecac6e465",
     "fusion_agent_plan_spec": "aa58f8991072f0472c16d2f52ac4df525d6652d23cb494934adaa2c4add0a212",
-    "fusion_agent_probe": "c0aece8031ec16b3a626f5e40d8cfcc3eaa650c866b889ed45dbfac9452b5dbb",
+    # Endpoint policy removes model-supplied probe URLs in every profile.
+    "fusion_agent_probe": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
     "fusion_agent_propose_mapping": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
     "fusion_agent_read_manifest": "fb4c5c211fac3b3d72da77484aeb2763d51b278c78c1761e5984ff4b1c91cb0f",
-    "fusion_agent_read_session_artifact": "86c9aeb61516020239e2773646102a902d3e5e098e97b332447287866d7a99d1",
+    # CadSpec v2 persists typed execution.json and independent readback.json artifacts.
+    "fusion_agent_read_session_artifact": "fc2a017e8e533425045c189733022e6be21f993449b7478b5a95259ae6134ebd",
     "fusion_agent_read_trace": "60a557814303a0ec40c56f8e25ef8784a85397bf5dbe89a469c311aead6a8cdd",
     "fusion_agent_readiness_report": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
-    "fusion_agent_run_session": "bdfade934150b1b9700bc48d4d26e0ff8760a66e22285ea41e28e9defd314078",
+    "fusion_agent_run_session": "8a9f541add785a18895561890c279b68b6774e8e2e2b28a3fd24e46018a32490",
     "fusion_agent_safe_change_apply": "0247cd714e5dc5767b1bac3559f3aaf2492e5788cddf052d3c071095c610a3fd",
     "fusion_agent_safe_change_preview": "0403bcada14c6c00fb095b9005f85fedd288798f09bbeed7d47f2cbc4f563ece",
     "fusion_agent_session_health": "d5e6bef98c3b05e7e5c71b93e1d63440bd3d736d2f4f8d32cd017f127fdf047f",
@@ -85,7 +90,7 @@ def _schema_hash(schema: dict) -> str:
 
 
 def test_legacy_31_tool_surface_is_compatibility_locked() -> None:
-    definitions = {tool.name: tool for tool in list_tool_definitions()}
+    definitions = {tool.name: tool for tool in list_tool_definitions("all")}
     legacy_names = set(LEGACY_SCHEMA_HASHES) | set(LEGACY_EXPANDED_SCHEMAS)
 
     assert len(legacy_names) == 31

@@ -11,6 +11,22 @@ from cad_spec.models import (
     OutputSpec,
     ParameterSpec,
 )
+from cad_spec.v2 import (
+    CAPABILITY_BY_KIND,
+    EXPERIMENTAL_CAPABILITIES,
+    AssertionSpec,
+    CadSpecV2,
+    ComponentCreateOperation,
+    DocumentPolicyV2,
+    ExtrudeOperation,
+    NormalizedCadSpec,
+    RequirementSpec,
+    SketchCircleOperation,
+    SketchCreateOperation,
+    SketchRectangleOperation,
+    parse_cad_spec,
+    upgrade_legacy_plan_to_v2,
+)
 
 __all__ = [
     "AcceptanceTestSpec",
@@ -22,4 +38,18 @@ __all__ = [
     "JointSpec",
     "OutputSpec",
     "ParameterSpec",
+    "AssertionSpec",
+    "CadSpecV2",
+    "ComponentCreateOperation",
+    "DocumentPolicyV2",
+    "ExtrudeOperation",
+    "NormalizedCadSpec",
+    "RequirementSpec",
+    "SketchCircleOperation",
+    "SketchCreateOperation",
+    "SketchRectangleOperation",
+    "CAPABILITY_BY_KIND",
+    "EXPERIMENTAL_CAPABILITIES",
+    "parse_cad_spec",
+    "upgrade_legacy_plan_to_v2",
 ]

@@ -1,6 +1,13 @@
 param(
     [switch]$SkipInstall,
-    [switch]$SkipMcpConfig
+    [switch]$SkipMcpConfig,
+    [ValidateSet("normal", "advanced", "diagnostic", "benchmark", "all")]
+    [string]$ToolProfile = "normal",
+    [ValidateSet("autodesk_http", "faust_stdio")]
+    [string]$Backend = "autodesk_http",
+    [string]$FaustCommand,
+    [string]$FusionDataUrl,
+    [switch]$EnableFusionData
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,20 +51,36 @@ try {
         else {
             throw "Missing bundled fusion_agent_harness wheel under $WheelsRoot. Build the plugin with scripts\build-distribution.py."
         }
+        if ($Backend -eq "faust_stdio") {
+            & $Python -m pip install "fusion360-mcp-server==0.1.0"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install optional Faust backend 0.1.0." }
+        }
     }
 
     if (-not $SkipMcpConfig) {
-        & $Python (Join-Path $PluginRoot "scripts\configure_mcp.py") --plugin-root $PluginRoot --python $Python
+        $ConfigureArgs = @(
+            (Join-Path $PluginRoot "scripts\configure_mcp.py"),
+            "--plugin-root", $PluginRoot,
+            "--python", $Python,
+            "--tool-profile", $ToolProfile,
+            "--backend", $Backend
+        )
+        if ($FaustCommand) { $ConfigureArgs += @("--faust-command", $FaustCommand) }
+        if ($FusionDataUrl) { $ConfigureArgs += @("--fusion-data-url", $FusionDataUrl) }
+        if ($EnableFusionData) { $ConfigureArgs += "--enable-fusion-data" }
+        & $Python @ConfigureArgs
         if ($LASTEXITCODE -ne 0) { throw "Failed to configure .mcp.json." }
     }
 
     & $Python $Launcher --check
     if ($LASTEXITCODE -ne 0) { throw "Fusion Agent launcher check failed." }
+    $env:FUSION_AGENT_EXPECTED_TOOL_PROFILE = $ToolProfile
+    $env:FUSION_AGENT_EXPECTED_BACKEND = $Backend
     & $Python (Join-Path $PluginRoot "scripts\validate_plugin.py")
     if ($LASTEXITCODE -ne 0) { throw "Fusion Agent plugin validation failed." }
-    & $Python -c "import fusion_agent_mcp; from importlib.metadata import version; installed=version('fusion-agent-harness'); print(f'fusion-agent-harness: {installed}'); assert installed == fusion_agent_mcp.__version__ == '0.2.1', (installed, fusion_agent_mcp.__version__)"
+    & $Python -c "import fusion_agent_mcp; from importlib.metadata import version; installed=version('fusion-agent-harness'); print(f'fusion-agent-harness: {installed}'); assert installed == fusion_agent_mcp.__version__, (installed, fusion_agent_mcp.__version__)"
     if ($LASTEXITCODE -ne 0) { throw "Installed Fusion Agent version validation failed." }
-    & $Python -c "from fusion_agent_mcp.server import tool_specs; count=len(tool_specs()); print(f'fusion_agent MCP tools: {count}'); assert count == 35, count"
+    & $Python -c "from fusion_agent_mcp.server import list_tool_definitions,tool_specs; registry=len(tool_specs()); normal=len(list_tool_definitions('normal')); all_tools=len(list_tool_definitions('all')); print(f'fusion_agent MCP tools: registry={registry}, normal={normal}, all={all_tools}'); assert (registry,normal,all_tools)==(35,12,35),(registry,normal,all_tools)"
     if ($LASTEXITCODE -ne 0) { throw "Installed Fusion Agent tool-surface validation failed." }
 }
 finally {

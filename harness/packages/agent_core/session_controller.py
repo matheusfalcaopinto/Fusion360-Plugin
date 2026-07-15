@@ -8,6 +8,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -26,10 +27,10 @@ from agent_core.planner import PlanningRequest, RuleBasedPlanner
 from agent_core.repair_loop import RepairLoop
 from cad_spec.models import CadSpec
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
+from fusion_mcp_adapter.backend import create_fusion_client
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.mock_client import MOCK_NATIVE_TOOLS, MockMcpClient
 from fusion_mcp_adapter.policy import ToolPolicy
-from fusion_mcp_adapter.real_client import RealMcpClient
 from fusion_tool_facade.facade import FusionFacade
 from fusion_tool_facade.policy import MOCK_FACADE_NATIVE_MAP
 from fusion_tool_facade.vendor_facade import VENDOR_FACADE_NATIVE_TOOLS, VendorFusionFacade, is_vendor_manifest
@@ -109,16 +110,16 @@ class SessionController:
         self,
         planner: RuleBasedPlanner | None = None,
         *,
-        real_client: RealMcpClient | None = None,
+        real_client: Any | None = None,
         manifest_store: ManifestStore | None = None,
     ) -> None:
         self.planner = planner or RuleBasedPlanner()
-        self.real_client = real_client or RealMcpClient()
+        self.real_client = real_client or create_fusion_client()
         self._owns_real_client = real_client is None
         self.manifest_store = manifest_store
         self._safe_change_locks: dict[str, asyncio.Lock] = {}
 
-    def _real_client(self) -> RealMcpClient:
+    def _real_client(self) -> Any:
         return self.real_client
 
     async def aclose(self) -> None:

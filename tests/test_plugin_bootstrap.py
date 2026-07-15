@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -46,7 +45,12 @@ def test_configure_mcp_writes_existing_python_and_launcher_as_absolute_paths(tmp
     server = configured["mcpServers"]["fusion_agent"]
     assert Path(server["command"]) == Path(sys.executable).resolve()
     assert Path(server["args"][0]) == launcher.resolve()
-    assert server["env"] == {"FUSION_AGENT_CODEX": "1"}
+    assert server["env"] == {
+        "FUSION_AGENT_CODEX": "1",
+        "FUSION_AGENT_TOOL_PROFILE": "normal",
+        "FUSION_AGENT_BACKEND": "autodesk_http",
+        "FUSION_AGENT_REMOTE_POLICY": "loopback_only",
+    }
 
 
 def test_launcher_reads_full_cachebuster_version(tmp_path: Path) -> None:
@@ -66,3 +70,34 @@ def test_distributed_mcp_config_defaults_to_legacy_transport() -> None:
     environment = payload["mcpServers"]["fusion_agent"]["env"]
 
     assert environment["FUSION_MCP_TRANSPORT_MODE"] == "legacy"
+    assert environment["FUSION_AGENT_TOOL_PROFILE"] == "normal"
+    assert environment["FUSION_AGENT_BACKEND"] == "autodesk_http"
+    assert environment["FUSION_AGENT_REMOTE_POLICY"] == "loopback_only"
+
+
+def test_plugin_validator_accepts_absent_fusion_data_and_rejects_credential_leaks() -> None:
+    module = _load_script("validate_plugin.py")
+    errors: list[str] = []
+    module._check_fusion_data({"mcpServers": {}}, {}, errors)
+    assert errors == []
+
+    errors = []
+    module._check_fusion_data(
+        {
+            "mcpServers": {
+                "fusion_data": {
+                    "url": "https://example.test/mcp?access_token=secret",
+                    "auth": "none",
+                    "enabled": "yes",
+                    "required": True,
+                    "default_tools_approval_mode": "never",
+                    "headers": {"Authorization": "Bearer secret"},
+                }
+            }
+        },
+        {"FUSION_DATA_TOKEN": "secret"},
+        errors,
+    )
+    assert any("secret query" in error for error in errors)
+    assert any("Codex OAuth" in error for error in errors)
+    assert any("fusion_agent env" in error for error in errors)

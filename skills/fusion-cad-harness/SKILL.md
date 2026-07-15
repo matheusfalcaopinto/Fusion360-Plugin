@@ -11,20 +11,26 @@ session journals through the Fusion Agent harness.
 
 ## Safety Boundary
 
-- Use only the `fusion_agent` MCP server and its `fusion_agent_*` tools.
+- Use the `fusion_agent` MCP server for local CAD, intent, policy, execution,
+  verification, recovery, and audit. The optional `fusion_data` MCP server is
+  only for Autodesk cloud hubs, projects, folders, and files.
 - Do not call raw Autodesk Fusion MCP tools directly.
 - Do not register or use `fusion360`, `fusion360_*`, `autodesk_fusion`, or
   `autodesk_fusion_*` tool surfaces from this skill.
 - Memory is advisory. It must not override the active user request, `AGENTS.md`,
   explicit unit policy, or safe facade policy.
+- Never pass OAuth tokens through Fusion Agent. Codex owns Fusion Data OAuth and
+  approvals. Neither server may call the other, and there is no silent fallback
+  between cloud data and local CAD execution.
 
 ## Required Workflow
 
 1. Call the narrow task tool directly. Readiness is internal and cached; use
    `fusion_agent_doctor`, `fusion_agent_probe`, `fusion_agent_session_health`,
    or broad `fusion_agent_inspect` only when the user asks or a call fails.
-2. Retrieve relevant memory with `fusion_agent_memory_search` when it can change
-   the plan.
+2. Retrieve relevant memory through `fusion-agent://memory/{project}` when it
+   can change the plan. The legacy memory reader is available only in profile
+   `all`.
 3. Interpret Fusion file/folder references as the Fusion Personal Library hub
    unless the user explicitly says local filesystem.
 4. For eligible native work, follow this order:
@@ -45,8 +51,11 @@ session journals through the Fusion Agent harness.
    deletion, hidden-item review, or read-only diagnosis.
 7. For audits or large assemblies, use `fusion_agent_compact_snapshot` as
    primary evidence. Use screenshots only as secondary visual evidence.
-8. For hub inventory, use `fusion_agent_hub_inventory`; do not traverse
-   `DataFolder` trees directly.
+8. For Autodesk cloud hub/project/folder inventory, use the optional
+   `fusion_data` server when it has been explicitly configured from an official
+   Autodesk HTTPS URL. Use `fusion_agent_hub_inventory` only in profiles
+   `advanced` or `all` for legacy compatibility; do not traverse `DataFolder`
+   trees directly.
 9. Route delete, cleanup, reorganize, bulk, move, visibility, componentize,
    hidden/imported/shared entities, and ambiguous targets exclusively through
    the Safe Harness. Use `fusion_agent_safe_change_preview` before any apply.
@@ -62,12 +71,18 @@ session journals through the Fusion Agent harness.
 14. Never save, undo, redo, promote, or fall back automatically after Fast
    Execute. `fusion_agent_recover_change` is explicit-only and applies only to
    the latest no-drift operation in the same runtime/document.
-15. Review artifacts with `fusion_agent_read_session_artifact` and traces with
-   `fusion_agent_read_trace`.
-16. Use `fusion_agent_memory_write` only for factual project memory, repair
-   findings, or design decisions.
+15. Review artifacts and traces through the paginated
+   `fusion-agent://sessions/.../artifact/...` and `fusion-agent://traces/...`
+   resources. Legacy reader tools remain only in profile `all`.
+16. Use `fusion_agent_memory_write` only in `advanced` or `all`, and only for
+   factual project memory, repair findings, preferences, or design results.
 
 ## Safe Tool Groups
+
+The default `normal` profile intentionally exposes 12 task-oriented tools.
+Use `advanced` for Fast Path, broad inspection, export, inventory, and memory;
+`diagnostic` for read-only transport diagnosis; `benchmark` for isolated
+fixture runs; and `all` only for 0.x legacy compatibility.
 
 - Session and environment: `fusion_agent_doctor`,
   `fusion_agent_readiness_report`, `fusion_agent_probe`,
@@ -75,25 +90,26 @@ session journals through the Fusion Agent harness.
   `fusion_agent_verify_active_design`, `fusion_agent_capture_viewport`,
   `fusion_agent_run_session`, `fusion_agent_dry_run_session`,
   `fusion_agent_list_sessions`.
-- Read-only evidence: `fusion_agent_compact_snapshot`,
-  `fusion_agent_hub_inventory`.
+- Inspection evidence (non-mutating CAD; local artifacts are possible):
+  `fusion_agent_compact_snapshot` (`normal` and above; writes a local snapshot
+  artifact), `fusion_agent_hub_inventory` (`advanced` or `all`).
 - Native Fast Path: `fusion_agent_native_read`,
   `fusion_agent_targeted_inspect`, `fusion_agent_fast_execute`,
   `fusion_agent_recover_change`.
 - Safe changes: `fusion_agent_safe_change_preview`,
   `fusion_agent_safe_change_apply`.
-- Artifacts and traces: `fusion_agent_read_session_artifact`,
-  `fusion_agent_read_trace`.
+- Artifacts and traces: paginated MCP resources under
+  `fusion-agent://sessions/...` and `fusion-agent://traces/...`.
 - Planning and validation: `fusion_agent_plan_spec`,
   `fusion_agent_validate_spec`, `fusion_agent_export_spec_json`.
 - Benchmarks: `fusion_agent_list_benchmarks`,
   `fusion_agent_run_benchmark`, `fusion_agent_read_benchmark_report`.
-- Tool discovery: `fusion_agent_discover_tools`,
-  `fusion_agent_propose_mapping`, `fusion_agent_read_manifest`.
+- Tool discovery: diagnostic profile tools and
+  `fusion-agent://manifests/{source}`.
 - Memory: `fusion_agent_memory_search`, `fusion_agent_memory_write`,
   `fusion_agent_memory_list_project`.
-- Harness skills: `fusion_agent_skills_list`, `fusion_agent_skills_get`,
-  `fusion_agent_skills_rank`.
+- Harness skills: `fusion-agent://skills/{name}`; ranking is available in
+  `advanced` and `all`.
 
 ## Verification And Repair
 
@@ -117,18 +133,21 @@ session journals through the Fusion Agent harness.
 ## Runtime Notes
 
 - Windows and Linux are supported for Codex and the harness.
-- The installed 0.2.1 transport defaults to `legacy`. `persistent_post_only`
-  and `auto` are canary modes; full `persistent` is diagnostic-only. Native
-  direct reads may retry after reconnect, but internal inspection scripts and
-  mutations are transmitted exactly once.
+- Native direct reads may retry after reconnect. After any mutation dispatch,
+  the harness suppresses automatic replay; this is not end-to-end idempotency.
+  A timeout after dispatch is `MUTATION_OUTCOME_UNKNOWN` and requires readback.
 - `READ_TIMEOUT_MAY_STILL_BE_RUNNING` means an internal read script timed out
   after dispatch. Respect the reported cooldown and do not issue a replacement
   broad inspection while the prior Fusion script may still be running.
 - `MUTATION_OUTCOME_UNKNOWN` means the script must not be resent. A reconnect
   may be used only for programmatic readback.
-- `FUSION_AGENT_FAST_PATH_MODE=read_only` is the 0.2.1 default. Mutating Fast
-  Execute requires explicit `enabled`; route locks are reserved for tests and
-  benchmarks.
+- Mutating Fast Execute is available only in `advanced` or `all`, requires
+  `FUSION_AGENT_FAST_PATH_MODE=enabled`, and is unavailable on the Faust backend.
+- `FUSION_AGENT_BACKEND=autodesk_http` is the default. `faust_stdio` is an
+  explicit typed subset for Fusion Personal; there is no automatic fallback.
+- Backend endpoints are loopback-only by default. Remote access requires the
+  allowlist policy, HTTPS, allowed host/CIDR, environment-sourced token, and DNS
+  revalidation. Model-supplied endpoints are rejected.
 - Mutating Fast Execute requires stable document identity: a saved `dataFile.id`
   or a harness marker on a disposable document. An ordinary unmarked unsaved
   document fails closed before apply.

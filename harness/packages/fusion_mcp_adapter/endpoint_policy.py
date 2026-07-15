@@ -103,6 +103,8 @@ def validate_endpoint(
         raise EndpointPolicyError("Fusion MCP endpoint must include a hostname")
     if parsed.username is not None or parsed.password is not None:
         raise EndpointPolicyError("credentials must not be embedded in the endpoint URL")
+    if parsed.query:
+        raise EndpointPolicyError("endpoint URL query strings are not allowed; tokens must come from the environment")
     if parsed.fragment:
         raise EndpointPolicyError("endpoint URL fragments are not allowed")
 

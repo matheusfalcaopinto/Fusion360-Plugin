@@ -94,12 +94,15 @@ def _build_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
             "script": script,
             "api_references": definition.get("api_references", []),
             "target_query_ids": target_ids,
-            "verification": {
-                "queries": queries,
-                "assertions": assertions,
-                "limit_per_query": 20,
-                "include_screenshot": False,
-            },
+            "verification": _with_contract_requirement(
+                {
+                    "queries": queries,
+                    "assertions": assertions,
+                    "limit_per_query": 20,
+                    "include_screenshot": False,
+                },
+                requirement_id=f"{definition['case_id']}_initial_contract",
+            ),
         }
     )
 
@@ -114,9 +117,42 @@ def _eco_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
             "script": script,
             "api_references": eco.get("api_references", []),
             "target_query_ids": eco["target_query_ids"],
-            "verification": eco["verification"],
+            "verification": _with_contract_requirement(
+                eco["verification"],
+                requirement_id=f"{definition['case_id']}_eco_contract",
+            ),
         }
     )
+
+
+def _with_contract_requirement(
+    verification: dict[str, Any],
+    *,
+    requirement_id: str,
+) -> dict[str, Any]:
+    """Attach explicit requirement coverage to one reviewed benchmark phase."""
+
+    normalized = json.loads(json.dumps(verification))
+    assertions = normalized.get("assertions")
+    if not isinstance(assertions, list) or not assertions:
+        raise ValueError("benchmark verification must declare assertions")
+    assertion_ids: list[str] = []
+    for index, assertion in enumerate(assertions, start=1):
+        if not isinstance(assertion, dict):
+            raise ValueError("benchmark verification assertions must be objects")
+        assertion_id = str(assertion.get("id") or f"{requirement_id}_assertion_{index}")
+        assertion["id"] = assertion_id
+        assertion_ids.append(assertion_id)
+    normalized["requirements"] = [
+        {
+            "id": requirement_id,
+            "description": "All reviewed assertions for this canonical benchmark phase must pass.",
+            "required": True,
+            "assertion_ids": assertion_ids,
+            "oracle": "contract",
+        }
+    ]
+    return normalized
 
 
 def _trial_context(case_id: str, definition: dict[str, Any], run_id: str) -> TrialContext:

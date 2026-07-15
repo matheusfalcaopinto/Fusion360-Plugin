@@ -26,8 +26,8 @@ def run(_context: str):
 """
 
 
-def test_public_surface_has_35_safe_structured_tools() -> None:
-    tools = server.list_tool_definitions()
+def test_all_profile_has_35_safe_structured_tools() -> None:
+    tools = server.list_tool_definitions("all")
     names = {tool.name for tool in tools}
 
     assert len(tools) == 35
@@ -58,7 +58,7 @@ def test_server_advertises_harness_version() -> None:
     app = server.build_server()
 
     assert app.name == "fusion-agent-harness"
-    assert app.version == "0.2.2"
+    assert app.version == server.__version__
 
 
 def test_read_only_fast_execute_schema_allows_queries_without_assertions() -> None:
@@ -119,9 +119,17 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
             ],
             "assertions": [
                 {
+                    "id": "document_name_unchanged",
                     "query_id": "document",
                     "field": "name",
                     "operator": "unchanged",
+                }
+            ],
+            "requirements": [
+                {
+                    "id": "read_only_document_unchanged",
+                    "assertion_ids": ["document_name_unchanged"],
+                    "required": True,
                 }
             ],
         },
@@ -133,7 +141,7 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
         runtime=runtime,
     )
 
-    assert response.payload["status"] == "applied_partially_verified"
+    assert response.payload["status"] == "applied_verified"
     assert response.payload["native_call_count"] == 4
     assert response.payload["mutating_call_count"] == 0
     assert response.payload["declared_mutation_count"] == 0
@@ -172,7 +180,10 @@ async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audi
                     }
                 ],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                ],
+                "requirements": [
+                    {"id": "payload_gate_body_created", "assertion_ids": ["body_exists"], "required": True}
                 ],
             },
         },
@@ -237,13 +248,16 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                ],
+                "requirements": [
+                    {"id": "recovery_body_created", "assertion_ids": ["body_exists"], "required": True}
                 ],
             },
         },
         runtime=runtime,
     )
-    assert applied.payload["status"] == "applied_partially_verified"
+    assert applied.payload["status"] == "applied_verified"
 
     recovered = await server.execute_tool_response(
         "fusion_agent_recover_change",
@@ -326,13 +340,16 @@ async def test_recovery_blocks_same_count_drift_outside_target_queries(monkeypat
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                ],
+                "requirements": [
+                    {"id": "drift_body_created", "assertion_ids": ["body_exists"], "required": True}
                 ],
             },
         },
         runtime=runtime,
     )
-    assert applied.payload["status"] == "applied_partially_verified"
+    assert applied.payload["status"] == "applied_verified"
     runtime._mock_backend.entities[("parameter", "Unrelated")]["expression"] = "11 mm"
 
     recovered = await server.execute_tool_response(

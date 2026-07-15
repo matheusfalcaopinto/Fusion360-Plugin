@@ -1,6 +1,6 @@
 {
   "name": "fusion-agent-codex",
-  "version": "0.2.2+codex.20260715173034",
+  "version": "0.3.0+codex.20260715174811",
   "description": "Safe Codex plugin for the Fusion Agent CAD harness.",
   "author": {
     "name": "Local developer"
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Fusion Agent Codex",
     "shortDescription": "Use the safe Fusion Agent CAD harness from Codex.",
-    "longDescription": "Fusion Agent Codex exposes a persistent, mutation-safe Fusion Agent runtime through one public MCP server. Codex plans API-backed scripts while the harness enforces lint, routing, no automatic replay after dispatch, conservative unknown outcomes, contract verification, manifest drift detection, audit artifacts, and Safe Harness fallback without exposing raw Autodesk tools.",
+    "longDescription": "Fusion Agent Codex exposes a profile-filtered, mutation-safe CAD harness plus optional Codex-managed Fusion Data OAuth. It enforces typed CadSpec contracts, baseline-bound previews, no automatic replay after mutation dispatch, programmatic readback, endpoint policy, and typed backends without exposing arbitrary backend code in the normal profile.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

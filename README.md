@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/matheusfalcaopinto/Fusion360-Plugin"><img alt="Repository" src="https://img.shields.io/badge/GitHub-Fusion360--Plugin-181717?logo=github"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.2-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0-2563eb">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-plugin-111827">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-fusion__agent-0f766e">
@@ -18,6 +18,8 @@
 > Toda acao CAD passa pelo servidor seguro `fusion_agent`, com planejamento,
 > validacao, modo mock/dry-run, verificacao programatica, reparo limitado e
 > rastreabilidade por artefatos.
+> O segundo servidor opcional `fusion_data` e reservado aos dados cloud da
+> Autodesk e usa OAuth gerenciado pelo proprio Codex.
 
 ## Sumario
 
@@ -55,7 +57,10 @@ Path com lint, baseline e readback programatico.
 | Capacidade | O que entrega |
 | --- | --- |
 | Planejamento CAD | Converte pedidos em CAD Specs com nomes, unidades e parametros claros. |
-| Transporte controlado | Usa `legacy` por padrao e permite canario persistente POST-only sem repetir scripts incertos. |
+| Transporte controlado | Nunca repete automaticamente uma mutacao depois do dispatch; outcome incerto exige readback. |
+| CadSpec v2 | Operacoes discriminadas, referencias tipadas, dependencias e requisitos verificaveis, sem campos extras silenciosos. |
+| Perfis MCP | `normal` expoe 12 ferramentas orientadas a tarefa; superficies especializadas ficam em `advanced`, `diagnostic`, `benchmark` e `all`. |
+| Backends explicitos | `autodesk_http` e `faust_stdio` sao selecionados no startup, sem fallback automatico. |
 | Native Fast Path | Consulta a API, inspeciona alvos e executa um script limitado com uma unica escrita. |
 | Guardrail de planner | Bloqueia prompts de auditoria, hub, reorg e delete para evitar specs genericas. |
 | Snapshots compactos | Coleta ocorrencias, corpos visiveis, bboxes e duplicidades como evidencia primaria. |
@@ -64,9 +69,8 @@ Path com lint, baseline e readback programatico.
 | Dry-run | Valida intencao antes de qualquer escrita real. |
 | Verificacao | Confere corpos, parametros, bounding boxes, features, exports e screenshots. |
 | Reparos limitados | Classifica falhas e evita loops abertos. |
-| Memoria de projeto | Guarda decisoes factuais e aprendizados tecnicos. |
+| Memoria de projeto | Schema v2 com origem, proveniencia, confianca, hash, expiracao, citacoes e taint. |
 | Journals e traces | Produz artefatos para auditoria e diagnostico. |
-| Benchmark A/B | Compara `safe_harness` e `native_fast` com oracles independentes e artefatos por `run_id`. |
 
 ## O Que Vem No Plugin
 
@@ -80,7 +84,7 @@ Path com lint, baseline e readback programatico.
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
 | Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
 | Fonte canônica | `harness/` | Fonte rastreada usada para testes e build reproduzivel. |
-| Runtime Python | `wheels/fusion_agent_harness-0.2.2-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
+| Runtime Python | `wheels/fusion_agent_harness-0.3.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
 
@@ -134,8 +138,9 @@ flowchart TB
 
 > [!WARNING]
 > Nao adicione servidores MCP chamados `fusion360`, `autodesk_fusion` ou
-> equivalentes ao fluxo do Codex para este plugin. A superficie suportada e
-> somente `fusion_agent`.
+> equivalentes ao fluxo local deste plugin. `fusion_agent` e a unica superficie
+> CAD executora; `fusion_data`, quando configurado, e um segundo MCP oficial
+> somente para dados cloud e nunca chama o harness.
 
 ## Modelo De Seguranca
 
@@ -160,6 +165,24 @@ INTERFERENCE_DETECTED
 PHYSICAL_PROPERTY_MISMATCH
 SCREENSHOT_FAILED
 ```
+
+### Mutacao, contrato e drift
+
+`dispatched`, `may_have_applied`, `post_dispatch_replay_suppressed` e
+`mutation_outcome` descrevem o transporte. Timeout depois do dispatch retorna
+`MUTATION_OUTCOME_UNKNOWN`; a mutacao nao e reenviada e a recuperacao exige
+inspecao/readback.
+
+A verificacao separa `mutation_status`, `assertion_status`, `intent_coverage` e
+`verification_level`. Um contrato so e considerado completo quando o readback
+confirma a mutacao, todas as assertions/requisitos obrigatorios estao cobertos
+e a inspecao terminou completa. Em snapshots parciais, a conclusao maxima e
+`no_drift_in_observed_scope`.
+
+Safe Change usa preview v2 com identidade estavel, fingerprint e bindings. O
+estado progride atomicamente por `ready -> applying -> consumed`; qualquer
+drift torna o preview `stale`, e qualquer dispatch o consome mesmo se o outcome
+ficar desconhecido.
 
 ## Requisitos
 
@@ -211,6 +234,23 @@ O setup cria `.venv`, instala o wheel em `wheels/` e executa uma checagem basica
 do launcher. Ao final, ele substitui o comando portatil de `.mcp.json` pelos
 caminhos absolutos do interpretador e do launcher desta instalacao. Isso evita
 o alias `WindowsApps` no Windows e torna explicito qual ambiente hospeda o MCP.
+
+Faust e opcional e explicitamente pinado:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install "fusion360-mcp-server==0.1.0"
+.\.venv\Scripts\python.exe scripts\configure_mcp.py --plugin-root . --python .\.venv\Scripts\python.exe --backend faust_stdio
+```
+
+Fusion Data nao tem URL presumida no repositorio. Habilite-o somente com uma
+URL HTTPS confirmada pela documentacao/conexao oficial da Autodesk:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\configure_mcp.py --plugin-root . --python .\.venv\Scripts\python.exe --enable-fusion-data --fusion-data-url "<URL-oficial>"
+```
+
+O Codex gerencia OAuth e approvals; nenhum token Fusion Data entra no ambiente
+do `fusion_agent`.
 
 > [!TIP]
 > Se `python` nao estiver no `PATH`, defina `FUSION_AGENT_PYTHON` com o caminho
@@ -320,7 +360,7 @@ sequenceDiagram
   H-->>C: API, identidade e alvos unicos
   C->>C: gera script e contrato de verificacao
   C->>H: fast_execute ou Safe Harness
-  H->>F: uma escrita, sem retry
+  H->>F: no maximo um dispatch; sem replay automatico depois dele
   H->>F: readback direcionado
   H-->>C: estado, assertions, traces e evidencias
 ```
@@ -329,15 +369,17 @@ Checklist de uso:
 
 - comece pela ferramenta especifica; `doctor`, `probe`, `session_health` e
   inspecao ampla ficam para diagnostico solicitado ou falha de readiness;
-- busque memoria com `fusion_agent_memory_search`;
+- recupere memoria pelo recurso paginado `fusion-agent://memory/{project}`;
 - para uma operacao nativa elegivel, consulte somente a documentacao necessaria
   com `fusion_agent_native_read`, delimite alvos com
   `fusion_agent_targeted_inspect` e declare assertions no
   `fusion_agent_fast_execute`;
-- para criacao CAD conhecida, gere plano com `fusion_agent_plan_spec`;
+- para criacao CAD conhecida, prefira CadSpec v2 estrito; CadSpec v1 continua
+  aceito em 0.x com warning e sem verificacao contratual completa;
 - para auditoria, inventario de hub, reorg, cleanup ou delete, nao use o
   planner; use `fusion_agent_compact_snapshot`,
-  `fusion_agent_hub_inventory` e `fusion_agent_safe_change_preview`;
+  `fusion_agent_safe_change_preview`; inventario cloud pertence ao MCP opcional
+  `fusion_data`;
 - use Safe Harness para delete, cleanup, bulk, move, visibilidade,
   componentize, entidades ocultas/importadas/compartilhadas e ambiguidade;
 - use `fusion_agent_dry_run_session` e `fusion_agent_run_session` para receitas
@@ -377,11 +419,15 @@ Endpoint real no Windows:
 $env:FUSION_MCP_ENDPOINT = "http://127.0.0.1:27182/mcp"
 ```
 
-Linux conectando a um host Windows:
+Linux conectando por tunnel SSH para o loopback do host Windows:
 
 ```bash
-export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
+ssh -L 27182:127.0.0.1:27182 <windows-host>
+export FUSION_MCP_ENDPOINT="http://127.0.0.1:27182/mcp"
 ```
+
+Um endpoint remoto direto exige HTTPS, allowlist e token do ambiente; DNS e
+revalidado antes das chamadas para bloquear rebinding.
 
 ## Variaveis De Ambiente
 
@@ -390,8 +436,14 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_CODEX` | Nao | Definida como `1` pelo plugin para indicar execucao via Codex. |
 | `FUSION_AGENT_PYTHON` | Opcional | Caminho explicito para o Python que hospeda o MCP server. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
-| `FUSION_MCP_ENDPOINT` | Real Fusion | Endpoint HTTP de um servidor MCP/Fusion real. |
-| `FUSION_MCP_TRANSPORT_MODE` | Opcional | `legacy` (padrao 0.2.2), `persistent_post_only`, `auto` ou `persistent` diagnostico. |
+| `FUSION_AGENT_TOOL_PROFILE` | Opcional | `normal` (padrao), `advanced`, `diagnostic`, `benchmark` ou `all`. |
+| `FUSION_AGENT_BACKEND` | Opcional | `autodesk_http` (padrao) ou `faust_stdio`; nunca ha fallback automatico. |
+| `FUSION_MCP_ENDPOINT` | Real Fusion Autodesk | Endpoint do backend local Autodesk; loopback-only por padrao. |
+| `FUSION_FAUST_COMMAND` | Faust | Comando da sessao stdio persistente `fusion360-mcp-server==0.1.0`. |
+| `FUSION_AGENT_REMOTE_POLICY` | Opcional | `loopback_only` (padrao) ou `allowlist` para HTTPS remoto autenticado. |
+| `FUSION_AGENT_REMOTE_ALLOWLIST` | Remoto | Hosts/CIDRs permitidos quando a politica remota e `allowlist`. |
+| `FUSION_MCP_BEARER_TOKEN` | Remoto | Token lido somente do ambiente e redigido de logs. |
+| `FUSION_MCP_TRANSPORT_MODE` | Opcional | `legacy`, `persistent_post_only`, `auto` ou `persistent` diagnostico. |
 | `FUSION_MCP_CONNECT_TIMEOUT_SECONDS` | Opcional | Timeout de conexao; padrao `5`. |
 | `FUSION_MCP_READ_TIMEOUT_SECONDS` | Opcional | Timeout de leitura; padrao `120`. |
 | `FUSION_MCP_MUTATION_TIMEOUT_SECONDS` | Opcional | Timeout de mutacao; padrao `240`. |
@@ -402,7 +454,8 @@ export FUSION_MCP_ENDPOINT="http://<windows-host>:17182/mcp"
 | `FUSION_AGENT_INSPECTION_MAX_ENTITIES` | Opcional | Budget default de entidades visitadas; padrao `1000`. |
 | `FUSION_AGENT_INSPECTION_DEADLINE_MS` | Opcional | Deadline default de inspecao; padrao `1500`. |
 | `FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES` | Opcional | Teto default de resposta; padrao `1048576`. |
-| `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` (padrao em 0.2.2) ou `enabled`. |
+| `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` ou `enabled`; mutacao apenas em `advanced/all` e nunca no Faust. |
+| `FUSION_AGENT_EXPERIMENTAL_MANUFACTURING` | Experimental | `1` habilita APIs sheet metal/CAM somente em `advanced/all`. |
 | `FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES` | Opcional | Limite fail-closed do script final transmitido pelo Fast Execute, depois dos guards; padrao `28672` (28 KiB). |
 | `FUSION_AGENT_EXECUTION_PATH` | Teste/benchmark | `auto` (padrao), `native_fast` ou `safe_harness`; valores fixos travam a rota. |
 | `FUSION_AGENT_TELEMETRY` | Opcional | Quando `1`, grava telemetria local redigida; nenhum conteudo e enviado externamente. |
@@ -417,22 +470,11 @@ canario de leitura de dois segundos e fixa `legacy` para o restante do processo
 se o canario falhar. O modo `persistent` completo permanece disponivel somente
 para diagnostico explicito na serie 0.2.x.
 
-Scripts internos de inspecao e mutacoes usam replay
-`BEFORE_DISPATCH_ONLY`. Se uma leitura desse tipo expirar depois do dispatch,
+Scripts internos de inspecao e mutacoes usam replay `BEFORE_DISPATCH_ONLY`.
+Isso significa **sem replay automatico depois do dispatch**, nao idempotencia
+end-to-end. Se uma leitura desse tipo expirar depois do dispatch,
 o harness retorna `READ_TIMEOUT_MAY_STILL_BE_RUNNING`, invalida a sessao e
 aplica cooldown; o script nao e reenviado automaticamente.
-
-Para mutacoes, a garantia publica e somente **no automatic replay after
-dispatch**. Os campos `dispatched`, `may_have_applied`,
-`post_dispatch_replay_suppressed` e `mutation_outcome` sao autoritativos. Um
-timeout depois do envio retorna `MUTATION_OUTCOME_UNKNOWN`; a recuperacao exige
-inspecao/readback e nunca repete automaticamente a intencao anterior.
-
-Safe Change usa preview v2 com identidade estavel do documento, fingerprint,
-bindings e budget de inspecao. O apply revalida tudo sob lock e consome o
-preview depois de qualquer dispatch. `applied_verified` significa contrato
-declarado coberto por readback completo, nao uma promessa irrestrita sobre a
-intencao do usuario.
 
 ### Orcamentos de inspecao
 
@@ -454,7 +496,25 @@ mudanca Safe Harness.
 
 ## Ferramentas MCP
 
-A skill agrupa as ferramentas seguras em familias:
+A superficie e filtrada tanto em `tools/list` quanto em `tools/call`. Uma
+ferramenta escondida falha antes do handler com
+`TOOL_NOT_AVAILABLE_IN_PROFILE`.
+
+| Perfil | Superficie |
+| --- | --- |
+| `normal` | 12 ferramentas para readiness, leitura direcionada, snapshot, CadSpec, sessao, verificacao, Safe Change, recovery e viewport. |
+| `advanced` | `normal` mais Fast Path, inspecao ampla, dry-run/export, inventario e memoria. |
+| `diagnostic` | Readiness, doctor, probe, health, discovery, mapping e inspecoes somente leitura. |
+| `benchmark` | Runner, relatorios e leituras/verificacoes de fixtures isoladas; mutacao direta fica oculta. |
+| `all` | As 35 ferramentas legadas da serie 0.x. |
+
+Leitores repetitivos foram substituidos fora de `all` por recursos paginados:
+`fusion-agent://sessions/...`, `artifact/...`, `traces/...`, `manifests/...`,
+`skills/...`, `memory/...` e `benchmarks/...`. O servidor tambem publica os
+prompts `fusion-inspect-plan-verify`, `fusion-safe-change`,
+`fusion-recover-unknown-outcome` e `fusion-benchmark-case`.
+
+A skill agrupa a superficie completa de compatibilidade em familias:
 
 | Grupo | Ferramentas |
 | --- | --- |
@@ -608,7 +668,7 @@ capture viewport.
 |   |-- packages/
 |   `-- tests/
 |-- wheels/
-|   `-- fusion_agent_harness-0.2.2-py3-none-any.whl
+|   `-- fusion_agent_harness-0.3.0-py3-none-any.whl
 |-- .editorconfig
 |-- .gitattributes
 |-- .gitignore
@@ -656,7 +716,7 @@ Confirme se o arquivo existe em `wheels/`. Este repositorio deve publicar o
 wheel porque ele faz parte da distribuicao do plugin.
 
 ```text
-wheels/fusion_agent_harness-0.2.2-py3-none-any.whl
+wheels/fusion_agent_harness-0.3.0-py3-none-any.whl
 ```
 
 </details>
@@ -747,7 +807,7 @@ variavel vazia para usar o wheel embutido.
 
 ## Publicacao
 
-Versao atual: `0.2.2`.
+Versao atual: `0.3.0`.
 
 Checklist de release:
 
@@ -757,15 +817,19 @@ Checklist de release:
 3. Gere
    `fusion_agent_harness-<versao>-py3-none-any.whl`.
 4. Mantenha exatamente um wheel intencional em `wheels/`.
-5. Rode `python scripts/validate_plugin.py`, a suite Pytest e o launcher com
-   `--check`.
-6. Aplique o cachebuster `0.2.2+codex.<timestamp-UTC>` somente depois desses
+5. Rode `python scripts/validate_plugin.py`, o launcher com `--check` e a suite
+   `python -m pytest -q`.
+6. Aplique o cachebuster `0.3.0+codex.<timestamp-UTC>` exclusivamente com o
+   helper `update_plugin_cachebuster.py` do `plugin-creator`, somente depois desses
    gates.
 7. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
    `fusion-agent-codex@personal`.
-8. Confirme no cache instalado a versao exata, 35 ferramentas, output schemas e
-   somente nomes `fusion_agent_*`.
-9. Atualize `README.md` e `CHANGELOG.md` e crie a tag, por exemplo `v0.2.2`.
+8. Em uma task nova, confirme a versao exata, o perfil `normal` com 12
+   ferramentas, output schemas e somente nomes `fusion_agent_*`; `all` deve
+   manter 35 durante a serie 0.x.
+9. Atualize `README.md` e `CHANGELOG.md` e crie a tag correspondente, por
+   exemplo `v0.3.0`. O workflow da tag recompila duas vezes, compara o wheel
+   rastreado e publica plugin, wheel, notas e `SHA256SUMS`.
 
 ## Licenca
 

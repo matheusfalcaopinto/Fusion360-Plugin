@@ -7,6 +7,9 @@
       ],
       "env": {
         "FUSION_AGENT_CODEX": "1",
+        "FUSION_AGENT_TOOL_PROFILE": "normal",
+        "FUSION_AGENT_BACKEND": "autodesk_http",
+        "FUSION_AGENT_REMOTE_POLICY": "loopback_only",
         "FUSION_MCP_ENDPOINT": "http://127.0.0.1:27182/mcp",
         "FUSION_AGENT_DEFAULT_MODE": "real",
         "FUSION_AGENT_REQUIRE_REAL": "0",

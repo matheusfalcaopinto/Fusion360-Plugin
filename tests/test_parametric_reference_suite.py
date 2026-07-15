@@ -179,6 +179,15 @@ def _build_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
             "verification": {
                 "queries": queries,
                 "assertions": assertions,
+                "requirements": [
+                    {
+                        "id": f"{definition['case_id']}_initial_contract",
+                        "description": "All reviewed assertions for this canonical benchmark phase must pass.",
+                        "required": True,
+                        "assertion_ids": [assertion["id"] for assertion in assertions],
+                        "oracle": "contract",
+                    }
+                ],
                 "limit_per_query": 20,
                 "include_screenshot": False,
             },
@@ -188,6 +197,23 @@ def _build_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
 
 def _eco_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
     eco = definition["eco"]
+    verification = json.loads(json.dumps(eco["verification"]))
+    assertion_ids = []
+    for index, assertion in enumerate(verification["assertions"], start=1):
+        assertion_id = str(
+            assertion.get("id") or f"{definition['case_id']}_eco_contract_assertion_{index}"
+        )
+        assertion["id"] = assertion_id
+        assertion_ids.append(assertion_id)
+    verification["requirements"] = [
+        {
+            "id": f"{definition['case_id']}_eco_contract",
+            "description": "All reviewed assertions for this canonical benchmark phase must pass.",
+            "required": True,
+            "assertion_ids": assertion_ids,
+            "oracle": "contract",
+        }
+    ]
     return validate_fast_execute_request(
         {
             "intent": eco["intent"],
@@ -195,7 +221,7 @@ def _eco_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
             "script": script,
             "api_references": eco.get("api_references", []),
             "target_query_ids": eco["target_query_ids"],
-            "verification": eco["verification"],
+            "verification": verification,
         }
     )
 
@@ -392,6 +418,17 @@ def test_case_definition_and_additive_fast_path_contract(definition_path: Path) 
     assert len(request["verification"]["assertions"]) == sum(
         len(target["assertions"]) for target in targets
     )
+    assert request["verification"]["requirements"] == [
+        {
+            "id": f"{definition['case_id']}_initial_contract",
+            "description": "All reviewed assertions for this canonical benchmark phase must pass.",
+            "required": True,
+            "assertion_ids": [
+                assertion["id"] for assertion in request["verification"]["assertions"]
+            ],
+            "oracle": "contract",
+        }
+    ]
     lint = lint_fusion_script(
         script,
         "additive",
@@ -470,6 +507,11 @@ def test_oracle_and_optional_eco_files_are_complete_and_valid(definition_path: P
     request = _eco_request(definition, eco_script)
     assert request["change_class"] == "scoped_update"
     assert request["target_query_ids"] == target_query_ids
+    requirement = request["verification"]["requirements"][0]
+    assert requirement["id"] == f"{definition['case_id']}_eco_contract"
+    assert requirement["assertion_ids"] == [
+        assertion["id"] for assertion in request["verification"]["assertions"]
+    ]
     lint = lint_fusion_script(
         eco_script,
         "scoped_update",
@@ -481,7 +523,7 @@ def test_oracle_and_optional_eco_files_are_complete_and_valid(definition_path: P
     assert lint.mutating_syntax_detected is True
 
 
-def test_runner_case_summary_requires_every_phase_exactly_once_and_cleanup() -> None:
+def test_runner_case_summary_requires_every_phase_once_and_cleanup() -> None:
     runner = _reference_runner_module()
 
     initial = _passing_case_result()

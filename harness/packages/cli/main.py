@@ -15,11 +15,19 @@ from typing import Any
 from agent_core.session_controller import SessionController, SessionOptions
 from benchmark.models import BenchmarkRunConfig
 from benchmark.runner import BenchmarkRunner
+from fusion_mcp_adapter.endpoint_policy import (
+    EndpointDecision,
+    EndpointPolicyError,
+    open_url_no_redirects,
+    revalidate_resolution,
+    validate_endpoint,
+)
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.real_client import RealMcpClient
 from fusion_tool_facade.policy import MOCK_FACADE_NATIVE_MAP
 from memory.gate import MemoryGate
 from memory.retriever import MemoryRetriever
+from memory.schemas import MemoryRecord, MemoryScope, MemorySource, MemoryType, TrustLevel
 from memory.store import MemoryStore
 
 try:  # pragma: no cover - covered when Typer is installed in the target env
@@ -119,8 +127,10 @@ async def _tools_probe(endpoint: str | None = None) -> dict[str, Any]:
     for candidate in endpoints:
         if not candidate:
             continue
+        decision = validate_endpoint(candidate)
+        revalidate_resolution(decision)
         health_uri = candidate.removesuffix("/mcp") + "/health"
-        health = _http_get_probe(health_uri)
+        health = _http_get_probe(health_uri, decision=decision)
         list_tools: dict[str, Any]
         client = RealMcpClient(endpoint=candidate, timeout_seconds=3)
         try:
@@ -194,13 +204,56 @@ def _memory_search(query: str, project: str) -> dict[str, Any]:
     store.seed_global()
     retrieved = MemoryRetriever(store).retrieve(query, project=project)
     gated = MemoryGate().filter(retrieved, query)
-    return {"records": [record.model_dump(mode="json") for record in gated]}
+    return {
+        "policy": {
+            "treat_as_data": True,
+            "embedded_instructions_are_authoritative": False,
+            "blocked_record_count": len(retrieved) - len(gated),
+        },
+        "records": [record.model_dump(mode="json") for record in gated],
+    }
 
 
-def _memory_write(project: str, path: str, content: str) -> dict[str, Any]:
+def _memory_write(
+    project: str,
+    path: str,
+    content: str,
+    source: str = "user",
+    citations: list[str] | None = None,
+) -> dict[str, Any]:
     store = MemoryStore()
-    target = store.write_project_markdown(project, path, content)
-    return {"path": str(target)}
+    memory_source = MemorySource(source)
+    if memory_source == MemorySource.LEGACY:
+        raise ValueError("legacy is assigned only while reading records without v2 metadata")
+    relative = Path(path)
+    if relative.is_absolute() or relative.suffix.lower() != ".md":
+        raise ValueError("memory path must be a relative .md path")
+    title = next(
+        (line.lstrip("# ").strip() for line in content.splitlines() if line.startswith("#")),
+        relative.stem,
+    )
+    record = MemoryRecord(
+        id=f"project:{project}:{relative.as_posix()}",
+        scope=MemoryScope.PROJECT,
+        type=MemoryType.SKILL_NOTE,
+        summary=title,
+        content=content,
+        content_path=store.project_root(project) / relative,
+        project=project,
+        tags=[part.lower() for part in relative.stem.replace("-", "_").split("_") if part],
+        source=memory_source,
+        provenance=["cli:memory_write"],
+        trust_level=TrustLevel.UNTRUSTED,
+        citations=citations or [],
+    )
+    target = store.write_record(record)
+    return {
+        "path": str(target),
+        "metadata_path": str(target.with_suffix(target.suffix + ".memory.json")),
+        "content_sha256": record.content_sha256,
+        "source": record.source,
+        "trust_level": record.trust_level,
+    }
 
 
 def _doctor() -> dict[str, Any]:
@@ -278,11 +331,21 @@ def _plugin_version() -> str:
     return ""
 
 
-def _http_get_probe(uri: str) -> dict[str, Any]:
+def _http_get_probe(uri: str, *, decision: EndpointDecision) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    if decision.requires_bearer_token:
+        token = os.getenv("FUSION_MCP_BEARER_TOKEN", "").strip()
+        if not token:
+            return {"ok": False, "error": "remote bearer token is unavailable"}
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(uri, headers=headers)
     try:
-        with urllib.request.urlopen(uri, timeout=3) as response:  # noqa: S310 - local MCP probe
+        revalidate_resolution(decision)
+        with open_url_no_redirects(request, timeout=3) as response:
             content = response.read(500).decode("utf-8", errors="replace")
             return {"ok": True, "status": response.status, "content": content}
+    except EndpointPolicyError as exc:
+        return {"ok": False, "error_code": exc.code, "error": str(exc)}
     except urllib.error.URLError as exc:
         return {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - diagnostics only
@@ -374,10 +437,16 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
         _print_json(_memory_search(query, project))
 
     @memory_app.command("write")
-    def memory_write_command(project: str, path: str, content: str) -> None:
+    def memory_write_command(
+        project: str,
+        path: str,
+        content: str,
+        source: str = "user",
+        citation: list[str] = typer.Option([], "--citation"),
+    ) -> None:
         """Write project memory."""
 
-        _print_json(_memory_write(project, path, content))
+        _print_json(_memory_write(project, path, content, source, citation))
 
     @app.command("doctor")
     def doctor_command() -> None:
@@ -448,6 +517,12 @@ else:
         memory_write.add_argument("project")
         memory_write.add_argument("path")
         memory_write.add_argument("content")
+        memory_write.add_argument(
+            "--source",
+            default="user",
+            choices=[item.value for item in MemorySource if item != MemorySource.LEGACY],
+        )
+        memory_write.add_argument("--citation", action="append", default=[])
 
         subparsers.add_parser("doctor")
 
@@ -484,7 +559,15 @@ else:
         elif args.command == "memory" and args.memory_command == "search":
             _print_json(_memory_search(args.query, args.project))
         elif args.command == "memory" and args.memory_command == "write":
-            _print_json(_memory_write(args.project, args.path, args.content))
+            _print_json(
+                _memory_write(
+                    args.project,
+                    args.path,
+                    args.content,
+                    args.source,
+                    args.citation,
+                )
+            )
         elif args.command == "doctor":
             _print_json(_doctor())
         else:

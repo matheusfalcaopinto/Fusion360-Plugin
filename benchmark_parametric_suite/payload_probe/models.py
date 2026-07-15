@@ -89,7 +89,7 @@ class DispatcherCapabilities:
     # Deprecated compatibility alias for the 0.x payload-probe schema.  This
     # means only that the dispatcher will not replay after dispatch; it is not
     # an end-to-end idempotency or exactly-once guarantee.
-    exactly_once_dispatch: bool = True
+    exactly_once_dispatch: bool | None = None
     supports_fresh_process: bool = True
 
 

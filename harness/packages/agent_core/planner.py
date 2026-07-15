@@ -1479,12 +1479,40 @@ def _first_length(prompt: str, default: str) -> str:
 
 
 def _length_after(prompt: str, word: str, default: str) -> str:
-    match = re.search(rf"(\d+(?:\.\d+)?)\s*(mm|cm|in)\s+[^.]*{re.escape(word)}", prompt)
-    if match:
-        return f"{match.group(1)} {match.group(2)}"
-    match = re.search(rf"{re.escape(word)}[^.]*?(\d+(?:\.\d+)?)\s*(mm|cm|in)", prompt)
-    if match:
-        return f"{match.group(1)} {match.group(2)}"
+    # Bind the nearest explicit length on either side of the keyword. The
+    # previous greedy expression could bind the first plate dimension to a
+    # later "hole" or "edge" token (for example, 100 mm instead of 5 mm).
+    exact_before = re.search(
+        rf"(\d+(?:\.\d+)?)\s*(mm|cm|in)\s+{re.escape(word)}s?\b",
+        prompt,
+    )
+    if exact_before:
+        return f"{exact_before.group(1)} {exact_before.group(2)}"
+    exact_after = re.search(
+        rf"{re.escape(word)}s?\b(?:\s+(?:diameter|dia|of|with|is|=)){{0,2}}"
+        r"\s*(\d+(?:\.\d+)?)\s*(mm|cm|in)",
+        prompt,
+    )
+    if exact_after:
+        return f"{exact_after.group(1)} {exact_after.group(2)}"
+    word_matches = list(re.finditer(re.escape(word), prompt))
+    lengths = list(re.finditer(r"(\d+(?:\.\d+)?)\s*(mm|cm|in)", prompt))
+    candidates = [
+        (distance, length)
+        for word_match in word_matches
+        for length in lengths
+        for distance in (
+            word_match.start() - length.end()
+            if length.end() <= word_match.start()
+            else length.start() - word_match.end()
+            if length.start() >= word_match.end()
+            else 0,
+        )
+        if 0 <= distance <= 64
+    ]
+    if candidates:
+        _distance, nearest = min(candidates, key=lambda item: item[0])
+        return f"{nearest.group(1)} {nearest.group(2)}"
     return default
 
 

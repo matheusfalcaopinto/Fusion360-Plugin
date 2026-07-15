@@ -36,6 +36,10 @@ def _metadata(project: dict) -> bytes:
     ]
     for dependency in project.get("dependencies", []):
         lines.append(f"Requires-Dist: {dependency}")
+    for extra, dependencies in sorted(project.get("optional-dependencies", {}).items()):
+        lines.append(f"Provides-Extra: {extra}")
+        for dependency in dependencies:
+            lines.append(f'Requires-Dist: {dependency}; extra == "{extra}"')
     lines.extend(["", (HARNESS_ROOT / "README.md").read_text(encoding="utf-8"), ""])
     return "\n".join(lines).encode("utf-8")
 
@@ -145,9 +149,12 @@ def validate(wheel_path: Path, version: str) -> None:
         try:
             import fusion_agent_mcp.server as server
 
-            definitions = server.list_tool_definitions()
+            definitions = server.list_tool_definitions("all")
+            normal_definitions = server.list_tool_definitions("normal")
             if len(definitions) != 35:
-                raise RuntimeError(f"installed wheel must expose exactly 35 legacy tools, found {len(definitions)}")
+                raise RuntimeError(f"installed wheel all profile must expose exactly 35 tools, found {len(definitions)}")
+            if len(normal_definitions) != 12:
+                raise RuntimeError(f"installed wheel normal profile must expose exactly 12 tools, found {len(normal_definitions)}")
             if any(not tool.name.startswith("fusion_agent_") for tool in definitions):
                 raise RuntimeError("installed wheel exposes a non-fusion_agent public tool")
             if any(tool.outputSchema is None for tool in definitions):
