@@ -64,7 +64,9 @@ def open_url_no_redirects(
         response = opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
-            raise EndpointPolicyError("HTTP redirect responses are not allowed") from exc
+            raise EndpointPolicyError(
+                "HTTP redirect responses are not allowed"
+            ) from exc
         raise
     status_value = getattr(response, "status", None)
     status = int(status_value if status_value is not None else response.getcode())
@@ -90,7 +92,11 @@ def validate_endpoint(
     bearer token.
     """
 
-    configured_policy = (policy or os.getenv("FUSION_AGENT_REMOTE_POLICY", "loopback_only")).strip().lower()
+    configured_policy = (
+        (policy or os.getenv("FUSION_AGENT_REMOTE_POLICY", "loopback_only"))
+        .strip()
+        .lower()
+    )
     if configured_policy not in REMOTE_POLICIES:
         raise EndpointPolicyError(
             "FUSION_AGENT_REMOTE_POLICY must be loopback_only or allowlist"
@@ -102,9 +108,13 @@ def validate_endpoint(
     if not parsed.hostname:
         raise EndpointPolicyError("Fusion MCP endpoint must include a hostname")
     if parsed.username is not None or parsed.password is not None:
-        raise EndpointPolicyError("credentials must not be embedded in the endpoint URL")
+        raise EndpointPolicyError(
+            "credentials must not be embedded in the endpoint URL"
+        )
     if parsed.query:
-        raise EndpointPolicyError("endpoint URL query strings are not allowed; tokens must come from the environment")
+        raise EndpointPolicyError(
+            "endpoint URL query strings are not allowed; tokens must come from the environment"
+        )
     if parsed.fragment:
         raise EndpointPolicyError("endpoint URL fragments are not allowed")
 
@@ -114,7 +124,9 @@ def validate_endpoint(
     except ValueError as exc:
         raise EndpointPolicyError(f"invalid endpoint port: {exc}") from exc
     resolved = _resolve_ips(host, port, resolver)
-    loopback = bool(resolved) and all(ipaddress.ip_address(value).is_loopback for value in resolved)
+    loopback = bool(resolved) and all(
+        ipaddress.ip_address(value).is_loopback for value in resolved
+    )
     if host == "localhost" and not loopback:
         raise EndpointPolicyError("localhost resolved to a non-loopback address")
 
@@ -136,14 +148,22 @@ def validate_endpoint(
         raise EndpointPolicyError("non-loopback Fusion MCP endpoints require HTTPS")
 
     entries = _allowlist_entries(
-        allowlist if allowlist is not None else os.getenv("FUSION_AGENT_REMOTE_ALLOWLIST", "")
+        allowlist
+        if allowlist is not None
+        else os.getenv("FUSION_AGENT_REMOTE_ALLOWLIST", "")
     )
     if not entries:
         raise EndpointPolicyError("remote endpoint allowlist is empty")
     if not _endpoint_is_allowlisted(host, resolved, entries):
-        raise EndpointPolicyError("remote endpoint host or resolved address is not allowlisted")
+        raise EndpointPolicyError(
+            "remote endpoint host or resolved address is not allowlisted"
+        )
 
-    token = bearer_token if bearer_token is not None else os.getenv("FUSION_MCP_BEARER_TOKEN")
+    token = (
+        bearer_token
+        if bearer_token is not None
+        else os.getenv("FUSION_MCP_BEARER_TOKEN")
+    )
     if not token or not token.strip():
         raise EndpointPolicyError("remote endpoint requires FUSION_MCP_BEARER_TOKEN")
 
@@ -180,7 +200,9 @@ def _resolve_ips(host: str, port: int, resolver: Resolver) -> tuple[str, ...]:
         try:
             records = resolver(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except OSError as exc:
-            raise EndpointPolicyError(f"endpoint hostname could not be resolved: {exc}") from exc
+            raise EndpointPolicyError(
+                f"endpoint hostname could not be resolved: {exc}"
+            ) from exc
         addresses = {
             str(ipaddress.ip_address(str(record[4][0]).split("%", 1)[0]))
             for record in records
@@ -198,7 +220,9 @@ def _allowlist_entries(value: str | Iterable[str]) -> tuple[str, ...]:
     return tuple(item.strip().lower().rstrip(".") for item in raw if item.strip())
 
 
-def _endpoint_is_allowlisted(host: str, resolved: tuple[str, ...], entries: tuple[str, ...]) -> bool:
+def _endpoint_is_allowlisted(
+    host: str, resolved: tuple[str, ...], entries: tuple[str, ...]
+) -> bool:
     host_entries: set[str] = set()
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for entry in entries:

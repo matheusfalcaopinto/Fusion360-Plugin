@@ -13,6 +13,7 @@ import re
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from agent_core.authority import CadTargetBinding, BoundOperation, revalidate_host_path
 from cad_spec.v2 import (
     BooleanOperation,
     ComponentCreateOperation,
@@ -44,7 +45,7 @@ from fusion_tool_facade.vendor_facade import PreparedFusionOperation, VendorFusi
 
 
 _CRUD_TOOLS = {"fusion_mcp_read", "fusion_mcp_execute"}
-_DIRECT_TOOLS = {"create_parameter", "export_step", "export_stl"}
+_DIRECT_TOOLS = {"create_parameter"}
 AUTODESK_IMPLEMENTED_CAPABILITIES = frozenset(
     {
         "parameters",
@@ -118,6 +119,7 @@ class AutodeskTypedBackend:
         self._profile_shapes: dict[str, tuple[str, dict[str, Any]]] = {}
         self._prepared: dict[str, PreparedFusionOperation] = {}
         self._preflighted_operation_ids: set[str] = set()
+        self._bound_operations: dict[str, BoundOperation] = {}
 
     @classmethod
     def from_client(
@@ -141,13 +143,39 @@ class AutodeskTypedBackend:
             capabilities.add("parameters")
         if has_crud:
             capabilities.update(_CRUD_CAPABILITIES)
-        if "export_step" in self._tool_names:
-            capabilities.update({"export_step", "export_stp"})
-        if "export_stl" in self._tool_names:
-            capabilities.add("export_stl")
         return capabilities
 
-    def preflight_operations(self, operations: list[OperationSpec]) -> None:
+    async def resolve_cad_target_binding(
+        self, operation: ExportOperation
+    ) -> CadTargetBinding:
+        """Resolve one live export target without granting mutation authority."""
+
+        if not isinstance(operation, ExportOperation):
+            raise ValueError("Autodesk CAD target binding supports exports only")
+        if not _CRUD_TOOLS <= self._tool_names:
+            raise ValueError(
+                "Autodesk export requires the CRUD read/execute profile for lossless binding"
+            )
+        payload = await self.facade.resolve_export_target_binding(
+            str(operation.target_ref), operation.format
+        )
+        binding = payload.get("binding")
+        if not isinstance(binding, dict):
+            raise ValueError("Autodesk export target binding response is incomplete")
+        return CadTargetBinding(
+            reference_kind=str(binding.get("reference_kind") or ""),
+            requested_ref=str(binding.get("requested_ref") or ""),
+            document_identity=str(binding.get("document_identity") or ""),
+            entity_identity=str(binding.get("entity_identity") or ""),
+            fingerprint=str(binding.get("fingerprint") or ""),
+        )
+
+    def preflight_operations(
+        self,
+        operations: list[OperationSpec],
+        *,
+        bound_operations: dict[str, BoundOperation] | None = None,
+    ) -> None:
         """Compile every fixed script and reject malformed refs before dispatch."""
 
         # A failed second preflight must never leave a previously executable
@@ -155,6 +183,8 @@ class AutodeskTypedBackend:
         self._profile_shapes = {}
         self._prepared = {}
         self._preflighted_operation_ids = set()
+        self._bound_operations = {}
+        bound_operations = bound_operations or {}
 
         supported = (
             ParameterOperation,
@@ -512,11 +542,17 @@ class AutodeskTypedBackend:
                     _validate_reference_text(target, "interference target_ref")
                 continue
             if isinstance(operation, ImportOperation):
+                bound = bound_operations.get(operation.id)
+                requested_path = (
+                    bound.host_path.canonical_path
+                    if bound is not None and bound.host_path is not None
+                    else operation.path or ""
+                )
                 prepared[operation.id] = self.facade.prepare_typed_operation(
                     "import",
                     {
                         "path": _validate_io_path(
-                            operation.path, operation.format, direction="import"
+                            requested_path, operation.format, direction="import"
                         ),
                         "format": operation.format,
                         "component_name": _validate_reference_text(
@@ -527,27 +563,94 @@ class AutodeskTypedBackend:
                 continue
             if isinstance(operation, ExportOperation):
                 _validate_reference_text(operation.target_ref, "export target_ref")
+                bound = bound_operations.get(operation.id)
+                requested_path = (
+                    bound.host_path.canonical_path
+                    if bound is not None and bound.host_path is not None
+                    else operation.path or ""
+                )
                 path = _validate_io_path(
-                    operation.path, operation.format, direction="export"
+                    requested_path, operation.format, direction="export"
                 )
                 if _CRUD_TOOLS <= self._tool_names:
+                    binding_payload: dict[str, str] | None = None
+                    if bound is not None:
+                        if len(bound.target_bindings) != 1:
+                            raise ValueError(
+                                "Autodesk export requires one resolved CAD target binding"
+                            )
+                        binding = bound.target_bindings[0]
+                        binding_payload = {
+                            "reference_kind": binding.reference_kind,
+                            "requested_ref": binding.requested_ref,
+                            "document_identity": binding.document_identity,
+                            "entity_identity": binding.entity_identity,
+                            "fingerprint": binding.fingerprint,
+                        }
+                    payload = {
+                        "target": operation.target_ref,
+                        "path": path,
+                        "format": operation.format,
+                    }
+                    if binding_payload is not None:
+                        payload["binding"] = binding_payload
                     prepared[operation.id] = self.facade.prepare_typed_operation(
                         "export",
-                        {
-                            "target": operation.target_ref,
-                            "path": path,
-                            "format": operation.format,
-                        },
+                        payload,
                     )
 
         self._profile_shapes = profile_shapes
         self._prepared = prepared
         self._preflighted_operation_ids = {operation.id for operation in operations}
+        self._bound_operations = dict(bound_operations)
+
+    def preflight_bound_operations(self, operations: list[BoundOperation]) -> None:
+        """Compile a complete graph using only broker-canonicalized host paths."""
+
+        by_id = {bound.operation.id: bound for bound in operations}
+        if len(by_id) != len(operations):
+            raise ValueError("bound operation ids must be unique")
+        for bound in operations:
+            if bound.provider != self.provider:
+                raise ValueError("bound operation provider does not match Autodesk")
+            if isinstance(bound.operation, (ImportOperation, ExportOperation)):
+                if bound.host_path is None or bound.capability is None:
+                    raise ValueError("Autodesk host I/O requires a bound capability")
+                revalidate_host_path(bound.host_path)
+        self.preflight_operations(
+            [bound.operation for bound in operations], bound_operations=by_id
+        )
+
+    async def execute_bound_operation(self, bound: BoundOperation) -> dict[str, Any]:
+        """Revalidate a stored binding immediately before the native sink."""
+
+        operation = bound.operation
+        stored = self._bound_operations.get(operation.id)
+        if stored != bound:
+            raise RuntimeError("Autodesk bound operation does not match preflight")
+        if not isinstance(operation, (ImportOperation, ExportOperation)):
+            return await self.execute_operation(operation)
+        if bound.host_path is None or bound.capability is None:
+            raise RuntimeError("Autodesk host I/O requires a bound capability")
+        if isinstance(operation, ExportOperation) and len(bound.target_bindings) != 1:
+            raise RuntimeError("Autodesk export CAD target binding is missing")
+        revalidate_host_path(bound.host_path)
+        prepared = self._prepared.get(operation.id)
+        if prepared is not None:
+            return await self.facade.execute_prepared_typed_operation(
+                prepared,
+                operation_id=operation.id,
+            )
+        raise RuntimeError("Autodesk bound I/O has no lossless dispatch plan")
 
     async def execute_operation(self, operation: OperationSpec) -> dict[str, Any]:
         if operation.id not in self._preflighted_operation_ids:
             raise RuntimeError(
                 "Autodesk operation was not part of the completed graph preflight"
+            )
+        if isinstance(operation, (ImportOperation, ExportOperation)):
+            raise RuntimeError(
+                "Autodesk host I/O must execute through a claimed bound operation"
             )
         prepared = self._prepared.get(operation.id)
         if prepared is not None:
@@ -630,22 +733,6 @@ class AutodeskTypedBackend:
                 target,
                 trusted_read=True,
                 operation_id=operation.id,
-            )
-        if isinstance(operation, ExportOperation):
-            if operation.format in {"step", "stp"}:
-                return await self.facade.export_step(
-                    operation.target_ref,
-                    operation.path,
-                    operation_id=operation.id,
-                )
-            if operation.format == "stl":
-                return await self.facade.export_stl(
-                    operation.target_ref,
-                    operation.path,
-                    operation_id=operation.id,
-                )
-            raise ValueError(
-                f"Autodesk typed backend does not support export format {operation.format}"
             )
         raise TypeError(f"unsupported Autodesk CadSpec v2 operation: {operation.kind}")
 

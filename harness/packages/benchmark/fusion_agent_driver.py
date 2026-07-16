@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import inspect
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +24,7 @@ from benchmark.public import (
     PublicBenchmarkConfig,
     PublicBenchmarkTask,
 )
+from benchmark.provenance import RevisionIdentity, collect_workspace_revision
 from benchmark.registry import validate_case_registry
 from benchmark.runner import BenchmarkExecutionError, BenchmarkRunner
 
@@ -48,7 +48,9 @@ class _TaskDefinition:
                     f"Run the code-owned normal-profile public contract for {self.task_id}; "
                     "do not execute manifest-supplied code."
                 ),
-                "category": "public_parametric_fault" if self.fault_id else "public_parametric_geometry",
+                "category": "public_parametric_fault"
+                if self.fault_id
+                else "public_parametric_geometry",
                 "risk": self.risk,
                 "timeout_seconds": 900.0,
                 "fixture_id": "public_fusion_disposable",
@@ -71,7 +73,8 @@ class _TaskDefinition:
             and task.fixture_path == self.fixture_path
             and task.risk == self.risk
             and task.fault_id == self.fault_id
-            and task.expected_outcome == (self.expected_status if self.fault_id else None)
+            and task.expected_outcome
+            == (self.expected_status if self.fault_id else None)
         )
 
 
@@ -114,14 +117,70 @@ _TASK_DEFINITIONS = (
     _normal("b05_spherical_lattice_radome", "scoped_update", 2),
     _normal("b06_robot_arm_assembly", "scoped_update", 2),
     _normal("b07_packaging_machine", "scoped_update", 2),
-    _fault("b02_vented_enclosure", "additive", "timeout_before_dispatch", "blocked_before_dispatch", 0, "pub_b02_f01"),
-    _fault("b02_vented_enclosure", "additive", "timeout_after_dispatch", "outcome_unknown_no_replay", 1, "pub_b02_f02"),
-    _fault("b02_vented_enclosure", "additive", "transport_disconnect", "recover_by_readback", 1, "pub_b02_f03"),
-    _fault("b05_spherical_lattice_radome", "scoped_update", "wrong_document", "zero_dispatch", 0, "pub_b05_f04"),
-    _fault("b05_spherical_lattice_radome", "scoped_update", "ambiguous_target", "zero_dispatch", 0, "pub_b05_f05"),
-    _fault("b05_spherical_lattice_radome", "scoped_update", "state_drift", "zero_dispatch", 0, "pub_b05_f06"),
-    _fault("b06_robot_arm_assembly", "scoped_update", "incomplete_snapshot", "zero_dispatch", 0, "pub_b06_f07"),
-    _fault("b07_packaging_machine", "scoped_update", "double_apply", "at_most_one_dispatch", 1, "pub_b07_f08"),
+    _fault(
+        "b02_vented_enclosure",
+        "additive",
+        "timeout_before_dispatch",
+        "blocked_before_dispatch",
+        0,
+        "pub_b02_f01",
+    ),
+    _fault(
+        "b02_vented_enclosure",
+        "additive",
+        "timeout_after_dispatch",
+        "outcome_unknown_no_replay",
+        1,
+        "pub_b02_f02",
+    ),
+    _fault(
+        "b02_vented_enclosure",
+        "additive",
+        "transport_disconnect",
+        "recover_by_readback",
+        1,
+        "pub_b02_f03",
+    ),
+    _fault(
+        "b05_spherical_lattice_radome",
+        "scoped_update",
+        "wrong_document",
+        "zero_dispatch",
+        0,
+        "pub_b05_f04",
+    ),
+    _fault(
+        "b05_spherical_lattice_radome",
+        "scoped_update",
+        "ambiguous_target",
+        "zero_dispatch",
+        0,
+        "pub_b05_f05",
+    ),
+    _fault(
+        "b05_spherical_lattice_radome",
+        "scoped_update",
+        "state_drift",
+        "zero_dispatch",
+        0,
+        "pub_b05_f06",
+    ),
+    _fault(
+        "b06_robot_arm_assembly",
+        "scoped_update",
+        "incomplete_snapshot",
+        "zero_dispatch",
+        0,
+        "pub_b06_f07",
+    ),
+    _fault(
+        "b07_packaging_machine",
+        "scoped_update",
+        "double_apply",
+        "at_most_one_dispatch",
+        1,
+        "pub_b07_f08",
+    ),
 )
 _TASKS_BY_ID = {definition.task_id: definition for definition in _TASK_DEFINITIONS}
 
@@ -135,12 +194,29 @@ class FusionAgentCodexPublicDriver:
         output_dir: Path | str,
         manifest_dir: Path | str = "manifests",
         runtime_factory: Callable[[], Any] | None = None,
+        runtime_configuration: Any | None = None,
+        environment_snapshot: Mapping[str, str] | None = None,
+        expected_git_commit: str | None = None,
+        expected_source_manifest_sha256: str | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.manifest_dir = Path(manifest_dir)
+        self.runtime_configuration = runtime_configuration
         self.runtime_factory = runtime_factory or self._default_runtime
+        self.environment_snapshot = dict(environment_snapshot or {})
+        self.expected_git_commit = expected_git_commit or self.environment_snapshot.get(
+            "FUSION_AGENT_EXPECTED_GIT_COMMIT"
+        )
+        self.expected_source_manifest_sha256 = (
+            expected_source_manifest_sha256
+            or self.environment_snapshot.get(
+                "FUSION_AGENT_EXPECTED_SOURCE_MANIFEST_SHA256"
+            )
+        )
 
-    async def preflight(self, context, config: PublicBenchmarkConfig) -> AdapterPreflight:  # noqa: ANN001
+    async def preflight(
+        self, context, config: PublicBenchmarkConfig
+    ) -> AdapterPreflight:  # noqa: ANN001
         context_error = _context_error(context)
         if context_error:
             return AdapterPreflight(ready=False, reason=context_error)
@@ -151,13 +227,26 @@ class FusionAgentCodexPublicDriver:
         except Exception as exc:  # code/registry packaging error; never dispatch
             return AdapterPreflight(
                 ready=False,
-                reason=_bounded_reason(f"internal_public_registry_invalid:{type(exc).__name__}:{exc}"),
+                reason=_bounded_reason(
+                    f"internal_public_registry_invalid:{type(exc).__name__}:{exc}"
+                ),
+            )
+
+        revision = self._observed_revision()
+        if (
+            revision.observed_git_commit is None
+            or revision.observed_source_manifest_sha256 is None
+        ):
+            return AdapterPreflight(
+                ready=False,
+                reason="workspace_revision_observation_incomplete",
             )
 
         if config.mode == "mock":
             return AdapterPreflight(
                 ready=True,
-                observed_revision=_observed_revision(),
+                observed_revision=revision.observed_git_commit,
+                revision_identity=revision,
                 environment={
                     "backend_id": "fusion_agent_internal_mock",
                     "backend_version": "public_registry.v1",
@@ -173,7 +262,8 @@ class FusionAgentCodexPublicDriver:
         except Exception as exc:
             return AdapterPreflight(
                 ready=False,
-                observed_revision=_observed_revision(),
+                observed_revision=revision.observed_git_commit,
+                revision_identity=revision,
                 environment={
                     "backend_id": "fusion_agent_autodesk_runtime",
                     "execution_profile": "normal_equivalent",
@@ -189,7 +279,8 @@ class FusionAgentCodexPublicDriver:
             await _close_runtime(runtime)
         return AdapterPreflight(
             ready=True,
-            observed_revision=_observed_revision(),
+            observed_revision=revision.observed_git_commit,
+            revision_identity=revision,
             environment={
                 "backend_id": "fusion_agent_autodesk_runtime",
                 "execution_profile": "normal_equivalent",
@@ -208,7 +299,9 @@ class FusionAgentCodexPublicDriver:
             return AdapterExecution(state="not_run", reason=context_error)
         definition = _TASKS_BY_ID.get(task.task_id)
         if definition is None or not definition.matches(task):
-            return AdapterExecution(state="not_run", reason="task_not_in_code_owned_public_registry")
+            return AdapterExecution(
+                state="not_run", reason="task_not_in_code_owned_public_registry"
+            )
         if config.mode == "mock":
             return await self._run_definition(definition, config, bridge=None)
 
@@ -257,8 +350,11 @@ class FusionAgentCodexPublicDriver:
                 "execution_profile": "normal_equivalent",
                 "arbitrary_code_allowed": False,
             },
+            process_environment=self.environment_snapshot,
         )
-        with tempfile.TemporaryDirectory(prefix="fusion-agent-public-suite-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="fusion-agent-public-suite-"
+        ) as temporary:
             suite_path = Path(temporary) / "benchmark_suite_v2.json"
             suite_path.write_text(suite.model_dump_json(indent=2), encoding="utf-8")
             run = await runner.run_suite(
@@ -282,7 +378,9 @@ class FusionAgentCodexPublicDriver:
             )
         trial = trials[0]
         oracle_metrics = trial.oracle.metrics
-        task_success = bool(trial.final_success and trial.metrics.get("expectations_met") is True)
+        task_success = bool(
+            trial.final_success and trial.metrics.get("expectations_met") is True
+        )
         metrics = NormalizedPublicMetrics(
             task_success=task_success,
             oracle_passed=trial.oracle.passed,
@@ -302,6 +400,7 @@ class FusionAgentCodexPublicDriver:
         return AdapterExecution(
             state="completed",
             metrics=metrics,
+            independent_oracle=True,
             evidence={
                 "internal_run_id": run.report.run_id,
                 "internal_trial_id": trial.trial_id,
@@ -322,6 +421,14 @@ class FusionAgentCodexPublicDriver:
         return FusionAgentRuntime(
             manifest_root=self.manifest_dir,
             outputs_root=self.output_dir / "fusion_agent_real",
+            configuration=self.runtime_configuration,
+        )
+
+    def _observed_revision(self) -> RevisionIdentity:
+        return collect_workspace_revision(
+            Path(__file__).resolve().parents[3],
+            expected_git_commit=self.expected_git_commit,
+            expected_source_manifest_sha256=self.expected_source_manifest_sha256,
         )
 
 
@@ -348,14 +455,6 @@ def _context_error(context: Any) -> str | None:
     if getattr(context, "arbitrary_code_allowed", None) is not False:
         return "arbitrary_code_is_forbidden"
     return None
-
-
-def _observed_revision() -> str:
-    try:
-        installed_version = version("fusion-agent-harness")
-    except PackageNotFoundError:
-        installed_version = "source-tree"
-    return f"fusion-agent-harness@{installed_version}"
 
 
 def _bounded_reason(value: str) -> str:

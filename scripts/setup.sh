@@ -2,27 +2,60 @@
 set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${FUSION_AGENT_PYTHON:-}"
+PYTHON="$PLUGIN_ROOT/.venv/bin/python"
 TOOL_PROFILE="${FUSION_AGENT_TOOL_PROFILE:-normal}"
 BACKEND="${FUSION_AGENT_BACKEND:-autodesk_http}"
 FUSION_DATA_URL="${FUSION_DATA_MCP_URL:-}"
 WHEELS_ROOT="$PLUGIN_ROOT/wheels"
-mapfile -t WHEELS < <(find "$WHEELS_ROOT" -maxdepth 1 -type f -name 'fusion_agent_harness-*.whl' 2>/dev/null | sort)
-if [[ "${#WHEELS[@]}" -gt 1 ]]; then
-  echo "Expected exactly one bundled harness wheel, found ${#WHEELS[@]}." >&2
-  exit 1
+WHEELS=()
+for candidate in "$WHEELS_ROOT"/fusion_agent_harness-*.whl; do
+  [[ -f "$candidate" ]] || continue
+  WHEELS+=("$candidate")
+done
+DEVELOPMENT_SOURCE_ROOT="${FUSION_AGENT_HARNESS_ROOT:-}"
+if [[ "${#WHEELS[@]}" -ne 1 ]]; then
+  if [[ "${#WHEELS[@]}" -ne 0 || -z "$DEVELOPMENT_SOURCE_ROOT" ]]; then
+    echo "Expected exactly one bundled harness wheel before setup, found ${#WHEELS[@]}. Set FUSION_AGENT_HARNESS_ROOT only for the documented non-release development override." >&2
+    exit 1
+  fi
 fi
 WHEEL="${WHEELS[0]:-}"
+if [[ -z "$WHEEL" ]]; then
+  if [[ ! -d "$DEVELOPMENT_SOURCE_ROOT" || ! -f "$DEVELOPMENT_SOURCE_ROOT/pyproject.toml" ]]; then
+    echo "FUSION_AGENT_HARNESS_ROOT must be a harness checkout containing pyproject.toml before the development override can alter the environment." >&2
+    exit 1
+  fi
+  DEVELOPMENT_SOURCE_ROOT="$(cd "$DEVELOPMENT_SOURCE_ROOT" && pwd)"
+  echo "Warning: using the explicit FUSION_AGENT_HARNESS_ROOT development override; no release wheel is being verified or installed." >&2
+fi
 
-if [[ -z "$PYTHON" ]]; then
-  if [[ -x "$PLUGIN_ROOT/.venv/bin/python" ]]; then
-    PYTHON="$PLUGIN_ROOT/.venv/bin/python"
+# Verify the wheel before creating a venv or invoking pip.  Development source
+# overrides remain available, but are explicitly non-canonical and cannot be
+# mistaken for a verified release bundle.
+if [[ -n "$WHEEL" ]]; then
+  VERIFY_PYTHON=""
+  if [[ -n "${FUSION_AGENT_PYTHON:-}" && -x "${FUSION_AGENT_PYTHON}" ]]; then
+    VERIFY_PYTHON="${FUSION_AGENT_PYTHON}"
+  elif [[ -x "$PLUGIN_ROOT/.venv/bin/python" ]]; then
+    VERIFY_PYTHON="$PLUGIN_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    VERIFY_PYTHON="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    VERIFY_PYTHON="$(command -v python)"
+  else
+    echo "A pre-existing Python 3.11+ interpreter is required to verify the plugin bundle before installation." >&2
+    exit 1
+  fi
+  "$VERIFY_PYTHON" -E -s -S "$PLUGIN_ROOT/scripts/preinstall_verify.py" --plugin-root "$PLUGIN_ROOT" --wheel "$WHEEL"
+fi
+
+if [[ ! -x "$PYTHON" ]]; then
+  if [[ -n "${FUSION_AGENT_PYTHON:-}" && -x "${FUSION_AGENT_PYTHON}" ]]; then
+    "${FUSION_AGENT_PYTHON}" -m venv "$PLUGIN_ROOT/.venv"
   elif command -v python3 >/dev/null 2>&1; then
     python3 -m venv "$PLUGIN_ROOT/.venv"
-    PYTHON="$PLUGIN_ROOT/.venv/bin/python"
   elif command -v python >/dev/null 2>&1; then
     python -m venv "$PLUGIN_ROOT/.venv"
-    PYTHON="$PLUGIN_ROOT/.venv/bin/python"
   else
     echo "Could not find python3 or python. Install Python 3.11+ and retry." >&2
     exit 1
@@ -31,8 +64,8 @@ fi
 
 if [[ -n "$WHEEL" ]]; then
   "$PYTHON" -m pip install --force-reinstall "$WHEEL"
-elif [[ -n "${FUSION_AGENT_HARNESS_ROOT:-}" ]]; then
-  "$PYTHON" -m pip install -e "$FUSION_AGENT_HARNESS_ROOT"
+elif [[ -n "$DEVELOPMENT_SOURCE_ROOT" ]]; then
+  "$PYTHON" -m pip install -e "$DEVELOPMENT_SOURCE_ROOT"
 else
   echo "Missing bundled fusion_agent_harness wheel under $WHEELS_ROOT. Build the plugin with scripts/build-distribution.py." >&2
   exit 1
@@ -40,10 +73,14 @@ fi
 if [[ "$BACKEND" == "faust_stdio" ]]; then
   "$PYTHON" -m pip install "fusion360-mcp-server==0.1.0"
 fi
+if [[ -n "$WHEEL" ]]; then
+  "$PYTHON" "$PLUGIN_ROOT/scripts/preinstall_verify.py" --plugin-root "$PLUGIN_ROOT" --wheel "$WHEEL" --verify-installed
+fi
 CONFIG_ARGS=(
   "$PLUGIN_ROOT/scripts/configure_mcp.py"
   --plugin-root "$PLUGIN_ROOT"
   --python "$PYTHON"
+  --require-contained-runtime
   --tool-profile "$TOOL_PROFILE"
   --backend "$BACKEND"
 )

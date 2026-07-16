@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 from cli import main as cli_main
 from fusion_agent_mcp import mcp_surface, server
 from fusion_agent_mcp.profiles import TOOL_PROFILES, ToolProfileError
-from fusion_agent_mcp.runtime import FusionAgentRuntime
+from fusion_agent_mcp.runtime import FusionAgentRuntime, RuntimeConfiguration
 from fusion_mcp_adapter import endpoint_policy, real_client
 from fusion_mcp_adapter.endpoint_policy import (
     EndpointDecision,
@@ -32,7 +32,9 @@ def test_profiles_are_exact_and_normal_is_task_oriented(monkeypatch) -> None:
     assert "fusion_agent_safe_change_apply" in normal_names
     assert "fusion_agent_fast_execute" not in normal_names
     assert "fusion_agent_read_trace" not in normal_names
-    assert all("script" not in tool.inputSchema.get("properties", {}) for tool in normal)
+    assert all(
+        "script" not in tool.inputSchema.get("properties", {}) for tool in normal
+    )
 
     assert len(server.list_tool_definitions("all")) == 35
     assert "fusion_agent_fast_execute" in {
@@ -42,9 +44,7 @@ def test_profiles_are_exact_and_normal_is_task_oriented(monkeypatch) -> None:
     assert "fusion_agent_hub_inventory" in {
         tool.name for tool in server.list_tool_definitions("advanced")
     }
-    benchmark_names = {
-        tool.name for tool in server.list_tool_definitions("benchmark")
-    }
+    benchmark_names = {tool.name for tool in server.list_tool_definitions("benchmark")}
     assert "fusion_agent_run_benchmark" in benchmark_names
     assert "fusion_agent_run_session" not in benchmark_names
     assert "fusion_agent_safe_change_apply" not in benchmark_names
@@ -112,20 +112,17 @@ def test_every_tool_has_dedicated_schema_annotations_and_metadata() -> None:
     assert by_name["fusion_agent_compact_snapshot"].risk == "write"
     assert by_name["fusion_agent_safe_change_preview"].annotations.readOnlyHint is False
     assert by_name["fusion_agent_safe_change_apply"].annotations.destructiveHint is True
-    assert by_name["fusion_agent_capture_viewport"].evidence_role == "supplemental_visual"
+    assert (
+        by_name["fusion_agent_capture_viewport"].evidence_role == "supplemental_visual"
+    )
 
 
 @pytest.mark.asyncio
-async def test_capability_and_trace_resources_are_paginated(monkeypatch, tmp_path) -> None:
+async def test_capability_and_trace_resources_are_paginated(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
-    session = (
-        tmp_path
-        / "workspace"
-        / "projects"
-        / "demo"
-        / "sessions"
-        / "session-1"
-    )
+    session = tmp_path / "workspace" / "projects" / "demo" / "sessions" / "session-1"
     session.mkdir(parents=True)
     (session / "tool_trace.jsonl").write_text(
         "\n".join(json.dumps({"index": index}) for index in range(5)),
@@ -152,9 +149,20 @@ async def test_capability_and_trace_resources_are_paginated(monkeypatch, tmp_pat
     assert capabilities["profile"] == "normal"
     assert len(capabilities["tools"]) == 12
     assert capabilities["active_backend"] == "autodesk_http"
-    assert "extrude" in capabilities["backend_capability_matrix"]["autodesk_http"]["implemented"]
-    assert capabilities["backend_capability_matrix"]["faust_stdio"]["mutable_fast_path"] is False
-    assert "execute_code" in capabilities["backend_capability_matrix"]["faust_stdio"]["blocked_native_tools"]
+    assert (
+        "extrude"
+        in capabilities["backend_capability_matrix"]["autodesk_http"]["implemented"]
+    )
+    assert (
+        capabilities["backend_capability_matrix"]["faust_stdio"]["mutable_fast_path"]
+        is False
+    )
+    assert (
+        "execute_code"
+        in capabilities["backend_capability_matrix"]["faust_stdio"][
+            "blocked_native_tools"
+        ]
+    )
     assert trace["items"] == [{"index": 1}, {"index": 2}]
     assert trace["total"] == 5
     assert trace["next_offset"] == 3
@@ -179,7 +187,9 @@ async def test_manifest_and_skill_resources_page_content_and_fail_when_absent(
     monkeypatch.setattr(server, "MANIFEST_ROOT", manifest_root)
 
     async def fake_skill(_args):
-        return {"skill": {"name": "demo", "description": "demo", "content": "abcdefghij"}}
+        return {
+            "skill": {"name": "demo", "description": "demo", "content": "abcdefghij"}
+        }
 
     monkeypatch.setattr(server, "_skills_get_tool", fake_skill)
     runtime = FusionAgentRuntime(
@@ -216,8 +226,10 @@ async def test_manifest_and_skill_resources_page_content_and_fail_when_absent(
 
 def test_resources_and_prompts_publish_the_planned_surface() -> None:
     resources = {str(resource.uri) for resource in mcp_surface.resources()}
-    templates = {template.uriTemplate for template in mcp_surface.resource_templates()}
-    prompts = {prompt.name for prompt in mcp_surface.prompts()}
+    templates = {
+        template.uriTemplate for template in mcp_surface.resource_templates("all")
+    }
+    prompts = {prompt.name for prompt in mcp_surface.prompts("all")}
 
     assert resources == {
         "fusion-agent://capabilities",
@@ -246,8 +258,12 @@ def test_resources_and_prompts_publish_the_planned_surface() -> None:
 
 
 @pytest.mark.asyncio
-async def test_faust_blocks_mutable_fast_path_before_runtime_handler(monkeypatch) -> None:
+async def test_faust_blocks_mutable_fast_path_before_runtime_handler(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("FUSION_AGENT_BACKEND", "faust_stdio")
+    configuration = RuntimeConfiguration.from_environment()
+    monkeypatch.setattr(server, "_runtime_configuration", lambda: configuration)
     response = await server._fast_execute_tool(
         {
             "change_class": "additive",
@@ -324,7 +340,9 @@ async def test_probe_rejects_remote_endpoint_before_network(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_cli_probe_applies_endpoint_policy_before_health_request(monkeypatch) -> None:
+async def test_cli_probe_applies_endpoint_policy_before_health_request(
+    monkeypatch,
+) -> None:
     health_requested = False
 
     def unexpected_health(*args, **kwargs):
@@ -336,7 +354,7 @@ async def test_cli_probe_applies_endpoint_policy_before_health_request(monkeypat
     monkeypatch.setattr(
         cli_main,
         "validate_endpoint",
-        lambda _: (_ for _ in ()).throw(EndpointPolicyError("blocked")),
+        lambda _, **__: (_ for _ in ()).throw(EndpointPolicyError("blocked")),
     )
 
     with pytest.raises(EndpointPolicyError, match="blocked"):
@@ -345,7 +363,9 @@ async def test_cli_probe_applies_endpoint_policy_before_health_request(monkeypat
     assert health_requested is False
 
 
-def test_urllib_redirect_handler_rejects_3xx_without_second_request(monkeypatch) -> None:
+def test_urllib_redirect_handler_rejects_3xx_without_second_request(
+    monkeypatch,
+) -> None:
     opened = 0
 
     class RedirectResponse:
@@ -377,7 +397,9 @@ def test_urllib_redirect_handler_rejects_3xx_without_second_request(monkeypatch)
     assert response.closed is True
 
 
-def test_cli_health_probe_revalidates_immediately_and_rejects_redirect(monkeypatch) -> None:
+def test_cli_health_probe_revalidates_immediately_and_rejects_redirect(
+    monkeypatch,
+) -> None:
     events = []
     decision = EndpointDecision(
         endpoint="http://127.0.0.1:8123/mcp",
@@ -390,7 +412,9 @@ def test_cli_health_probe_revalidates_immediately_and_rejects_redirect(monkeypat
         requires_bearer_token=False,
     )
 
-    monkeypatch.setattr(cli_main, "revalidate_resolution", lambda _: events.append("revalidate"))
+    monkeypatch.setattr(
+        cli_main, "revalidate_resolution", lambda _: events.append("revalidate")
+    )
 
     def reject_redirect(request, *, timeout):  # noqa: ANN001
         del request, timeout
@@ -405,7 +429,9 @@ def test_cli_health_probe_revalidates_immediately_and_rejects_redirect(monkeypat
     assert result["error_code"] == "ENDPOINT_POLICY_BLOCKED"
 
 
-def test_real_raw_http_revalidates_immediately_before_no_redirect_open(monkeypatch) -> None:
+def test_real_raw_http_revalidates_immediately_before_no_redirect_open(
+    monkeypatch,
+) -> None:
     events = []
     decision = EndpointDecision(
         endpoint="http://127.0.0.1:8123/mcp",
@@ -432,7 +458,9 @@ def test_real_raw_http_revalidates_immediately_before_no_redirect_open(monkeypat
         def read(self) -> bytes:
             return b'{"jsonrpc":"2.0","id":1,"result":{}}'
 
-    monkeypatch.setattr(real_client, "revalidate_resolution", lambda _: events.append("revalidate"))
+    monkeypatch.setattr(
+        real_client, "revalidate_resolution", lambda _: events.append("revalidate")
+    )
 
     def open_request(request, *, timeout):  # noqa: ANN001
         del request, timeout
@@ -447,7 +475,9 @@ def test_real_raw_http_revalidates_immediately_before_no_redirect_open(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_real_mcp_http_factory_disables_redirects_and_revalidates_every_request(monkeypatch) -> None:
+async def test_real_mcp_http_factory_disables_redirects_and_revalidates_every_request(
+    monkeypatch,
+) -> None:
     events = []
     decision = EndpointDecision(
         endpoint="http://127.0.0.1:8123/mcp",
@@ -461,7 +491,9 @@ async def test_real_mcp_http_factory_disables_redirects_and_revalidates_every_re
     )
     client = RealMcpClient(endpoint=decision.endpoint)
     client._endpoint_decision = decision
-    monkeypatch.setattr(real_client, "revalidate_resolution", lambda _: events.append("revalidate"))
+    monkeypatch.setattr(
+        real_client, "revalidate_resolution", lambda _: events.append("revalidate")
+    )
 
     captured = {}
 

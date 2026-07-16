@@ -11,7 +11,7 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
 
     return _script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     max_occurrences = int(PAYLOAD.get("max_occurrences") or 500)
     max_bodies = int(PAYLOAD.get("max_bodies") or 500)
     include_transforms = bool(PAYLOAD.get("include_transforms"))
@@ -77,6 +77,7 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
         "duplicate_name_warnings": [],
     }
     visible_components = set()
+    component_instance_counts = {}
 
     def visit_occurrences(occurrences, prefix):
         if not occurrences or stop_reason is not None:
@@ -99,7 +100,15 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 "component_key": _component_key(component) if component else "",
                 "entity_token": _entity_token(occurrence),
                 "visible": visible,
+                "is_root": False,
+                "is_referenced": _component_reference_fact(component),
+                "is_imported": _component_imported_fact(component),
+                "shared_definition": None,
             }
+            if component:
+                component_instance_counts[item["component_key"]] = (
+                    component_instance_counts.get(item["component_key"], 0) + 1
+                )
             if include_transforms:
                 item["transform"] = _transform_payload(occurrence)
             try:
@@ -123,6 +132,11 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 pass
 
     visit_occurrences(design.rootComponent.occurrences, "")
+    for item in snapshot["occurrences"]:
+        item["shared_definition"] = bool(
+            component_instance_counts.get(item.get("component_key") or "", 0) > 1
+        )
+        item["binding_fingerprint"] = _binding_fingerprint(item)
     body_name_counts = {}
     body_bbox_union = None
     for component_index in range(design.allComponents.count):
@@ -160,8 +174,15 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 "component_key": component_key,
                 "entity_token": _entity_token(body),
                 "visible": visible,
+                "is_root": component == design.rootComponent,
+                "is_referenced": _component_reference_fact(component),
+                "is_imported": _component_imported_fact(component),
+                "shared_definition": bool(
+                    component_instance_counts.get(component_key, 0) > 1
+                ),
                 "bbox_mm": bbox,
             }
+            body_item["binding_fingerprint"] = _binding_fingerprint(body_item)
             if not reserve(body_item):
                 break
             if visible:
@@ -249,7 +270,7 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 snapshot["response_bytes"] = measured
             print(json.dumps(wrapper, sort_keys=True, separators=(",", ":")))
             break
-''',
+""",
     )
 
 
@@ -258,7 +279,7 @@ def hub_inventory_script(payload: dict[str, Any]) -> str:
 
     return _script(
         payload,
-        r'''    app = adsk.core.Application.get()
+        r"""    app = adsk.core.Application.get()
     query = str(PAYLOAD.get("query") or "").lower()
     max_results = int(PAYLOAD.get("max_results") or 50)
     enrich = bool(PAYLOAD.get("enrich"))
@@ -315,7 +336,7 @@ def hub_inventory_script(payload: dict[str, Any]) -> str:
     except Exception as exc:
         strategy["open_documents_error"] = str(exc)
     print(json.dumps({"success": True, "strategy": strategy, "projects_seen": projects_seen, "results": results[:max_results]}, sort_keys=True))
-''',
+""",
     )
 
 
@@ -324,7 +345,7 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
 
     return _script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     targets = list(PAYLOAD.get("targets") or [])
     changed = []
     resolved = []
@@ -386,7 +407,7 @@ def safe_visibility_apply_script(payload: dict[str, Any]) -> str:
             }
         )
     print(json.dumps({"success": True, "changed": changed, "changed_count": len(changed)}, sort_keys=True))
-''',
+""",
     )
 
 
@@ -395,7 +416,7 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
 
     return _script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     targets = list(PAYLOAD.get("targets") or [])
     deleted = []
     skipped = []
@@ -435,13 +456,97 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
             except Exception:
                 pass
 
+    def expected_binding_matches(target, actual):
+        required = (
+            "identifier",
+            "binding_fingerprint",
+            "visible",
+            "is_root",
+            "is_referenced",
+            "is_imported",
+            "shared_definition",
+        )
+        if any(key not in target for key in required):
+            return False
+        if not all(
+            isinstance(target.get(key), bool)
+            for key in (
+                "visible",
+                "is_root",
+                "is_referenced",
+                "is_imported",
+                "shared_definition",
+            )
+        ):
+            return False
+        return all(
+            target.get(key) == actual.get(key)
+            for key in (
+                "kind",
+                "entity_token",
+                "path",
+                "key",
+                "component",
+                "name",
+                "visible",
+                "is_root",
+                "is_referenced",
+                "is_imported",
+                "shared_definition",
+                "binding_fingerprint",
+            )
+        )
+
     occurrences_by_path = {}
     occurrence_path_map(design.rootComponent.occurrences, "", occurrences_by_path)
     occurrences_by_token = {}
+    component_instance_counts = {}
     for occurrence in occurrences_by_path.values():
         token = _entity_token(occurrence)
         if token:
             occurrences_by_token[token] = occurrence
+        component = occurrence.component
+        component_key = _component_key(component)
+        component_instance_counts[component_key] = component_instance_counts.get(component_key, 0) + 1
+
+    def body_binding(component, body, body_index):
+        name = body.name or ""
+        component_name = component.name or ""
+        component_key = _component_key(component)
+        item = {
+            "kind": "body",
+            "entity_token": _entity_token(body),
+            "path": None,
+            "key": "%s/%s#%d" % (component_name, name, body_index + 1),
+            "component": component_name,
+            "name": name,
+            "visible": _visible(body) and _component_visible(component),
+            "is_root": component == design.rootComponent,
+            "is_referenced": _component_reference_fact(component),
+            "is_imported": _component_imported_fact(component),
+            "shared_definition": bool(component_instance_counts.get(component_key, 0) > 1),
+        }
+        item["binding_fingerprint"] = _binding_fingerprint(item)
+        return item
+
+    def occurrence_binding(occurrence, path):
+        component = occurrence.component
+        component_key = _component_key(component)
+        item = {
+            "kind": "occurrence",
+            "entity_token": _entity_token(occurrence),
+            "path": path,
+            "key": None,
+            "component": component.name if component else "",
+            "name": occurrence.name or (component.name if component else ""),
+            "visible": _visible(occurrence),
+            "is_root": False,
+            "is_referenced": _component_reference_fact(component),
+            "is_imported": _component_imported_fact(component),
+            "shared_definition": bool(component_instance_counts.get(component_key, 0) > 1),
+        }
+        item["binding_fingerprint"] = _binding_fingerprint(item)
+        return item
     for target_index, target in enumerate(targets):
         kind = str(target.get("kind") or target.get("type") or "body").lower()
         if kind in ("body", "brepbody"):
@@ -454,9 +559,14 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
                 for body_index in range(bodies.count):
                     body = bodies.item(body_index)
                     if body and target_matches_body(target, component, body, body_index):
-                        matches.append((component, body))
+                        matches.append((component, body, body_index))
             if len(matches) == 1:
-                resolved.append(("body", matches[0][0], matches[0][1], None))
+                component, body, body_index = matches[0]
+                actual = body_binding(component, body, body_index)
+                if expected_binding_matches(target, actual):
+                    resolved.append(("body", component, body, None, actual))
+                else:
+                    skipped.append({"target_index": target_index, "reason": "binding_fingerprint_mismatch"})
             else:
                 skipped.append({"target_index": target_index, "target": target, "reason": "target_must_match_exactly_one_entity", "match_count": len(matches)})
         elif kind == "occurrence":
@@ -464,7 +574,11 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
             token = target.get("entity_token") or target.get("token")
             occurrence = occurrences_by_token.get(token) if token else occurrences_by_path.get(path)
             if occurrence:
-                resolved.append(("occurrence", None, occurrence, path))
+                actual = occurrence_binding(occurrence, path)
+                if expected_binding_matches(target, actual):
+                    resolved.append(("occurrence", None, occurrence, path, actual))
+                else:
+                    skipped.append({"target_index": target_index, "reason": "binding_fingerprint_mismatch"})
             else:
                 skipped.append({"target_index": target_index, "target": target, "reason": "occurrence_not_found"})
         else:
@@ -472,14 +586,14 @@ def safe_delete_apply_script(payload: dict[str, Any]) -> str:
     if skipped:
         print(json.dumps({"success": False, "error_code": "TARGET_PREFLIGHT_FAILED", "deleted": [], "deleted_count": 0, "skipped": skipped}, sort_keys=True))
         return
-    for kind, component, entity, path in resolved:
+    for kind, component, entity, path, actual in resolved:
         if kind == "body":
             deleted.append({"kind": "body", "component": component.name or "", "name": entity.name or ""})
         else:
             deleted.append({"kind": "occurrence", "path": path})
         entity.deleteMe()
     print(json.dumps({"success": True, "deleted": deleted, "deleted_count": len(deleted), "skipped": skipped}, sort_keys=True))
-''',
+""",
     )
 
 
@@ -571,6 +685,29 @@ def _component_key(component):
     return component.name or ""
 
 
+def _component_reference_fact(component):
+    if not component:
+        return None
+    try:
+        return bool(component.isReferencedComponent)
+    except Exception:
+        return None
+
+
+def _component_imported_fact(component):
+    referenced = _component_reference_fact(component)
+    if referenced is True:
+        return True
+    if referenced is None:
+        return None
+    try:
+        attributes = component.attributes
+        marker = attributes.itemByName("fusion_agent", "origin") if attributes else None
+        return bool(marker and str(marker.value).lower() == "imported")
+    except Exception:
+        return None
+
+
 def _point_mm(point):
     return [round(point.x * 10.0, 6), round(point.y * 10.0, 6), round(point.z * 10.0, 6)]
 
@@ -637,6 +774,21 @@ def _merge_bbox(existing, bbox):
 
 def _hash_payload(payload):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _binding_fingerprint(item):
+    return _hash_payload({{
+        "key": item.get("key"),
+        "path": item.get("path"),
+        "component": item.get("component"),
+        "name": item.get("name"),
+        "entity_token": item.get("entity_token") or item.get("token"),
+        "visible": item.get("visible"),
+        "is_root": item.get("is_root"),
+        "is_referenced": item.get("is_referenced"),
+        "is_imported": item.get("is_imported"),
+        "shared_definition": item.get("shared_definition"),
+    }})
 
 
 def run(_context: str):

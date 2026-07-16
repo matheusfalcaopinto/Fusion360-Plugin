@@ -92,11 +92,14 @@ class StdioMcpClient:
             "reconnect_count": max(self.connection_generation - 1, 0),
             "fingerprint": self._manifest.fingerprint if self._manifest else None,
             "manifest_drift": False,
-            "last_error": self._last_error,
+            "last_error_present": self._last_error is not None,
             "session_established": self._session is not None,
             "mutation_dispatched": self._mutation_dispatched,
-            "command": self.command,
-            "args": list(self.args),
+            # Process launch values are privileged configuration.  Unknown
+            # argv positions can contain credentials, so selective redaction
+            # is not a defensible public projection.
+            "command_configured": bool(self.command),
+            "argument_count": len(self.args),
         }
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
@@ -108,7 +111,9 @@ class StdioMcpClient:
 
     async def ensure_ready(self) -> None:
         if self._closing or self.state == ConnectionState.CLOSED:
-            raise FusionHarnessError("stdio MCP client is closed", ErrorCode.CLIENT_CLOSED)
+            raise FusionHarnessError(
+                "stdio MCP client is closed", ErrorCode.CLIENT_CLOSED
+            )
         if self.state == ConnectionState.READY and self._session is not None:
             return
         async with self._connect_lock:
@@ -133,7 +138,9 @@ class StdioMcpClient:
                     self._session_factory(
                         read_stream,
                         write_stream,
-                        read_timeout_seconds=timedelta(seconds=self.read_timeout_seconds),
+                        read_timeout_seconds=timedelta(
+                            seconds=self.read_timeout_seconds
+                        ),
                     )
                 )
                 initialize_result = await asyncio.wait_for(
@@ -291,7 +298,8 @@ def _with_transport(
                 and mutation_outcome == "unknown"
             ),
             "post_dispatch_replay_suppressed": bool(
-                dispatched and options.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
+                dispatched
+                and options.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
             ),
             "mutation_outcome": mutation_outcome,
             "error_code": result.error_code,
@@ -320,7 +328,9 @@ def _manifest_from_results(initialize_result: Any, tools_result: Any) -> ToolMan
         source="fusion_faust_stdio",
         server=server,
         server_name=server.get("name") if isinstance(server.get("name"), str) else None,
-        server_version=server.get("version") if isinstance(server.get("version"), str) else None,
+        server_version=server.get("version")
+        if isinstance(server.get("version"), str)
+        else None,
         protocol_version=initialize.get(
             "protocolVersion", initialize.get("protocol_version")
         ),

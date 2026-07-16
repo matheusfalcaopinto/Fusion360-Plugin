@@ -23,7 +23,9 @@ from telemetry.trace import JsonlTraceLogger
 
 
 @pytest.mark.asyncio
-async def test_adapter_injects_executor_guard_once_and_traces_source_and_wire_hashes(tmp_path) -> None:
+async def test_adapter_injects_executor_guard_once_and_traces_source_and_wire_hashes(
+    tmp_path,
+) -> None:
     class CaptureClient:
         def __init__(self) -> None:
             self.arguments: dict[str, Any] | None = None
@@ -100,7 +102,10 @@ def test_native_negative_acknowledgement_is_a_functional_error() -> None:
     assert result.ok is False
     assert result.is_error is True
     assert result.error_code == ErrorCode.FUSION_OPERATION_FAILED
-    assert result.error_message == "script binding failed"
+    assert result.error_message == "The downstream Fusion operation failed."
+    assert result.public_error is not None
+    assert result.public_error.code == ErrorCode.FUSION_OPERATION_FAILED
+    assert "script binding failed" not in result.model_dump_json()
 
 
 def test_nested_native_negative_acknowledgement_is_a_functional_error() -> None:
@@ -121,7 +126,10 @@ def test_nested_native_negative_acknowledgement_is_a_functional_error() -> None:
     assert result.ok is False
     assert result.is_error is True
     assert result.error_code == ErrorCode.FUSION_OPERATION_FAILED
-    assert result.error_message == "nested script failure"
+    assert result.error_message == "The downstream Fusion operation failed."
+    assert result.public_error is not None
+    assert result.public_error.code == ErrorCode.FUSION_OPERATION_FAILED
+    assert "nested script failure" not in result.model_dump_json()
 
 
 class _Model:
@@ -135,7 +143,9 @@ class _Model:
 @dataclass
 class _FakeMcp:
     manifests: list[list[dict[str, Any]]] = field(
-        default_factory=lambda: [[{"name": "fusion_mcp_read"}, {"name": "fusion_mcp_execute"}]]
+        default_factory=lambda: [
+            [{"name": "fusion_mcp_read"}, {"name": "fusion_mcp_execute"}]
+        ]
     )
     initialize_count: int = 0
     list_count: int = 0
@@ -204,7 +214,9 @@ class _FakeSession:
         del arguments
         self.state.call_count += 1
         self.state.active_calls += 1
-        self.state.max_active_calls = max(self.state.max_active_calls, self.state.active_calls)
+        self.state.max_active_calls = max(
+            self.state.max_active_calls, self.state.active_calls
+        )
         self.state.call_started.set()
         try:
             if self.state.block_calls:
@@ -214,10 +226,14 @@ class _FakeSession:
                 raise ConnectionError("injected read transport failure")
             if name == "fusion_mcp_read" and self.state.timeout_mcp_reads:
                 self.state.timeout_mcp_reads -= 1
-                raise McpError(ErrorData(code=408, message="Timed out while waiting for response"))
+                raise McpError(
+                    ErrorData(code=408, message="Timed out while waiting for response")
+                )
             if name == "fusion_mcp_read" and self.state.functional_mcp_errors:
                 self.state.functional_mcp_errors -= 1
-                raise McpError(ErrorData(code=-32602, message="invalid functional arguments"))
+                raise McpError(
+                    ErrorData(code=-32602, message="invalid functional arguments")
+                )
             if name == "fusion_mcp_read" and self.state.functional_read_errors:
                 self.state.functional_read_errors -= 1
                 return _Model(
@@ -231,7 +247,9 @@ class _FakeSession:
                 raise ConnectionError("injected mutation transport failure")
             if name == "fusion_mcp_execute" and self.state.timeout_mcp_mutations:
                 self.state.timeout_mcp_mutations -= 1
-                raise McpError(ErrorData(code=408, message="Timed out while waiting for response"))
+                raise McpError(
+                    ErrorData(code=408, message="Timed out while waiting for response")
+                )
             await asyncio.sleep(0.005)
             return _Model(
                 {
@@ -260,7 +278,10 @@ async def test_persistent_session_initializes_and_lists_once_for_twenty_reads() 
     state = _FakeMcp()
     client = _client(state)
 
-    results = [await client.call_tool("fusion_mcp_read", {"queryType": "document"}) for _ in range(20)]
+    results = [
+        await client.call_tool("fusion_mcp_read", {"queryType": "document"})
+        for _ in range(20)
+    ]
 
     assert all(result.ok for result in results)
     assert state.initialize_count == 1
@@ -278,7 +299,10 @@ async def test_operations_are_serialized() -> None:
     client = _client(state)
 
     await asyncio.gather(
-        *(client.call_tool("fusion_mcp_read", {"queryType": "document"}) for _ in range(8))
+        *(
+            client.call_tool("fusion_mcp_read", {"queryType": "document"})
+            for _ in range(8)
+        )
     )
 
     assert state.max_active_calls == 1
@@ -298,7 +322,9 @@ async def test_read_reconnects_once_but_mutation_is_never_replayed() -> None:
 
     mutation_state = _FakeMcp(fail_mutations=1)
     mutation_client = _client(mutation_state)
-    mutation_result = await mutation_client.call_tool("fusion_mcp_execute", {"featureType": "script"})
+    mutation_result = await mutation_client.call_tool(
+        "fusion_mcp_execute", {"featureType": "script"}
+    )
     assert not mutation_result.ok
     assert mutation_result.error_code == ErrorCode.MUTATION_OUTCOME_UNKNOWN
     assert mutation_state.call_count == 1
@@ -326,7 +352,9 @@ async def test_sdk_mcp_timeout_retries_read_but_never_replays_mutation() -> None
 
     mutation_state = _FakeMcp(timeout_mcp_mutations=1)
     mutation_client = _client(mutation_state)
-    mutation_result = await mutation_client.call_tool("fusion_mcp_execute", {"featureType": "script"})
+    mutation_result = await mutation_client.call_tool(
+        "fusion_mcp_execute", {"featureType": "script"}
+    )
 
     assert mutation_result.error_code == ErrorCode.MUTATION_OUTCOME_UNKNOWN
     assert mutation_state.call_count == 1
@@ -335,7 +363,9 @@ async def test_sdk_mcp_timeout_retries_read_but_never_replays_mutation() -> None
 
 
 @pytest.mark.asyncio
-async def test_functional_mcp_error_is_not_retried_or_treated_as_transport_loss() -> None:
+async def test_functional_mcp_error_is_not_retried_or_treated_as_transport_loss() -> (
+    None
+):
     state = _FakeMcp(functional_mcp_errors=1)
     client = _client(state)
 
@@ -409,7 +439,9 @@ async def test_model_execute_cannot_downgrade_transport_semantics_or_timeout() -
 async def test_cancelled_mutation_returns_unknown_without_replay() -> None:
     state = _FakeMcp(block_calls=True)
     client = _client(state)
-    task = asyncio.create_task(client.call_tool("fusion_mcp_execute", {"featureType": "script"}))
+    task = asyncio.create_task(
+        client.call_tool("fusion_mcp_execute", {"featureType": "script"})
+    )
     await asyncio.wait_for(state.call_started.wait(), timeout=0.5)
 
     task.cancel()
@@ -421,13 +453,17 @@ async def test_cancelled_mutation_returns_unknown_without_replay() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_while_queued_is_not_dispatched_and_is_traced(tmp_path: Path) -> None:
+async def test_cancelled_while_queued_is_not_dispatched_and_is_traced(
+    tmp_path: Path,
+) -> None:
     state = _FakeMcp(block_calls=True)
     trace_path = tmp_path / "queued-cancel.jsonl"
     client = _client(state, trace_logger=JsonlTraceLogger(trace_path))
     active = asyncio.create_task(client.call_tool("fusion_mcp_read", {}))
     await asyncio.wait_for(state.call_started.wait(), timeout=0.5)
-    queued = asyncio.create_task(client.call_tool("fusion_mcp_execute", {"featureType": "script"}))
+    queued = asyncio.create_task(
+        client.call_tool("fusion_mcp_execute", {"featureType": "script"})
+    )
     await asyncio.sleep(0.01)
 
     queued.cancel()
@@ -437,8 +473,12 @@ async def test_cancelled_while_queued_is_not_dispatched_and_is_traced(tmp_path: 
 
     assert cancelled.error_code == ErrorCode.CALL_CANCELLED
     assert state.call_count == 1
-    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    cancellation = next(event for event in events if event.get("error_code") == ErrorCode.CALL_CANCELLED)
+    events = [
+        json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
+    cancellation = next(
+        event for event in events if event.get("error_code") == ErrorCode.CALL_CANCELLED
+    )
     assert cancellation["attempt_count"] == 0
     assert cancellation["outcome"] == ErrorCode.CALL_CANCELLED
     assert cancellation["dispatched"] is False
@@ -460,7 +500,9 @@ async def test_functional_read_error_is_not_retried() -> None:
 
 
 @pytest.mark.asyncio
-async def test_timeout_mutation_returns_quickly_and_next_call_reconnects_without_replay() -> None:
+async def test_timeout_mutation_returns_quickly_and_next_call_reconnects_without_replay() -> (
+    None
+):
     state = _FakeMcp(block_calls=True)
     client = _client(state)
     started = time.perf_counter()
@@ -519,7 +561,9 @@ async def test_command_mode_remains_one_shot_and_never_retries_mutation() -> Non
 
 
 @pytest.mark.asyncio
-async def test_command_timeout_terminates_process_and_returns_within_two_seconds() -> None:
+async def test_command_timeout_terminates_process_and_returns_within_two_seconds() -> (
+    None
+):
     import sys
 
     command = f'"{sys.executable}" -c "import time;time.sleep(30)"'
@@ -561,12 +605,16 @@ async def test_manifest_drift_blocks_retry_until_explicit_rediscovery() -> None:
     await client.aclose()
 
 
-def test_manifest_v2_migrates_legacy_and_saves_only_on_fingerprint_change(tmp_path: Path) -> None:
+def test_manifest_v2_migrates_legacy_and_saves_only_on_fingerprint_change(
+    tmp_path: Path,
+) -> None:
     legacy = {
         "source": "fusion_real",
         "tools": [{"name": "fusion_mcp_read", "input_schema": {"type": "object"}}],
     }
-    (tmp_path / "fusion_mcp_tools_latest.json").write_text(json.dumps(legacy), encoding="utf-8")
+    (tmp_path / "fusion_mcp_tools_latest.json").write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
     store = ManifestStore(tmp_path)
 
     loaded = store.load_latest("real")
@@ -607,7 +655,9 @@ def test_manifest_fingerprint_is_order_independent_and_schema_sensitive() -> Non
 
 
 @pytest.mark.asyncio
-async def test_manifest_persistence_failure_does_not_drop_live_connection(tmp_path: Path) -> None:
+async def test_manifest_persistence_failure_does_not_drop_live_connection(
+    tmp_path: Path,
+) -> None:
     class FailingStore(ManifestStore):
         def save_if_changed(self, manifest):
             del manifest

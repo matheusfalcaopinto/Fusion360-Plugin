@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 
@@ -20,18 +19,9 @@ SUPPORTED_ENTITY_TYPES = {
 MAX_ENTITIES_VISITED = 5000
 MAX_DEADLINE_MS = 5000
 MIN_MAX_RESPONSE_BYTES = 4096
-DEFAULT_MAX_ENTITIES_VISITED = min(
-    MAX_ENTITIES_VISITED,
-    max(1, int(os.getenv("FUSION_AGENT_INSPECTION_MAX_ENTITIES", "1000"))),
-)
-DEFAULT_DEADLINE_MS = min(
-    MAX_DEADLINE_MS,
-    max(50, int(os.getenv("FUSION_AGENT_INSPECTION_DEADLINE_MS", "1500"))),
-)
-DEFAULT_MAX_RESPONSE_BYTES = min(
-    1024 * 1024,
-    max(MIN_MAX_RESPONSE_BYTES, int(os.getenv("FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES", "1048576"))),
-)
+DEFAULT_MAX_ENTITIES_VISITED = 1000
+DEFAULT_DEADLINE_MS = 1500
+DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def validate_inspection_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -49,14 +39,21 @@ def validate_inspection_payload(payload: dict[str, Any]) -> dict[str, Any]:
     state_fingerprint_limit = int(payload.get("state_fingerprint_limit", 5000))
     if state_fingerprint_limit < 100 or state_fingerprint_limit > 20_000:
         raise ValueError("state_fingerprint_limit must be between 100 and 20000")
-    max_entities_visited = int(payload.get("max_entities_visited", DEFAULT_MAX_ENTITIES_VISITED))
+    max_entities_visited = int(
+        payload.get("max_entities_visited", DEFAULT_MAX_ENTITIES_VISITED)
+    )
     if max_entities_visited < 1 or max_entities_visited > MAX_ENTITIES_VISITED:
         raise ValueError("max_entities_visited must be between 1 and 5000")
     deadline_ms = int(payload.get("deadline_ms", DEFAULT_DEADLINE_MS))
     if deadline_ms < 50 or deadline_ms > MAX_DEADLINE_MS:
         raise ValueError("deadline_ms must be between 50 and 5000")
-    max_response_bytes = int(payload.get("max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES))
-    if max_response_bytes < MIN_MAX_RESPONSE_BYTES or max_response_bytes > DEFAULT_MAX_RESPONSE_BYTES:
+    max_response_bytes = int(
+        payload.get("max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES)
+    )
+    if (
+        max_response_bytes < MIN_MAX_RESPONSE_BYTES
+        or max_response_bytes > DEFAULT_MAX_RESPONSE_BYTES
+    ):
         raise ValueError("max_response_bytes must be between 4096 and 1048576")
 
     normalized: list[dict[str, Any]] = []
@@ -70,14 +67,22 @@ def validate_inspection_payload(payload: dict[str, Any]) -> dict[str, Any]:
         seen_ids.add(query_id)
         entity_type = str(raw.get("entity_type") or "").strip().lower()
         if entity_type not in SUPPORTED_ENTITY_TYPES:
-            raise ValueError(f"queries[{index}].entity_type is unsupported: {entity_type}")
+            raise ValueError(
+                f"queries[{index}].entity_type is unsupported: {entity_type}"
+            )
         selector = raw.get("selector") or {}
         if not isinstance(selector, dict):
             raise ValueError(f"queries[{index}].selector must be an object")
-        if selector.get("component_path") not in (None, "") and selector.get("name") in (None, ""):
-            raise ValueError(f"queries[{index}].selector.component_path requires selector.name")
+        if selector.get("component_path") not in (None, "") and selector.get(
+            "name"
+        ) in (None, ""):
+            raise ValueError(
+                f"queries[{index}].selector.component_path requires selector.name"
+            )
         fields = raw.get("fields") or ["exists"]
-        if not isinstance(fields, list) or not all(isinstance(field, str) and field for field in fields):
+        if not isinstance(fields, list) or not all(
+            isinstance(field, str) and field for field in fields
+        ):
             raise ValueError(f"queries[{index}].fields must be an array of strings")
         normalized.append(
             {

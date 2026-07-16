@@ -18,9 +18,16 @@ from agent_core.fast_path import (
     lint_fusion_script,
     validate_fast_execute_request,
 )
-from agent_core.targeted_inspection import build_targeted_inspection_script, validate_inspection_payload
+from agent_core.targeted_inspection import (
+    build_targeted_inspection_script,
+    validate_inspection_payload,
+)
 from fusion_mcp_adapter.errors import ErrorCode
-from fusion_mcp_adapter.execute_guard import normalize_execute_script, protected_script_descriptor
+from fusion_mcp_adapter import execute_guard
+from fusion_mcp_adapter.execute_guard import (
+    normalize_execute_script,
+    protected_script_descriptor,
+)
 
 
 READ_SCRIPT = """import adsk.core
@@ -99,12 +106,16 @@ def run(_context: str):
     reflection_decision = lint_fusion_script(reflective_access, "read_only")
 
     assert sys_decision.allowed is False
-    assert any("import is not allowlisted: sys" in error for error in sys_decision.errors)
+    assert any(
+        "import is not allowlisted: sys" in error for error in sys_decision.errors
+    )
     assert reflection_decision.allowed is False
     assert any("blocked" in error for error in reflection_decision.errors)
 
 
-def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_code() -> None:
+def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_code() -> (
+    None
+):
     guarded = normalize_execute_script(
         _guard_script(
             READ_SCRIPT,
@@ -112,7 +123,9 @@ def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_cod
         )
     )
     parsed = ast.parse(guarded)
-    entrypoint = next(node for node in parsed.body if getattr(node, "name", None) == "run")
+    entrypoint = next(
+        node for node in parsed.body if getattr(node, "name", None) == "run"
+    )
     first_lines = [getattr(node, "lineno", 0) for node in entrypoint.body[:5]]
 
     assert first_lines == sorted(first_lines)
@@ -123,12 +136,21 @@ def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_cod
     assert "range(512)" in guarded
     assert "_fusion_agent_runtime_sys.stdout = _fusion_agent_collapse_stream" in guarded
     assert "_fusion_agent_runtime_sys.stderr = _fusion_agent_collapse_stream" in guarded
-    assert "_fusion_agent_runtime_sys.stdout = _fusion_agent_runtime_sys.__stdout__" not in guarded
-    assert guarded.index("import sys as _fusion_agent_runtime_sys") < guarded.index("import adsk.core", guarded.index("def run("))
-    assert guarded.index("del _fusion_agent_runtime_sys") < guarded.index("return _fusion_agent_user_run(_context)")
+    assert (
+        "_fusion_agent_runtime_sys.stdout = _fusion_agent_runtime_sys.__stdout__"
+        not in guarded
+    )
+    assert guarded.index("import sys as _fusion_agent_runtime_sys") < guarded.index(
+        "import adsk.core", guarded.index("def run(")
+    )
+    assert guarded.index("del _fusion_agent_runtime_sys") < guarded.index(
+        "return _fusion_agent_user_run(_context)"
+    )
 
 
-def test_stream_preamble_preserves_current_writer_and_collapses_old_writer_chain() -> None:
+def test_stream_preamble_preserves_current_writer_and_collapses_old_writer_chain() -> (
+    None
+):
     def wrap(delegate):
         class _NsSanitizedWriter:
             def __init__(self, original):
@@ -198,7 +220,9 @@ def test_stream_preamble_breaks_a_cyclic_writer_chain_to_the_base_fallback() -> 
     assert object.__getattribute__(outer_err, "_original") is base_err
 
 
-def test_default_executor_payload_gate_accepts_b07_range_and_blocks_above_28_kib(monkeypatch) -> None:
+def test_default_executor_payload_gate_accepts_b07_range_and_blocks_above_28_kib(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES", raising=False)
 
     b07_sized = protected_script_descriptor("x" * 25_700)
@@ -243,7 +267,9 @@ def run(_context: str):
         "target_components['root'].occurrences.addByInsert(data_file, matrix, True)",
     ],
 )
-def test_linter_routes_destructive_and_global_operations_to_safe_harness(operation: str) -> None:
+def test_linter_routes_destructive_and_global_operations_to_safe_harness(
+    operation: str,
+) -> None:
     script = f"""import adsk.core
 
 def run(_context: str):
@@ -252,7 +278,10 @@ def run(_context: str):
     decision = lint_fusion_script(script, "scoped_update")
 
     assert decision.allowed is False
-    assert any("blocked" in error.lower() or "safe harness" in error.lower() for error in decision.errors)
+    assert any(
+        "blocked" in error.lower() or "safe harness" in error.lower()
+        for error in decision.errors
+    )
 
 
 def test_linter_blocks_module_level_execution_before_document_guard() -> None:
@@ -328,7 +357,10 @@ def run(_context: str):
     assert project_decision.allowed is False
     assert project_decision.detected_change_class == "additive"
     assert lint_fusion_script(command_execute, "read_only").allowed is False
-    assert any("unclassified Fusion call" in error for error in lint_fusion_script(unknown, "read_only").errors)
+    assert any(
+        "unclassified Fusion call" in error
+        for error in lint_fusion_script(unknown, "read_only").errors
+    )
 
 
 def test_linter_allows_pure_sketch_coordinate_conversions() -> None:
@@ -397,42 +429,60 @@ def run(_context: str):
     targets['width'].name = 'Wrong'
 """
 
-    assert lint_fusion_script(
-        helper,
-        "additive",
-        allowed_target_ids=set(),
-        allowed_component_paths={"root"},
-    ).allowed is True
-    assert lint_fusion_script(
-        scoped,
-        "scoped_update",
-        allowed_target_ids={"width"},
-        allowed_component_paths=set(),
-    ).allowed is True
-    assert lint_fusion_script(
-        wrong_target,
-        "scoped_update",
-        allowed_target_ids={"width"},
-        allowed_component_paths=set(),
-    ).allowed is False
-    assert lint_fusion_script(
-        unbound,
-        "scoped_update",
-        allowed_target_ids={"width"},
-        allowed_component_paths=set(),
-    ).allowed is False
-    assert lint_fusion_script(
-        shadowed,
-        "scoped_update",
-        allowed_target_ids={"width"},
-        allowed_component_paths=set(),
-    ).allowed is False
-    assert lint_fusion_script(
-        overwritten,
-        "scoped_update",
-        allowed_target_ids={"width"},
-        allowed_component_paths=set(),
-    ).allowed is False
+    assert (
+        lint_fusion_script(
+            helper,
+            "additive",
+            allowed_target_ids=set(),
+            allowed_component_paths={"root"},
+        ).allowed
+        is True
+    )
+    assert (
+        lint_fusion_script(
+            scoped,
+            "scoped_update",
+            allowed_target_ids={"width"},
+            allowed_component_paths=set(),
+        ).allowed
+        is True
+    )
+    assert (
+        lint_fusion_script(
+            wrong_target,
+            "scoped_update",
+            allowed_target_ids={"width"},
+            allowed_component_paths=set(),
+        ).allowed
+        is False
+    )
+    assert (
+        lint_fusion_script(
+            unbound,
+            "scoped_update",
+            allowed_target_ids={"width"},
+            allowed_component_paths=set(),
+        ).allowed
+        is False
+    )
+    assert (
+        lint_fusion_script(
+            shadowed,
+            "scoped_update",
+            allowed_target_ids={"width"},
+            allowed_component_paths=set(),
+        ).allowed
+        is False
+    )
+    assert (
+        lint_fusion_script(
+            overwritten,
+            "scoped_update",
+            allowed_target_ids={"width"},
+            allowed_component_paths=set(),
+        ).allowed
+        is False
+    )
 
 
 def test_targeted_inspection_validation_is_bounded_and_unambiguous() -> None:
@@ -463,7 +513,11 @@ def test_targeted_inspection_validation_is_bounded_and_unambiguous() -> None:
         validate_inspection_payload(
             {
                 "queries": [
-                    {"id": "bad", "entity_type": "body", "selector": {"component_path": "Arm:1"}}
+                    {
+                        "id": "bad",
+                        "entity_type": "body",
+                        "selector": {"component_path": "Arm:1"},
+                    }
                 ]
             }
         )
@@ -479,14 +533,20 @@ def test_mutating_baseline_rejects_any_inexact_query_match_count() -> None:
             "stop_reason": None,
             "results": [
                 {"query_id": "future_body", "matches": [], "match_count_exact": True},
-                {"query_id": "component_binding", "matches": [], "match_count_exact": False},
+                {
+                    "query_id": "component_binding",
+                    "matches": [],
+                    "match_count_exact": False,
+                },
             ],
         },
     )
     assert issue == "query_match_count_inexact:component_binding"
 
 
-def test_targeted_inspection_generated_script_compiles_with_identity_and_full_paths() -> None:
+def test_targeted_inspection_generated_script_compiles_with_identity_and_full_paths() -> (
+    None
+):
     script = build_targeted_inspection_script(
         {
             "queries": [
@@ -534,7 +594,10 @@ class FakeNative:
             return {"ok": True, "data": {"success": True}}
         if name == "fusion_mcp_execute" and semantics == "read_only":
             if "fusion_agent_active_command" in arguments["object"]["script"]:
-                return {"ok": True, "data": {"message": json.dumps({"activeCommand": None})}}
+                return {
+                    "ok": True,
+                    "data": {"message": json.dumps({"activeCommand": None})},
+                }
             self.inspections += 1
             exists = self.inspections > 1
             payload = {
@@ -544,11 +607,17 @@ class FakeNative:
                 "counts_exact": True,
                 "stop_reason": None,
                 "document": {"name": "Untitled", "id": "", "runtime_id": "marker:fake"},
-                "summary": {"components": 1, "occurrences": 0, "bodies": 1 if exists else 0},
+                "summary": {
+                    "components": 1,
+                    "occurrences": 0,
+                    "bodies": 1 if exists else 0,
+                },
                 "results": [
                     {
                         "query_id": "body_target",
-                        "matches": [{"name": "Body1", "exists": True}] if exists else [],
+                        "matches": [{"name": "Body1", "exists": True}]
+                        if exists
+                        else [],
                         "ambiguous": False,
                         "truncated": False,
                         "match_count": 1 if exists else 0,
@@ -556,16 +625,18 @@ class FakeNative:
                     },
                     {
                         "query_id": "__fusion_agent_component_4813494d137e1631",
-                        "matches": [{
-                            "entity_type": "component",
-                            "name": "root",
-                            "path": "root",
-                            "paths": ["root"],
-                            "entity_token": "component-root-token",
-                            "visible": True,
-                            "is_referenced_component": False,
-                            "occurrence_count_for_component": 0,
-                        }],
+                        "matches": [
+                            {
+                                "entity_type": "component",
+                                "name": "root",
+                                "path": "root",
+                                "paths": ["root"],
+                                "entity_token": "component-root-token",
+                                "visible": True,
+                                "is_referenced_component": False,
+                                "occurrence_count_for_component": 0,
+                            }
+                        ],
                         "ambiguous": False,
                         "truncated": False,
                         "match_count": 1,
@@ -577,12 +648,18 @@ class FakeNative:
             return {"ok": True, "data": {"message": json.dumps(payload)}}
         if name == "fusion_mcp_execute":
             self.mutating_calls += 1
-            assert f'_expected_components = {{"root": "{_ROOT_COMPONENT_BINDING}"}}' in arguments["object"]["script"]
+            assert (
+                f'_expected_components = {{"root": "{_ROOT_COMPONENT_BINDING}"}}'
+                in arguments["object"]["script"]
+            )
             assert "return _design.rootComponent" in arguments["object"]["script"]
             assert arguments["object"]["script"].count("def run(") == 1
             assert "def _fusion_agent_user_run(" in arguments["object"]["script"]
             assert "isinstance(_found[1], bool)" in arguments["object"]["script"]
-            assert "_items = list(_found) if _found is not None else []" in arguments["object"]["script"]
+            assert (
+                "_items = list(_found) if _found is not None else []"
+                in arguments["object"]["script"]
+            )
             assert "except TypeError:" in arguments["object"]["script"]
             return {"ok": True, "data": {"message": "done"}}
         raise AssertionError((name, arguments, semantics, operation_id))
@@ -608,10 +685,20 @@ async def test_fast_execute_uses_one_mutation_between_baseline_and_readback() ->
                 }
             ],
             "assertions": [
-                {"id": "body_exists", "query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}
+                {
+                    "id": "body_exists",
+                    "query_id": "body_target",
+                    "field": "exists",
+                    "operator": "eq",
+                    "expected": True,
+                }
             ],
             "requirements": [
-                {"id": "body_created", "assertion_ids": ["body_exists"], "required": True}
+                {
+                    "id": "body_created",
+                    "assertion_ids": ["body_exists"],
+                    "required": True,
+                }
             ],
         },
     }
@@ -629,11 +716,16 @@ async def test_fast_execute_uses_one_mutation_between_baseline_and_readback() ->
     assert response.payload["executor_guard"]["stream_normalization"] == (
         "preserve_current_ns_writer_collapse_original_chain"
     )
-    assert response.payload["executor_guard"]["fallback_streams"] == "sys.__stdout__/sys.__stderr__"
+    assert (
+        response.payload["executor_guard"]["fallback_streams"]
+        == "sys.__stdout__/sys.__stderr__"
+    )
 
 
 @pytest.mark.asyncio
-async def test_post_dispatch_timeout_stays_unknown_even_when_readback_assertions_pass() -> None:
+async def test_post_dispatch_timeout_stays_unknown_even_when_readback_assertions_pass() -> (
+    None
+):
     class UnknownOutcomeNative(FakeNative):
         async def __call__(self, name, arguments, *, semantics, operation_id):
             result = await super().__call__(
@@ -684,7 +776,11 @@ async def test_post_dispatch_timeout_stays_unknown_even_when_readback_assertions
                     }
                 ],
                 "requirements": [
-                    {"id": "body_created", "assertion_ids": ["body_exists"], "required": True}
+                    {
+                        "id": "body_created",
+                        "assertion_ids": ["body_exists"],
+                        "required": True,
+                    }
                 ],
             },
         }
@@ -696,7 +792,10 @@ async def test_post_dispatch_timeout_stays_unknown_even_when_readback_assertions
     assert response.payload["mutation_status"] == "outcome_unknown"
     assert response.payload["verification"]["contract_verified"] is False
     assert response.payload["verification"]["assertion_status"] == "passed"
-    assert response.payload["verification"]["drift_conclusion"] == "no_drift_in_observed_scope"
+    assert (
+        response.payload["verification"]["drift_conclusion"]
+        == "no_drift_in_observed_scope"
+    )
     assert response.payload["post_dispatch_replay_suppressed"] is True
     assert response.is_error is True
 
@@ -771,7 +870,9 @@ async def test_fast_execute_never_verifies_from_partial_readback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch() -> None:
+async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch() -> (
+    None
+):
     class TruncatedBaselineNative:
         def __init__(self) -> None:
             self.mutations = 0
@@ -781,7 +882,10 @@ async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch()
             del operation_id
             if name == "fusion_mcp_execute" and semantics == "read_only":
                 if "fusion_agent_active_command" in arguments["object"]["script"]:
-                    return {"ok": True, "data": {"message": json.dumps({"activeCommand": None})}}
+                    return {
+                        "ok": True,
+                        "data": {"message": json.dumps({"activeCommand": None})},
+                    }
                 self.inspections += 1
                 payload = {
                     "success": True,
@@ -789,8 +893,15 @@ async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch()
                     "truncated": True,
                     "counts_exact": False,
                     "stop_reason": "max_entities_visited",
-                    "document": {"name": "D", "id": "data-file", "runtime_id": "data:data-file"},
-                    "summary": {"state_fingerprint": None, "state_fingerprint_truncated": True},
+                    "document": {
+                        "name": "D",
+                        "id": "data-file",
+                        "runtime_id": "data:data-file",
+                    },
+                    "summary": {
+                        "state_fingerprint": None,
+                        "state_fingerprint_truncated": True,
+                    },
                     "results": [
                         {
                             "query_id": "body_target",
@@ -824,7 +935,12 @@ async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch()
                     }
                 ],
                 "assertions": [
-                    {"query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "query_id": "body_target",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
             },
         }
@@ -839,8 +955,10 @@ async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch()
 
 
 @pytest.mark.asyncio
-async def test_fast_execute_blocks_oversized_protected_payload_before_dispatch(monkeypatch) -> None:
-    monkeypatch.setenv("FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES", "1")
+async def test_fast_execute_blocks_oversized_protected_payload_before_dispatch(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(execute_guard, "DEFAULT_PROTECTED_SCRIPT_LIMIT_BYTES", 1)
     native = FakeNative()
     response = await FastPathService(native).fast_execute(
         {
@@ -892,7 +1010,10 @@ async def test_scoped_update_is_bound_to_the_inspected_entity_token() -> None:
             if name == "fusion_mcp_execute" and semantics == "read_only":
                 script = arguments["object"]["script"]
                 if "fusion_agent_active_command" in script:
-                    return {"ok": True, "data": {"message": json.dumps({"activeCommand": None})}}
+                    return {
+                        "ok": True,
+                        "data": {"message": json.dumps({"activeCommand": None})},
+                    }
                 self.inspections += 1
                 expression = "10 mm" if self.inspections == 1 else "12 mm"
                 payload = {
@@ -901,7 +1022,11 @@ async def test_scoped_update_is_bound_to_the_inspected_entity_token() -> None:
                     "truncated": False,
                     "counts_exact": True,
                     "stop_reason": None,
-                    "document": {"name": "D", "id": "data-file", "runtime_id": "runtime"},
+                    "document": {
+                        "name": "D",
+                        "id": "data-file",
+                        "runtime_id": "runtime",
+                    },
                     "summary": {"components": 1, "parameters": 1},
                     "results": [
                         {
@@ -929,7 +1054,10 @@ async def test_scoped_update_is_bound_to_the_inspected_entity_token() -> None:
             if name == "fusion_mcp_execute":
                 self.mutations += 1
                 guarded = arguments["object"]["script"]
-                assert '_expected_targets = {"parameter_target": "parameter-width-token"}' in guarded
+                assert (
+                    '_expected_targets = {"parameter_target": "parameter-width-token"}'
+                    in guarded
+                )
                 assert "parameter = targets['parameter_target']" in guarded
                 return {"ok": True, "data": {"message": "updated"}}
             raise AssertionError((name, arguments, semantics))
@@ -965,7 +1093,11 @@ def run(_context: str):
                     }
                 ],
                 "requirements": [
-                    {"id": "requested_width", "assertion_ids": ["width_updated"], "required": True}
+                    {
+                        "id": "requested_width",
+                        "assertion_ids": ["width_updated"],
+                        "required": True,
+                    }
                 ],
             },
         }
@@ -979,7 +1111,9 @@ def run(_context: str):
 @pytest.mark.asyncio
 async def test_native_screenshot_preserves_image_content_without_json_base64() -> None:
     service = FastPathService(FakeNative())
-    response = await service.native_read({"query_type": "screenshot", "width": 128, "height": 128})
+    response = await service.native_read(
+        {"query_type": "screenshot", "width": 128, "height": 128}
+    )
 
     assert response.payload["status"] == "read_succeeded"
     assert response.content[0]["type"] == "image"
@@ -992,16 +1126,26 @@ async def test_native_screenshot_preserves_image_content_without_json_base64() -
 async def test_active_command_blocks_before_mutation() -> None:
     class BusyNative(FakeNative):
         async def __call__(self, name, arguments, *, semantics, operation_id):
-            if name == "fusion_mcp_execute" and "fusion_agent_active_command" in arguments["object"]["script"]:
+            if (
+                name == "fusion_mcp_execute"
+                and "fusion_agent_active_command" in arguments["object"]["script"]
+            ):
                 return {
                     "ok": True,
                     "data": {
                         "message": json.dumps(
-                            {"activeCommand": {"id": "Extrude", "isDefaultCommand": False}}
+                            {
+                                "activeCommand": {
+                                    "id": "Extrude",
+                                    "isDefaultCommand": False,
+                                }
+                            }
                         )
                     },
                 }
-            return await super().__call__(name, arguments, semantics=semantics, operation_id=operation_id)
+            return await super().__call__(
+                name, arguments, semantics=semantics, operation_id=operation_id
+            )
 
     native = BusyNative()
     service = FastPathService(native)
@@ -1011,8 +1155,21 @@ async def test_active_command_blocks_before_mutation() -> None:
         "script": ADDITIVE_SCRIPT,
         "target_query_ids": ["body_target"],
         "verification": {
-            "queries": [{"id": "body_target", "entity_type": "body", "selector": {"component_path": "root", "name": "Body1"}}],
-            "assertions": [{"query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}],
+            "queries": [
+                {
+                    "id": "body_target",
+                    "entity_type": "body",
+                    "selector": {"component_path": "root", "name": "Body1"},
+                }
+            ],
+            "assertions": [
+                {
+                    "query_id": "body_target",
+                    "field": "exists",
+                    "operator": "eq",
+                    "expected": True,
+                }
+            ],
         },
     }
     response = await service.fast_execute(request)
@@ -1029,10 +1186,15 @@ async def test_recovery_active_command_blocks_before_update_dispatch() -> None:
 
         async def __call__(self, name, arguments, *, semantics, operation_id):
             del semantics, operation_id
-            if name == "fusion_mcp_execute" and "fusion_agent_active_command" in arguments["object"]["script"]:
+            if (
+                name == "fusion_mcp_execute"
+                and "fusion_agent_active_command" in arguments["object"]["script"]
+            ):
                 return {
                     "ok": True,
-                    "data": {"message": json.dumps({"activeCommand": {"id": "Extrude"}})},
+                    "data": {
+                        "message": json.dumps({"activeCommand": {"id": "Extrude"}})
+                    },
                 }
             if name == "fusion_mcp_update":
                 self.updates += 1
@@ -1048,9 +1210,16 @@ async def test_recovery_active_command_blocks_before_update_dispatch() -> None:
             "operation_id": "op",
             "confirm": True,
             "verification": {
-                "queries": [{"id": "body", "entity_type": "body", "selector": {"name": "Body1"}}],
+                "queries": [
+                    {"id": "body", "entity_type": "body", "selector": {"name": "Body1"}}
+                ],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": False}
+                    {
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": False,
+                    }
                 ],
             },
         }
@@ -1062,7 +1231,9 @@ async def test_recovery_active_command_blocks_before_update_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_document_runtime_identity_guard_blocks_switched_unsaved_document() -> None:
+async def test_document_runtime_identity_guard_blocks_switched_unsaved_document() -> (
+    None
+):
     class SwitchedDocumentNative:
         def __init__(self) -> None:
             self.inspections = 0
@@ -1072,16 +1243,25 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
             del operation_id
             if name == "fusion_mcp_execute" and semantics == "read_only":
                 if "fusion_agent_active_command" in arguments["object"]["script"]:
-                    return {"ok": True, "data": {"message": json.dumps({"activeCommand": None})}}
+                    return {
+                        "ok": True,
+                        "data": {"message": json.dumps({"activeCommand": None})},
+                    }
                 self.inspections += 1
-                runtime_id = "doc-runtime-a" if self.inspections == 1 else "doc-runtime-b"
+                runtime_id = (
+                    "doc-runtime-a" if self.inspections == 1 else "doc-runtime-b"
+                )
                 payload = {
                     "success": True,
                     "complete": True,
                     "truncated": False,
                     "counts_exact": True,
                     "stop_reason": None,
-                    "document": {"name": "Untitled", "id": "", "runtime_id": runtime_id},
+                    "document": {
+                        "name": "Untitled",
+                        "id": "",
+                        "runtime_id": runtime_id,
+                    },
                     "summary": {"components": 1, "bodies": 0},
                     "results": [
                         {
@@ -1094,16 +1274,18 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
                         },
                         {
                             "query_id": "__fusion_agent_component_4813494d137e1631",
-                            "matches": [{
-                                "entity_type": "component",
-                                "name": "root",
-                                "path": "root",
-                                "paths": ["root"],
-                                "entity_token": "component-root-token",
-                                "visible": True,
-                                "is_referenced_component": False,
-                                "occurrence_count_for_component": 0,
-                            }],
+                            "matches": [
+                                {
+                                    "entity_type": "component",
+                                    "name": "root",
+                                    "path": "root",
+                                    "paths": ["root"],
+                                    "entity_token": "component-root-token",
+                                    "visible": True,
+                                    "is_referenced_component": False,
+                                    "occurrence_count_for_component": 0,
+                                }
+                            ],
                             "ambiguous": False,
                             "truncated": False,
                             "match_count": 1,
@@ -1115,8 +1297,14 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
                 return {"ok": True, "data": {"message": json.dumps(payload)}}
             if name == "fusion_mcp_execute":
                 self.mutating_calls += 1
-                assert "_expected_runtime_id = \"doc-runtime-a\"" in arguments["object"]["script"]
-                return {"ok": False, "error": "Fusion Agent document guard: runtime document changed"}
+                assert (
+                    '_expected_runtime_id = "doc-runtime-a"'
+                    in arguments["object"]["script"]
+                )
+                return {
+                    "ok": False,
+                    "error": "Fusion Agent document guard: runtime document changed",
+                }
             raise AssertionError((name, arguments, semantics))
 
     native = SwitchedDocumentNative()
@@ -1128,7 +1316,11 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
             "target_query_ids": ["body_target"],
             "verification": {
                 "queries": [
-                    {"id": "body_target", "entity_type": "body", "selector": {"component_path": "root", "name": "Body1"}}
+                    {
+                        "id": "body_target",
+                        "entity_type": "body",
+                        "selector": {"component_path": "root", "name": "Body1"},
+                    }
                 ],
                 "assertions": [
                     {
@@ -1150,10 +1342,26 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
 @pytest.mark.parametrize(
     ("match_overrides", "result_overrides", "expected_reason"),
     [
-        ({"visible": False}, {}, "hidden_target_requires_safe_harness:parameter_target"),
-        ({"is_referenced_component": True}, {}, "referenced_target_requires_safe_harness:parameter_target"),
-        ({"occurrence_count_for_component": 2}, {}, "shared_component_requires_safe_harness:parameter_target"),
-        ({}, {"ambiguous": True, "match_count": 2}, "ambiguous_target:parameter_target"),
+        (
+            {"visible": False},
+            {},
+            "hidden_target_requires_safe_harness:parameter_target",
+        ),
+        (
+            {"is_referenced_component": True},
+            {},
+            "referenced_target_requires_safe_harness:parameter_target",
+        ),
+        (
+            {"occurrence_count_for_component": 2},
+            {},
+            "shared_component_requires_safe_harness:parameter_target",
+        ),
+        (
+            {},
+            {"ambiguous": True, "match_count": 2},
+            "ambiguous_target:parameter_target",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1171,7 +1379,10 @@ async def test_fast_execute_blocks_ineligible_or_ambiguous_targets_before_dispat
             if name == "fusion_mcp_execute" and semantics == "read_only":
                 script = arguments["object"]["script"]
                 if "fusion_agent_active_command" in script:
-                    return {"ok": True, "data": {"message": json.dumps({"activeCommand": None})}}
+                    return {
+                        "ok": True,
+                        "data": {"message": json.dumps({"activeCommand": None})},
+                    }
                 match = {
                     "entity_type": "parameter",
                     "name": "Width",
@@ -1250,7 +1461,11 @@ def run(_context: str):
 
 def test_read_only_fast_execute_can_omit_mutation_verification_contract() -> None:
     normalized = validate_fast_execute_request(
-        {"intent": "Read the Fusion version", "change_class": "read_only", "script": READ_SCRIPT}
+        {
+            "intent": "Read the Fusion version",
+            "change_class": "read_only",
+            "script": READ_SCRIPT,
+        }
     )
 
     assert normalized["target_query_ids"] == []
@@ -1258,7 +1473,9 @@ def test_read_only_fast_execute_can_omit_mutation_verification_contract() -> Non
     assert normalized["verification"]["queries"][0]["entity_type"] == "document"
 
 
-def test_passing_assertions_without_requirement_coverage_are_not_contract_verified() -> None:
+def test_passing_assertions_without_requirement_coverage_are_not_contract_verified() -> (
+    None
+):
     baseline = {
         "document": {"id": "doc"},
         "summary": {"components": 1},
@@ -1272,7 +1489,15 @@ def test_passing_assertions_without_requirement_coverage_are_not_contract_verifi
     result = evaluate_verification(
         baseline,
         after,
-        [{"id": "exists", "query_id": "target", "field": "exists", "operator": "eq", "expected": True}],
+        [
+            {
+                "id": "exists",
+                "query_id": "target",
+                "field": "exists",
+                "operator": "eq",
+                "expected": True,
+            }
+        ],
         "scoped_update",
         [{"id": "intent", "required": True, "assertion_ids": []}],
     )
@@ -1298,7 +1523,15 @@ def test_independent_oracle_label_cannot_self_elevate_contract_assertions() -> N
     result = evaluate_verification(
         baseline,
         after,
-        [{"id": "exists", "query_id": "target", "field": "exists", "operator": "eq", "expected": True}],
+        [
+            {
+                "id": "exists",
+                "query_id": "target",
+                "field": "exists",
+                "operator": "eq",
+                "expected": True,
+            }
+        ],
         "scoped_update",
         [
             {
@@ -1322,8 +1555,14 @@ def test_independent_oracle_label_cannot_self_elevate_contract_assertions() -> N
     ("component_overrides", "expected"),
     [
         ({"visible": False}, "hidden_target_requires_safe_harness:component:root"),
-        ({"is_referenced_component": True}, "referenced_target_requires_safe_harness:component:root"),
-        ({"occurrence_count_for_component": 2}, "shared_component_requires_safe_harness:component:root"),
+        (
+            {"is_referenced_component": True},
+            "referenced_target_requires_safe_harness:component:root",
+        ),
+        (
+            {"occurrence_count_for_component": 2},
+            "shared_component_requires_safe_harness:component:root",
+        ),
     ],
 )
 def test_additive_component_binding_is_exact_visible_local_and_unshared(
@@ -1345,7 +1584,12 @@ def test_additive_component_binding_is_exact_visible_local_and_unshared(
                     }
                 ],
                 "assertions": [
-                    {"query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "query_id": "body_target",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
             },
         }
@@ -1394,7 +1638,12 @@ def test_root_component_binding_does_not_depend_on_unresolvable_entity_token() -
                     }
                 ],
                 "assertions": [
-                    {"query_id": "body_target", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "query_id": "body_target",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
             },
         }

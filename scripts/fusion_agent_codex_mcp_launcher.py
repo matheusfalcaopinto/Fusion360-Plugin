@@ -38,7 +38,9 @@ def resolve_dev_harness_root(root: Path | None = None) -> Path | None:
     candidate = Path(configured).resolve()
     if is_harness_root(candidate):
         return candidate
-    raise FileNotFoundError(f"FUSION_AGENT_HARNESS_ROOT is not a harness source checkout: {candidate}")
+    raise FileNotFoundError(
+        f"FUSION_AGENT_HARNESS_ROOT is not a harness source checkout: {candidate}"
+    )
 
 
 def resolve_harness_root(root: Path | None = None) -> Path | None:
@@ -80,7 +82,11 @@ def bundled_wheels(plugin: Path) -> list[Path]:
     wheels_dir = plugin / "wheels"
     if not wheels_dir.is_dir():
         return []
-    return sorted(wheels_dir.glob("fusion_agent_harness-*.whl"), key=lambda path: path.name, reverse=True)
+    return sorted(
+        wheels_dir.glob("fusion_agent_harness-*.whl"),
+        key=lambda path: path.name,
+        reverse=True,
+    )
 
 
 def plugin_version(plugin: Path) -> str:
@@ -112,8 +118,14 @@ def installed_server_available(python: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Run the MCP server or print launcher diagnostics."""
 
-    parser = argparse.ArgumentParser(description="Launch the Fusion Agent Codex MCP server.")
-    parser.add_argument("--check", action="store_true", help="Print resolved launcher settings and exit.")
+    parser = argparse.ArgumentParser(
+        description="Launch the Fusion Agent Codex MCP server."
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Print resolved launcher settings and exit.",
+    )
     args = parser.parse_args(argv)
 
     root = plugin_root()
@@ -122,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("FUSION_AGENT_CODEX", "1")
     os.environ.setdefault("FUSION_AGENT_PLUGIN_VERSION", plugin_version(root))
     if harness_root:
-        os.environ["PYTHONPATH"] = build_pythonpath(harness_root, os.environ.get("PYTHONPATH"))
+        os.environ["PYTHONPATH"] = build_pythonpath(
+            harness_root, os.environ.get("PYTHONPATH")
+        )
 
     if args.check:
         print(f"plugin_root={root}")
@@ -134,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         server_available = installed_server_available(python)
         print(f"installed_server_available={server_available}")
         print(f"fusion_agent_codex={os.environ['FUSION_AGENT_CODEX']}")
-        print(f"fusion_agent_plugin_version={os.environ['FUSION_AGENT_PLUGIN_VERSION']}")
+        print(
+            f"fusion_agent_plugin_version={os.environ['FUSION_AGENT_PLUGIN_VERSION']}"
+        )
         return 0 if server_available else 1
 
     if python == Path(sys.executable).resolve():

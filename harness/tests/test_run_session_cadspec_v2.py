@@ -145,11 +145,7 @@ def test_run_schemas_require_exactly_one_session_input() -> None:
         assert not list(validator.iter_errors({"prompt": "make a cube"}))
         assert not list(validator.iter_errors({"spec_json": "{}"}))
         assert list(validator.iter_errors({}))
-        assert list(
-            validator.iter_errors(
-                {"prompt": "make a cube", "spec_json": "{}"}
-            )
-        )
+        assert list(validator.iter_errors({"prompt": "make a cube", "spec_json": "{}"}))
 
 
 @pytest.mark.asyncio
@@ -183,10 +179,20 @@ async def test_v2_run_session_uses_typed_mock_and_persists_conservative_journal(
     assert payload["final_status"] == "simulated"
     assert payload["verification"]["contract_verified"] is False
     assert payload["verification"]["mutation_status"] == "not_dispatched"
-    assert (tmp_path / "workspace" / "projects" / "typed_demo" / "sessions" / payload["session_id"] / "execution.json").is_file()
+    assert (
+        tmp_path
+        / "workspace"
+        / "projects"
+        / "typed_demo"
+        / "sessions"
+        / payload["session_id"]
+        / "execution.json"
+    ).is_file()
 
 
-def test_v2_complete_readback_can_verify_declared_contract(monkeypatch, tmp_path) -> None:
+def test_v2_complete_readback_can_verify_declared_contract(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
     result = server._record_v2_session(
         _entity_contract(),
@@ -210,7 +216,9 @@ def test_v2_complete_readback_can_verify_declared_contract(monkeypatch, tmp_path
     assert result["verification"]["contract_verified"] is True
 
 
-def test_v2_positive_readback_never_promotes_unknown_mutation(monkeypatch, tmp_path) -> None:
+def test_v2_positive_readback_never_promotes_unknown_mutation(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
     result = server._record_v2_session(
         _entity_contract(),
@@ -258,12 +266,16 @@ def test_v2_custom_oracle_declaration_cannot_self_verify(monkeypatch, tmp_path) 
     assert result["verification"]["verification_level"] == "independent_oracle"
     assert result["verification"]["assertion_status"] == "incomplete"
     assert result["verification"]["intent_coverage"] == "none"
-    assert result["verification"]["requirements"][0]["oracle_evidence"] == "not_available"
+    assert (
+        result["verification"]["requirements"][0]["oracle_evidence"] == "not_available"
+    )
     assert result["verification"]["contract_verified"] is False
 
 
 @pytest.mark.asyncio
-async def test_supplied_legacy_spec_is_executed_without_replanning(monkeypatch, tmp_path) -> None:
+async def test_supplied_legacy_spec_is_executed_without_replanning(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
     runtime = FusionAgentRuntime(
         manifest_root=tmp_path / "manifests",

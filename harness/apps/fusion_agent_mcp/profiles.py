@@ -74,7 +74,7 @@ BENCHMARK_TOOLS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ToolProfileError(ValueError):
     """A requested tool is not available in the selected MCP profile."""
 
@@ -102,7 +102,11 @@ class ToolProfileError(ValueError):
 def resolve_tool_profile(profile: str | None = None) -> str:
     """Resolve and validate a profile, defaulting to the task-oriented surface."""
 
-    value = profile if profile is not None else os.getenv("FUSION_AGENT_TOOL_PROFILE", "normal")
+    value = (
+        profile
+        if profile is not None
+        else os.getenv("FUSION_AGENT_TOOL_PROFILE", "normal")
+    )
     normalized = value.strip().lower()
     if normalized not in TOOL_PROFILES:
         raise ValueError(

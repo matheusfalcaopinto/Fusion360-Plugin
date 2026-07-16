@@ -4,22 +4,30 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import uuid4
 
 import anyio
 import mcp.types as types
+from jsonschema import Draft202012Validator
 from mcp.server.lowlevel import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.shared.exceptions import McpError
 
 from agent_core.guardrails import PlannerUnsupportedError
 from agent_core.fast_path import FastPathResponse
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
+from agent_core.request_context import (
+    RequestContext,
+    bind_request_context,
+    current_request_context,
+)
 from agent_core.session_controller import SessionOptions
 from benchmark.loader import BenchmarkSuiteError, load_benchmark_suite
 from benchmark.models import BenchmarkRunConfig
@@ -27,7 +35,11 @@ from benchmark.runner import BenchmarkRunner
 from cad_spec.models import CadSpec
 from cad_spec.v2 import CadSpecV2, parse_cad_spec, upgrade_legacy_plan_to_v2
 from cli.main import _doctor, _tools_probe, _tools_propose_mapping
-from fusion_agent_mcp.runtime import FusionAgentRuntime, MOCK_IMPLEMENTED_CAPABILITIES
+from fusion_agent_mcp.runtime import (
+    FusionAgentRuntime,
+    MOCK_IMPLEMENTED_CAPABILITIES,
+    RuntimeConfiguration,
+)
 from fusion_agent_mcp.benchmark_bridge import FusionRuntimeBenchmarkBridge
 from fusion_agent_mcp import __version__
 from fusion_agent_mcp import mcp_surface
@@ -36,11 +48,11 @@ from fusion_agent_mcp.profiles import (
     ToolProfileError,
     profiles_for_tool,
     resolve_tool_profile,
-    tools_for_profile,
 )
 from fusion_agent_assets import asset_root
-from fusion_mcp_adapter.backend import selected_backend
 from fusion_mcp_adapter.endpoint_policy import EndpointPolicyError, validate_endpoint
+from fusion_mcp_adapter.errors import ErrorCode
+from fusion_mcp_adapter.tool_result import PublicError
 from fusion_tool_facade.autodesk_typed_backend import AUTODESK_IMPLEMENTED_CAPABILITIES
 from fusion_tool_facade.typed_backend import FAUST_IMPLEMENTED_CAPABILITIES
 from memory.gate import MemoryGate
@@ -111,6 +123,30 @@ class ToolSpec:
             object.__setattr__(self, "evidence_role", metadata[2])
 
 
+def surface_specs() -> list[mcp_surface.SurfaceSpec]:
+    """Return the unified declarative MCP surface registry."""
+
+    tool_surfaces = [
+        mcp_surface.SurfaceSpec(
+            kind="tool",
+            name=spec.name,
+            profiles=spec.profiles,
+            risk=spec.risk,
+            data_class=f"tool_{spec.evidence_role}",
+            capability_group=spec.capability_group,
+            evidence_role=spec.evidence_role,
+            description=spec.description,
+            input_schema=spec.input_schema,
+            output_schema=spec.output_schema,
+            annotations=spec.annotations,
+            handler=spec.handler,
+            projector=_as_call_tool_result,
+        )
+        for spec in tool_specs()
+    ]
+    return tool_surfaces + list(mcp_surface.surface_specs())
+
+
 _RUNTIME_OVERRIDE: ContextVar[FusionAgentRuntime | None] = ContextVar(
     "fusion_agent_runtime_override",
     default=None,
@@ -137,22 +173,177 @@ def get_runtime() -> FusionAgentRuntime:
     return _DEFAULT_RUNTIME
 
 
+def _runtime_configuration() -> RuntimeConfiguration:
+    return get_runtime().configuration
+
+
+def _doctor_environment(configuration: RuntimeConfiguration) -> JsonDict:
+    return {
+        "launcher_path": "",
+        "source_plugin_root": "",
+        "fusion_mcp_endpoint": configuration.endpoint or "",
+        "fusion_mcp_command": configuration.command or "",
+        "default_mode": configuration.default_mode,
+        "require_real": configuration.require_real,
+        "allow_dry_run": configuration.allow_dry_run,
+    }
+
+
+def _call_context_template(
+    profile: str, configuration: RuntimeConfiguration | None = None
+) -> RequestContext:
+    """Create the immutable security template captured by one MCP server."""
+
+    config = configuration or _runtime_configuration()
+    return RequestContext(
+        request_id="mcp_server_startup_template",
+        profile=profile,
+        mode=config.default_mode,
+        backend=config.backend,
+        timeouts={
+            "connect": config.connect_timeout_seconds,
+            "read": config.read_timeout_seconds,
+            "mutation": config.mutation_timeout_seconds,
+            "trusted_read": config.trusted_read_timeout_seconds,
+            "inspection_deadline_ms": float(config.inspection_deadline_ms),
+        },
+        limits={
+            "inspection_max_entities": config.inspection_max_entities,
+            "inspection_max_response_bytes": config.inspection_max_response_bytes,
+            "resource_max_bytes": config.resource_max_bytes,
+            "protected_script_bytes": config.protected_script_limit_bytes,
+        },
+        capabilities=(
+            f"fast_path:{config.fast_path_mode}",
+            f"execution_path:{config.execution_path}",
+        ),
+    )
+
+
+def _context_with_runtime_defaults(
+    context: RequestContext | None,
+    template: RequestContext,
+) -> RequestContext:
+    if context is None:
+        return template
+    capabilities = list(context.capabilities)
+    for prefix in ("fast_path:", "execution_path:"):
+        if not any(value.startswith(prefix) for value in capabilities):
+            capabilities.extend(
+                value for value in template.capabilities if value.startswith(prefix)
+            )
+    return RequestContext(
+        request_id=context.request_id,
+        profile=context.profile,
+        mode=context.mode,
+        backend=context.backend,
+        session_id=context.session_id,
+        trial_id=context.trial_id,
+        document_identity=context.document_identity,
+        spec_digest=context.spec_digest,
+        timeouts={**template.timeouts, **context.timeouts},
+        limits={**template.limits, **context.limits},
+        capabilities=tuple(capabilities),
+    )
+
+
+def _call_request_context(
+    name: str,
+    arguments: JsonDict,
+    *,
+    profile: str,
+    parent: RequestContext | None,
+) -> RequestContext:
+    """Derive one call-owned snapshot without consulting process globals."""
+
+    inherited = parent or _call_context_template(profile)
+    requested_mode = arguments.get("mode")
+    mode = (
+        str(requested_mode).strip().lower()
+        if isinstance(requested_mode, str)
+        and requested_mode.strip().lower() in {"mock", "real"}
+        else inherited.mode
+    )
+    inherited_capabilities = tuple(
+        capability
+        for capability in inherited.capabilities
+        if not capability.startswith(("tool:", "profile:"))
+    )
+    capabilities = tuple(
+        dict.fromkeys(
+            (
+                *inherited_capabilities,
+                f"tool:{name}",
+                f"profile:{profile}",
+            )
+        )
+    )
+    canonical_arguments = json.dumps(
+        arguments,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return RequestContext(
+        request_id=f"mcp_{uuid4().hex}",
+        session_id=inherited.session_id,
+        trial_id=inherited.trial_id,
+        profile=profile,
+        mode=mode,
+        backend=inherited.backend,
+        document_identity=inherited.document_identity,
+        spec_digest=hashlib.sha256(canonical_arguments).hexdigest(),
+        timeouts=inherited.timeouts,
+        limits=inherited.limits,
+        capabilities=capabilities,
+    )
+
+
+def _context_capability_value(
+    prefix: str,
+    *,
+    allowed: set[str],
+    default: str,
+) -> str:
+    """Read one unambiguous decision from the current request snapshot."""
+
+    context = current_request_context()
+    if context is None:
+        return default
+    marker = f"{prefix}:"
+    values = {
+        capability[len(marker) :]
+        for capability in context.capabilities
+        if capability.startswith(marker)
+    }
+    if not values:
+        return default
+    if len(values) != 1:
+        raise ValueError(f"conflicting {prefix} capabilities in request context")
+    value = next(iter(values))
+    if value not in allowed:
+        raise ValueError(f"unsupported {prefix} capability: {value}")
+    return value
+
+
 def list_tool_definitions(profile: str | None = None) -> list[types.Tool]:
     """Return MCP tool definitions for the safe harness wrapper."""
 
-    resolved_profile = resolve_tool_profile(profile)
-    specs = tool_specs()
-    allowed = tools_for_profile(resolved_profile, (spec.name for spec in specs))
+    resolved_profile = resolve_tool_profile(
+        profile if profile is not None else _runtime_configuration().tool_profile
+    )
+    specs = _tool_surface_specs()
     return [
         types.Tool(
             name=spec.name,
             description=spec.description,
-            inputSchema=spec.input_schema,
+            inputSchema=spec.input_schema or _schema(),
             outputSchema=spec.output_schema or _open_output_schema(),
             annotations=spec.annotations,
         )
         for spec in specs
-        if spec.name in allowed
+        if resolved_profile in spec.profiles
     ]
 
 
@@ -162,11 +353,16 @@ async def execute_tool(
     *,
     runtime: FusionAgentRuntime | None = None,
     profile: str = "all",
+    request_context: RequestContext | None = None,
 ) -> JsonDict:
     """Execute one wrapper tool by name and return a JSON-serializable payload."""
 
     response = await execute_tool_response(
-        name, arguments, runtime=runtime, profile=profile
+        name,
+        arguments,
+        runtime=runtime,
+        profile=profile,
+        request_context=request_context,
     )
     return response.payload
 
@@ -177,29 +373,40 @@ async def execute_tool_response(
     *,
     runtime: FusionAgentRuntime | None = None,
     profile: str = "all",
+    request_context: RequestContext | None = None,
 ) -> FastPathResponse:
     """Execute one tool while preserving structured and binary MCP channels."""
 
+    active_runtime = runtime or get_runtime()
     resolved_profile = resolve_tool_profile(profile)
-    spec_map = _tool_spec_map()
-    spec = spec_map.get(name)
-    if spec is None:
-        raise ValueError(f"unknown fusion agent MCP tool: {name}")
-    allowed = tools_for_profile(resolved_profile, spec_map)
-    if name not in allowed:
-        raise ToolProfileError(
-            tool_name=name,
-            profile=resolved_profile,
-            available_profiles=profiles_for_tool(name, spec_map),
-        )
-    token = _RUNTIME_OVERRIDE.set(runtime) if runtime is not None else None
+    template = _call_context_template(resolved_profile, active_runtime.configuration)
+    parent_context = _context_with_runtime_defaults(
+        request_context or current_request_context(), template
+    )
+    call_context = _call_request_context(
+        name,
+        arguments or {},
+        profile=resolved_profile,
+        parent=parent_context,
+    )
+    token = _RUNTIME_OVERRIDE.set(active_runtime)
     profile_token = _PROFILE_OVERRIDE.set(resolved_profile)
     try:
-        result = await spec.handler(arguments or {})
+        with bind_request_context(call_context):
+            spec_map = _tool_spec_map()
+            spec = spec_map.get(name)
+            if spec is None:
+                raise ValueError(f"unknown fusion agent MCP tool: {name}")
+            if resolved_profile not in spec.profiles:
+                raise ToolProfileError(
+                    tool_name=name,
+                    profile=resolved_profile,
+                    available_profiles=spec.profiles,
+                )
+            result = await spec.handler(arguments or {})
     finally:
         _PROFILE_OVERRIDE.reset(profile_token)
-        if token is not None:
-            _RUNTIME_OVERRIDE.reset(token)
+        _RUNTIME_OVERRIDE.reset(token)
     if isinstance(result, FastPathResponse):
         return result
     return FastPathResponse(payload=result)
@@ -212,7 +419,12 @@ def build_server(
 
     app = Server("fusion-agent-harness", version=__version__)
     server_runtime = runtime or get_runtime()
-    server_profile = resolve_tool_profile(profile)
+    server_profile = resolve_tool_profile(
+        profile if profile is not None else server_runtime.configuration.tool_profile
+    )
+    server_context = _call_context_template(
+        server_profile, server_runtime.configuration
+    )
 
     @app.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -228,44 +440,69 @@ def build_server(
                 dict(arguments or {}),
                 runtime=server_runtime,
                 profile=server_profile,
+                request_context=server_context,
             )
         except ToolProfileError as exc:
-            payload = exc.payload()
-            return types.CallToolResult(
-                content=[
-                    types.TextContent(
-                        type="text", text=_compact_summary(name, payload, False)
-                    )
-                ],
-                structuredContent=payload,
-                isError=True,
+            return _public_call_tool_error(
+                name,
+                code=exc.code,
+                generic_message="The requested tool is unavailable in this profile.",
+                extras={
+                    "tool": exc.tool_name,
+                    "profile": exc.profile,
+                    "available_profiles": list(exc.available_profiles),
+                },
             )
-        except Exception as exc:  # noqa: BLE001 - MCP boundary normalizes all failures
-            payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            return types.CallToolResult(
-                content=[
-                    types.TextContent(
-                        type="text", text=_compact_summary(name, payload, False)
-                    )
-                ],
-                structuredContent=payload,
-                isError=True,
+        except Exception:  # noqa: BLE001 - raw exception text is private
+            return _public_call_tool_error(
+                name,
+                code="INTERNAL_ERROR",
+                generic_message="The operation could not be completed.",
             )
-        return _as_call_tool_result(name, response)
+        spec = _tool_spec_map().get(name)
+        projector = getattr(spec, "projector", None)
+        if not callable(projector):
+            projector = _as_call_tool_result
+        return projector(name, response)
 
     @app.list_resources()
     async def list_resources() -> list[types.Resource]:
-        return mcp_surface.resources()
+        return mcp_surface.resources(server_profile)
 
     @app.list_resource_templates()
     async def list_resource_templates() -> list[types.ResourceTemplate]:
-        return mcp_surface.resource_templates()
+        return mcp_surface.resource_templates(server_profile)
 
     @app.read_resource()
     async def read_resource(uri: Any) -> list[ReadResourceContents]:
-        payload = await _read_mcp_resource(
-            str(uri), runtime=server_runtime, profile=server_profile
-        )
+        try:
+            payload = await _read_mcp_resource(
+                str(uri), runtime=server_runtime, profile=server_profile
+            )
+        except mcp_surface.SurfaceProfileError:
+            raise _public_resource_error(
+                code="SURFACE_NOT_AVAILABLE_IN_PROFILE",
+                generic_message="The requested resource is unavailable in this profile.",
+                protocol_code=types.INVALID_REQUEST,
+            ) from None
+        except FileNotFoundError:
+            raise _public_resource_error(
+                code="RESOURCE_NOT_FOUND",
+                generic_message="The requested resource is unavailable.",
+                protocol_code=types.INVALID_REQUEST,
+            ) from None
+        except (KeyError, TypeError, ValueError):
+            raise _public_resource_error(
+                code="INVALID_REQUEST",
+                generic_message="The resource request is invalid.",
+                protocol_code=types.INVALID_REQUEST,
+            ) from None
+        except Exception:  # noqa: BLE001 - raw resource diagnostics stay private
+            raise _public_resource_error(
+                code="INTERNAL_ERROR",
+                generic_message="The resource could not be read.",
+                protocol_code=types.INTERNAL_ERROR,
+            ) from None
         return [
             ReadResourceContents(
                 content=_bounded_json_text(payload),
@@ -275,13 +512,13 @@ def build_server(
 
     @app.list_prompts()
     async def list_prompts() -> list[types.Prompt]:
-        return mcp_surface.prompts()
+        return mcp_surface.prompts(server_profile)
 
     @app.get_prompt()
     async def get_prompt(
         name: str, arguments: dict[str, str] | None
     ) -> types.GetPromptResult:
-        return mcp_surface.render_prompt(name, arguments)
+        return mcp_surface.render_prompt(name, arguments, profile=server_profile)
 
     return app
 
@@ -291,10 +528,14 @@ def main() -> int:
 
     from mcp.server.stdio import stdio_server
 
+    configuration = RuntimeConfiguration.from_environment()
+    runtime = FusionAgentRuntime(
+        manifest_root=MANIFEST_ROOT,
+        outputs_root=OUTPUTS_ROOT,
+        configuration=configuration,
+    )
+
     async def arun() -> None:
-        runtime = FusionAgentRuntime(
-            manifest_root=MANIFEST_ROOT, outputs_root=OUTPUTS_ROOT
-        )
         app = build_server(runtime)
         try:
             async with stdio_server() as streams:
@@ -532,28 +773,143 @@ def tool_specs() -> list[ToolSpec]:
 
 
 async def _doctor_tool(_: JsonDict) -> JsonDict:
-    return _doctor()
+    return _doctor(_doctor_environment(_runtime_configuration()))
 
 
 async def _readiness_report_tool(_: JsonDict) -> JsonDict:
-    doctor = _doctor()
+    doctor = _doctor(_doctor_environment(_runtime_configuration()))
     profile = _PROFILE_OVERRIDE.get()
+    runtime = get_runtime()
     safe_tools = sorted(tool.name for tool in list_tool_definitions(profile))
     return {
+        "schema_version": "fusion_agent.readiness.v2",
+        "mcp_version": __version__,
         "tool_profile": profile,
         "available_tool_profiles": list(TOOL_PROFILES),
-        "doctor": doctor,
+        "doctor": _public_doctor_status(doctor),
         "safe_facade_tool_count": len(safe_tools),
         "safe_facade_tools": safe_tools,
-        "manifest_status": get_runtime().manifest_store.latest_status(),
-        "persistent_runtime": get_runtime().diagnostics(),
+        "manifest_status": _public_manifest_status(
+            runtime.manifest_store.latest_status()
+        ),
+        "persistent_runtime": _public_runtime_diagnostics(runtime.diagnostics()),
         "recommended_startup_sequence": [
             "Call fusion_agent_native_read(query_type=api_documentation) for only the APIs needed.",
             "Call fusion_agent_targeted_inspect for a bounded baseline.",
-            "Call fusion_agent_fast_execute only when the route and feature flag allow it.",
-            "Use doctor, probe, health, or broad inspection only on request or after a readiness failure.",
+            "Plan and validate a typed CadSpec before any authorized mutation.",
+            "Use diagnostic-profile health tools only after a readiness failure.",
         ],
     }
+
+
+def _public_doctor_status(doctor: JsonDict) -> JsonDict:
+    """Project installation diagnostics without paths, endpoints, or commands."""
+
+    allowed = (
+        "cache_plugin_version",
+        "fusion_mcp_endpoint_configured",
+        "fusion_mcp_command_configured",
+        "fusion_agent_default_mode",
+        "fusion_agent_require_real",
+        "fusion_agent_allow_dry_run",
+        "dry_run_policy",
+    )
+    return {key: doctor[key] for key in allowed if key in doctor}
+
+
+def _public_manifest_status(status: JsonDict) -> JsonDict:
+    """Project manifest presence/provenance without local paths or raw errors."""
+
+    public: JsonDict = {}
+    for source, raw in status.items():
+        if not isinstance(raw, dict):
+            continue
+        entry = {
+            key: raw[key]
+            for key in (
+                "exists",
+                "bytes",
+                "schema_version",
+                "fingerprint",
+                "captured_at",
+            )
+            if key in raw
+        }
+        if "error" in raw:
+            entry["error_present"] = True
+        public[str(source)] = entry
+    return public
+
+
+def _public_runtime_diagnostics(diagnostics: JsonDict) -> JsonDict:
+    """Allowlist lifecycle state safe for normal-profile readiness."""
+
+    allowed = (
+        "backend",
+        "state",
+        "transport_mode",
+        "requested_transport_mode",
+        "effective_transport_mode",
+        "frontend_transport",
+        "connection_generation",
+        "initialize_count",
+        "tools_list_count",
+        "call_count",
+        "reconnect_count",
+        "retry_count",
+        "fingerprint",
+        "manifest_drift",
+        "session_established",
+        "worker_running",
+        "queue_depth",
+        "cooldown_remaining_seconds",
+        "auto_canary_completed",
+        "auto_canary_count",
+        "auto_canary_ms",
+        "mutation_dispatched",
+        "readiness_cached",
+        "readiness_ttl_seconds",
+        "real_benchmark_backend",
+        "closing",
+        "command_configured",
+        "argument_count",
+        "last_error_present",
+    )
+    public = {key: diagnostics[key] for key in allowed if key in diagnostics}
+    endpoint_policy = diagnostics.get("endpoint_policy")
+    if isinstance(endpoint_policy, dict):
+        public["endpoint_policy"] = {
+            key: endpoint_policy[key]
+            for key in ("policy", "scheme", "loopback", "authenticated")
+            if key in endpoint_policy
+        }
+    authority_policy = diagnostics.get("authority_policy")
+    if isinstance(authority_policy, dict):
+        authority_public: JsonDict = {}
+        digest = authority_policy.get("digest")
+        if isinstance(digest, str) and digest:
+            authority_public["digest"] = digest
+        io_enabled = authority_policy.get("io_enabled")
+        if isinstance(io_enabled, bool):
+            authority_public["io_enabled"] = io_enabled
+        root_ids = authority_policy.get("root_ids")
+        if isinstance(root_ids, dict):
+            public_root_ids: JsonDict = {}
+            for direction in ("import", "export"):
+                values = root_ids.get(direction)
+                if isinstance(values, list) and all(
+                    isinstance(value, str) for value in values
+                ):
+                    public_root_ids[direction] = list(values)
+            if public_root_ids:
+                authority_public["root_ids"] = public_root_ids
+        if authority_public:
+            public["authority_policy"] = authority_public
+    if diagnostics.get("last_error") or diagnostics.get("manifest_persistence_error"):
+        public["diagnostic_failure_present"] = True
+    if diagnostics.get("fallback_reason"):
+        public["fallback_active"] = True
+    return public
 
 
 async def _probe_tool(args: JsonDict) -> JsonDict:
@@ -564,10 +920,16 @@ async def _probe_tool(args: JsonDict) -> JsonDict:
             "error": "public MCP tools cannot supply backend endpoints; configure FUSION_MCP_ENDPOINT at startup",
             "probes": [],
         }
-    endpoint = os.getenv("FUSION_MCP_ENDPOINT")
+    configuration = _runtime_configuration()
+    endpoint = configuration.endpoint
     if endpoint:
         try:
-            validate_endpoint(endpoint)
+            validate_endpoint(
+                endpoint,
+                policy=configuration.remote_policy,
+                allowlist=configuration.remote_allowlist,
+                bearer_token=configuration.bearer_token or "",
+            )
         except EndpointPolicyError as exc:
             return {
                 "ok": False,
@@ -575,7 +937,57 @@ async def _probe_tool(args: JsonDict) -> JsonDict:
                 "error": str(exc),
                 "probes": [],
             }
-    return await _tools_probe(endpoint)
+    return _public_probe_result(
+        await _tools_probe(
+            endpoint,
+            remote_policy=configuration.remote_policy,
+            remote_allowlist=configuration.remote_allowlist,
+            bearer_token=configuration.bearer_token,
+            transport_mode=configuration.transport_mode,
+            command=configuration.command,
+            use_environment=False,
+        )
+    )
+
+
+def _public_probe_result(payload: JsonDict) -> JsonDict:
+    """Project probe evidence while replacing every downstream error channel."""
+
+    probes = payload.get("probes")
+    if not isinstance(probes, list):
+        return {"probes": []}
+    projected: list[JsonDict] = []
+    for raw in probes:
+        if not isinstance(raw, dict):
+            continue
+        item: JsonDict = {
+            "endpoint": str(raw.get("endpoint") or "configured"),
+            "health_uri": str(raw.get("health_uri") or "configured"),
+            "health": _public_probe_stage(raw.get("health")),
+            "tools_list": _public_probe_stage(raw.get("tools_list")),
+        }
+        projected.append(item)
+    return {"probes": projected}
+
+
+def _public_probe_stage(value: Any) -> JsonDict:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {
+        key: value[key]
+        for key in ("ok", "status", "status_code", "tool_count", "sample_tools")
+        if key in value
+    }
+    if value.get("ok") is False or value.get("error") or value.get("error_message"):
+        code = _normalized_public_error_code(value.get("error_code"))
+        allowed["ok"] = False
+        allowed["error_code"] = code
+        allowed["error"] = PublicError.create(
+            code=code,
+            generic_message=_generic_public_error_message(code),
+            retryable=code in _RETRYABLE_PUBLIC_ERROR_CODES,
+        ).model_dump(mode="json")
+    return allowed
 
 
 async def _session_health_tool(args: JsonDict) -> JsonDict:
@@ -583,13 +995,49 @@ async def _session_health_tool(args: JsonDict) -> JsonDict:
     health = await get_runtime().controller.session_health(
         mode=mode, options=_session_options(mode=mode)
     )
+    health = _public_session_health(health)
     if mode == "real":
-        health["persistent_runtime"] = get_runtime().diagnostics()
+        health["persistent_runtime"] = _public_runtime_diagnostics(
+            get_runtime().diagnostics()
+        )
     return health
+
+
+def _public_session_health(health: JsonDict) -> JsonDict:
+    """Remove local paths and free-form downstream errors from health output."""
+
+    allowed = (
+        "mode",
+        "launcher_ok",
+        "default_mode",
+        "require_real",
+        "allow_dry_run",
+        "manifest_ok",
+        "manifest_source",
+        "manifest_tool_count",
+        "mcp_server_ok",
+        "real_endpoint_ok",
+        "native_tools_attached",
+        "native_tool_count",
+        "native_tool_sample",
+        "live_manifest_fingerprint",
+        "cached_manifest_fingerprint",
+        "manifest_drift",
+        "healthy",
+    )
+    public = {key: health[key] for key in allowed if key in health}
+    manifest_status = health.get("manifest_status")
+    if isinstance(manifest_status, dict):
+        public["manifest_status"] = _public_manifest_status(manifest_status)
+    connection = health.get("connection")
+    if isinstance(connection, dict):
+        public["connection"] = _public_runtime_diagnostics(connection)
+    return public
 
 
 async def _inspect_tool(args: JsonDict) -> JsonDict:
     mode = _mode(args, default="mock")
+    configuration = _runtime_configuration()
     inspection_options = {
         key: args[key]
         for key in (
@@ -600,6 +1048,13 @@ async def _inspect_tool(args: JsonDict) -> JsonDict:
         )
         if key in args
     }
+    inspection_options.setdefault(
+        "max_entities_visited", configuration.inspection_max_entities
+    )
+    inspection_options.setdefault("deadline_ms", configuration.inspection_deadline_ms)
+    inspection_options.setdefault(
+        "max_response_bytes", configuration.inspection_max_response_bytes
+    )
     return await get_runtime().controller.inspect(
         mode=mode,
         options=_session_options(mode=mode),
@@ -623,7 +1078,14 @@ async def _targeted_inspect_tool(args: JsonDict) -> FastPathResponse:
     if blocked:
         return blocked
     mode = _mode(args, default="real")
-    return await get_runtime().fast_path(mode).targeted_inspect(args)
+    configuration = _runtime_configuration()
+    request = dict(args)
+    request.setdefault("max_entities_visited", configuration.inspection_max_entities)
+    request.setdefault("deadline_ms", configuration.inspection_deadline_ms)
+    request.setdefault(
+        "max_response_bytes", configuration.inspection_max_response_bytes
+    )
+    return await get_runtime().fast_path(mode).targeted_inspect(request)
 
 
 async def _fast_execute_tool(args: JsonDict) -> FastPathResponse:
@@ -631,7 +1093,7 @@ async def _fast_execute_tool(args: JsonDict) -> FastPathResponse:
     if blocked:
         return blocked
     if (
-        selected_backend() == "faust_stdio"
+        _runtime_configuration().backend == "faust_stdio"
         and str(args.get("change_class") or "") != "read_only"
     ):
         return FastPathResponse(
@@ -670,7 +1132,7 @@ async def _fast_execute_tool(args: JsonDict) -> FastPathResponse:
 
 
 async def _recover_change_tool(args: JsonDict) -> FastPathResponse:
-    if selected_backend() == "faust_stdio":
+    if _runtime_configuration().backend == "faust_stdio":
         return FastPathResponse(
             {
                 "status": "blocked_before_apply",
@@ -700,6 +1162,7 @@ async def _compact_snapshot_tool(args: JsonDict) -> JsonDict:
     project = _optional_str(args, "project") or "opencode"
     _safe_name(project, "project")
     mode = _mode(args, default="real")
+    configuration = _runtime_configuration()
     return await get_runtime().controller.compact_snapshot(
         project=project,
         mode=mode,
@@ -710,18 +1173,14 @@ async def _compact_snapshot_tool(args: JsonDict) -> JsonDict:
         max_entities_visited=int(
             args.get(
                 "max_entities_visited",
-                os.getenv("FUSION_AGENT_INSPECTION_MAX_ENTITIES", "1000"),
+                configuration.inspection_max_entities,
             )
         ),
-        deadline_ms=int(
-            args.get(
-                "deadline_ms", os.getenv("FUSION_AGENT_INSPECTION_DEADLINE_MS", "1500")
-            )
-        ),
+        deadline_ms=int(args.get("deadline_ms", configuration.inspection_deadline_ms)),
         max_response_bytes=int(
             args.get(
                 "max_response_bytes",
-                os.getenv("FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES", "1048576"),
+                configuration.inspection_max_response_bytes,
             )
         ),
     )
@@ -908,29 +1367,26 @@ async def _execute_and_record_v2(
         dry_run=dry_run,
     )
     readback: JsonDict | None = None
-    readback_error: str | None = None
+    readback_error: JsonDict | None = None
     if mode == "real" and not dry_run:
         try:
             readback = await runtime.controller.compact_snapshot(
                 project=project,
                 mode="real",
                 options=_session_options(mode="real", project=project),
-                max_entities_visited=int(
-                    os.getenv("FUSION_AGENT_INSPECTION_MAX_ENTITIES", "1000")
-                ),
-                deadline_ms=int(
-                    os.getenv("FUSION_AGENT_INSPECTION_DEADLINE_MS", "1500")
-                ),
-                max_response_bytes=int(
-                    os.getenv(
-                        "FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES",
-                        "1048576",
-                    )
+                max_entities_visited=runtime.configuration.inspection_max_entities,
+                deadline_ms=runtime.configuration.inspection_deadline_ms,
+                max_response_bytes=(
+                    runtime.configuration.inspection_max_response_bytes
                 ),
                 label="cadspec_v2_readback",
             )
-        except Exception as exc:  # noqa: BLE001 - preserve conservative outcome
-            readback_error = f"{type(exc).__name__}: {exc}"
+        except Exception:  # noqa: BLE001 - raw readback diagnostics stay private
+            readback_error = PublicError.create(
+                code="INCOMPLETE_INSPECTION",
+                generic_message="The readback inspection was incomplete.",
+                retryable=True,
+            ).model_dump(mode="json")
     return _record_v2_session(
         spec,
         execution=execution,
@@ -969,6 +1425,106 @@ def _ensure_experimental_profile(spec: CadSpecV2) -> None:
         )
 
 
+def _public_execution_payload(payload: JsonDict) -> JsonDict:
+    """Project execution evidence before it reaches MCP or durable artifacts."""
+
+    public = dict(payload)
+    transactions = public.get("transactions")
+    if isinstance(transactions, list):
+        public["transactions"] = [
+            _public_execution_transaction(item)
+            for item in transactions
+            if isinstance(item, dict)
+        ]
+    if public.get("success") is False:
+        code = _normalized_public_error_code(public.get("error_code"))
+        public_error = _coerce_public_error(public.get("public_error"), code=code)
+        public["error_code"] = code
+        public["error_message"] = public_error["generic_message"]
+        public["public_error"] = public_error
+    else:
+        public.pop("error_message", None)
+        public.pop("public_error", None)
+    return public
+
+
+def _public_execution_transaction(value: JsonDict) -> JsonDict:
+    transaction = dict(value)
+    transport = transaction.get("transport")
+    transaction["transport"] = _public_transport_evidence(transport)
+    if transaction.get("status") == "failed":
+        code = _normalized_public_error_code(transaction.get("error_code"))
+        public_error = _coerce_public_error(transaction.get("public_error"), code=code)
+        transaction.pop("error", None)
+        transaction.pop("native_result", None)
+        transaction["error_code"] = code
+        transaction["error_message"] = public_error["generic_message"]
+        transaction["public_error"] = public_error
+    return transaction
+
+
+def _public_transport_evidence(value: Any) -> JsonDict:
+    if not isinstance(value, dict):
+        return {}
+    public: JsonDict = {}
+    for key in (
+        "dispatched",
+        "may_have_applied",
+        "post_dispatch_replay_suppressed",
+    ):
+        if isinstance(value.get(key), bool):
+            public[key] = value[key]
+    outcome = value.get("mutation_outcome")
+    if outcome in {"known", "unknown"}:
+        public["mutation_outcome"] = outcome
+    semantics = value.get("semantics")
+    if semantics in {"read_only", "mutating"}:
+        public["semantics"] = semantics
+    for key in ("operation_id",):
+        identifier = value.get(key)
+        if (
+            isinstance(identifier, str)
+            and 1 <= len(identifier) <= 128
+            and all(
+                character.isalnum() or character in "._:-" for character in identifier
+            )
+        ):
+            public[key] = identifier
+    operation_ids = value.get("operation_ids")
+    if isinstance(operation_ids, list) and all(
+        isinstance(item, str)
+        and 1 <= len(item) <= 128
+        and all(character.isalnum() or character in "._:-" for character in item)
+        for item in operation_ids
+    ):
+        public["operation_ids"] = list(operation_ids)
+    return public
+
+
+def _coerce_public_error(value: Any, *, code: str) -> JsonDict:
+    try:
+        parsed = PublicError.model_validate(value)
+    except Exception:  # noqa: BLE001 - malformed diagnostics are discarded
+        parsed = PublicError.create(
+            code=code,
+            generic_message=_generic_public_error_message(code),
+            retryable=code in _RETRYABLE_PUBLIC_ERROR_CODES,
+        )
+    if parsed.code != code:
+        parsed = PublicError.create(
+            code=code,
+            generic_message=_generic_public_error_message(code),
+            retryable=code in _RETRYABLE_PUBLIC_ERROR_CODES,
+        )
+    return parsed.model_dump(mode="json")
+
+
+def _public_readback_error(value: JsonDict | str | None) -> JsonDict | None:
+    if value is None:
+        return None
+    return _coerce_public_error(value, code="INCOMPLETE_INSPECTION")
+
+
 def _record_v2_session(
     spec: CadSpecV2,
     *,
@@ -978,13 +1534,14 @@ def _record_v2_session(
     dry_run: bool,
     warnings: list[str],
     readback: JsonDict | None = None,
-    readback_error: str | None = None,
+    readback_error: JsonDict | str | None = None,
 ) -> JsonDict:
     """Persist a conservative journal for a typed v2 capability execution."""
 
     session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     journal = SessionJournal(WORKSPACE_ROOT, project, session_id)
-    execution_payload = asdict(execution)
+    execution_payload = _public_execution_payload(asdict(execution))
+    readback_error = _public_readback_error(readback_error)
     has_mutation = any(
         not operation.kind.startswith("analysis.") for operation in spec.operations
     )
@@ -1049,7 +1606,7 @@ def _evaluate_v2_verification(
     has_mutation: bool,
     simulated: bool,
     readback: JsonDict | None,
-    readback_error: str | None,
+    readback_error: JsonDict | None,
 ) -> JsonDict:
     """Evaluate only assertions backed by independent execution/readback evidence.
 
@@ -1061,9 +1618,7 @@ def _evaluate_v2_verification(
 
     dispatched = bool(execution_payload.get("dispatched"))
     may_have_applied = bool(execution_payload.get("may_have_applied"))
-    replay_suppressed = bool(
-        execution_payload.get("post_dispatch_replay_suppressed")
-    )
+    replay_suppressed = bool(execution_payload.get("post_dispatch_replay_suppressed"))
     mutation_outcome = (
         "unknown"
         if execution_payload.get("mutation_outcome") == "unknown"
@@ -1109,8 +1664,7 @@ def _evaluate_v2_verification(
             # custom_oracle declarations describe what an external oracle must
             # prove; their expected payload is never self-authenticating.
             covered = covered and all(
-                item.get("evidence_source") == "independent_oracle"
-                for item in linked
+                item.get("evidence_source") == "independent_oracle" for item in linked
             )
         passed = covered and all(bool(item["passed"]) for item in linked)
         requirement_results.append(
@@ -1135,7 +1689,9 @@ def _evaluate_v2_verification(
         assertion_status = "not_run"
     elif any(item["status"] == "failed" for item in required_assertions):
         assertion_status = "failed"
-    elif any(item["status"] in {"incomplete", "not_run"} for item in required_assertions):
+    elif any(
+        item["status"] in {"incomplete", "not_run"} for item in required_assertions
+    ):
         assertion_status = "incomplete"
     elif required_assertions:
         assertion_status = "passed"
@@ -1154,7 +1710,9 @@ def _evaluate_v2_verification(
     else:
         intent_coverage = "none"
 
-    if any(item.oracle == "independent" and item.required for item in spec.requirements):
+    if any(
+        item.oracle == "independent" and item.required for item in spec.requirements
+    ):
         verification_level = "independent_oracle"
     elif required_requirements:
         verification_level = "contract"
@@ -1325,8 +1883,7 @@ def _v2_entity_matches(snapshot: JsonDict, target_ref: str | None) -> list[JsonD
         item
         for item in _v2_entity_records(snapshot)
         if any(
-            isinstance(item.get(key), str)
-            and str(item[key]).casefold() == expected
+            isinstance(item.get(key), str) and str(item[key]).casefold() == expected
             for key in keys
         )
     ]
@@ -1477,7 +2034,9 @@ def _v2_summary(
     elif final_status == "simulated":
         detail = "No mutation was dispatched and assertions were not executed."
     else:
-        detail = "The declared contract is not fully covered by complete readback evidence."
+        detail = (
+            "The declared contract is not fully covered by complete readback evidence."
+        )
     return f"CadSpec v2 session {final_status} via {provider}. {detail}"
 
 
@@ -1531,13 +2090,117 @@ async def _read_session_artifact_tool(args: JsonDict) -> JsonDict:
     path = _session_dir(project, session_id) / artifact
     if not path.exists():
         raise FileNotFoundError(path)
-    content = path.read_text(encoding="utf-8")
+    content = _public_session_artifact_text(artifact, path.read_text(encoding="utf-8"))
     return {
         "path": str(path),
         "artifact": artifact,
         "content": content,
         "json": _try_json(content),
     }
+
+
+def _public_session_artifact_text(artifact: str, content: str) -> str:
+    if artifact == "tool_trace.jsonl":
+        projected_lines = [
+            json.dumps(
+                _public_trace_event(_try_json(line)),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for line in content.splitlines()
+            if line.strip()
+        ]
+        return "\n".join(projected_lines) + ("\n" if projected_lines else "")
+    if artifact not in {
+        "execution.json",
+        "verification.json",
+        "session_journal.json",
+    }:
+        return content
+    parsed = _try_json(content)
+    if artifact == "execution.json" and isinstance(parsed, dict):
+        projected = _public_execution_payload(parsed)
+    else:
+        projected = _public_artifact_value(parsed)
+    return json.dumps(projected, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _public_trace_event(value: Any) -> JsonDict:
+    """Project one trace record and reject malformed free-form records."""
+
+    if not isinstance(value, dict):
+        public_error = PublicError.create(
+            code="INVALID_REQUEST",
+            generic_message="A malformed diagnostic record was discarded.",
+            retryable=False,
+        )
+        return {
+            "event": "diagnostic_record_discarded",
+            "error_code": public_error.code,
+            "error": public_error.model_dump(mode="json"),
+        }
+    projected = _public_artifact_value(value)
+    return projected if isinstance(projected, dict) else {}
+
+
+def _public_artifact_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_public_artifact_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    code = _normalized_public_error_code(value.get("error_code"))
+    status = value.get("status")
+    failed = bool(
+        value.get("error")
+        or value.get("error_message")
+        or value.get("error_code")
+        or value.get("exception")
+        or value.get("traceback")
+        or status in _SEMANTIC_FAILURE_STATUSES
+        or status == "failed"
+        or value.get("ok") is False
+        or value.get("success") is False
+    )
+    public: JsonDict = {}
+    for key, child in value.items():
+        normalized = str(key).lower()
+        if normalized in {
+            "argv",
+            "command",
+            "exception",
+            "traceback",
+            "last_error",
+            "_meta",
+        }:
+            continue
+        if failed and (
+            normalized
+            in {
+                "path",
+                "root",
+                "endpoint",
+                "health_uri",
+                "uri",
+                "url",
+                "content",
+                "meta",
+            }
+            or normalized.endswith("_path")
+            or normalized.endswith("_root")
+            or normalized.endswith("_uri")
+            or normalized.endswith("_url")
+        ):
+            continue
+        if normalized == "transport":
+            public[key] = _public_transport_evidence(child)
+        elif normalized in {"error", "readback_error", "public_error"} and child:
+            public[key] = _coerce_public_error(child, code=code)
+        elif normalized == "error_message" and child:
+            public[key] = _generic_public_error_message(code)
+        else:
+            public[key] = _public_artifact_value(child)
+    projected = redact_sensitive(public)
+    return projected if isinstance(projected, dict) else {}
 
 
 async def _read_trace_tool(args: JsonDict) -> JsonDict:
@@ -1548,7 +2211,7 @@ async def _read_trace_tool(args: JsonDict) -> JsonDict:
     if not path.exists():
         raise FileNotFoundError(path)
     events = [
-        _try_json(line)
+        _public_trace_event(_try_json(line))
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
@@ -1670,8 +2333,23 @@ async def _run_benchmark_tool(args: JsonDict) -> JsonDict:
     if config.dry_run:
         _ensure_dry_run_allowed(True)
     runtime = get_runtime()
+    configuration = runtime.configuration
     diagnostics = runtime.diagnostics()
     bridge = FusionRuntimeBenchmarkBridge(runtime) if config.mode == "real" else None
+    process_environment = {
+        key: value
+        for key, value in {
+            "FUSION_AGENT_PLUGIN_VERSION": configuration.plugin_version,
+            "FUSION_AGENT_WHEEL_VERSION": configuration.wheel_version,
+            "FUSION_VERSION": configuration.fusion_version,
+            "FUSION_MCP_MANIFEST_FINGERPRINT": (
+                configuration.mcp_manifest_fingerprint
+                or str(diagnostics.get("fingerprint") or "")
+            ),
+            "GIT_COMMIT": configuration.git_commit,
+        }.items()
+        if value
+    }
     runner = BenchmarkRunner(
         controller=runtime.controller,
         workspace_root=WORKSPACE_ROOT,
@@ -1681,10 +2359,11 @@ async def _run_benchmark_tool(args: JsonDict) -> JsonDict:
         oracle_observer=bridge if bridge is not None else None,
         real_lifecycle=bridge,
         environment_metadata={
-            "plugin_version": os.getenv("FUSION_AGENT_PLUGIN_VERSION", __version__),
+            "plugin_version": configuration.plugin_version,
             "mcp_fingerprint": diagnostics.get("fingerprint"),
             "connection_generation": diagnostics.get("connection_generation"),
         },
+        process_environment=process_environment,
     )
     run = await runner.run_suite(suite, config=config)
     return {
@@ -1940,8 +2619,14 @@ async def _plan_spec(prompt: str, project: str) -> tuple[CadSpec, JsonDict]:
     )
 
 
-def _tool_spec_map() -> dict[str, ToolSpec]:
-    return {spec.name: spec for spec in tool_specs()}
+def _tool_surface_specs() -> list[mcp_surface.SurfaceSpec]:
+    return [spec for spec in surface_specs() if spec.kind == "tool"]
+
+
+def _tool_spec_map() -> dict[str, mcp_surface.SurfaceSpec]:
+    """Return the same authoritative tool entries used for advertisement."""
+
+    return {spec.name: spec for spec in _tool_surface_specs()}
 
 
 async def _read_mcp_resource(
@@ -1956,6 +2641,10 @@ async def _read_mcp_resource(
     if parsed.scheme != "fusion-agent":
         raise ValueError("resource URI must use the fusion-agent scheme")
     family = parsed.netloc
+    # Authorization precedes identifier parsing, lookup, and handler dispatch
+    # so a restricted profile cannot use errors or timing as an existence
+    # oracle for memory, benchmark, or other resource families.
+    mcp_surface.authorize_resource(uri, profile)
     segments = [unquote(segment) for segment in parsed.path.split("/") if segment]
     query = parse_qs(parsed.query, keep_blank_values=False)
     offset = _resource_integer(
@@ -1967,14 +2656,14 @@ async def _read_mcp_resource(
     profile_token = _PROFILE_OVERRIDE.set(profile)
     try:
         if family == "capabilities" and not segments:
-            all_specs = tool_specs()
-            selected = tools_for_profile(profile, (spec.name for spec in all_specs))
+            all_specs = _tool_surface_specs()
+            selected = {spec.name for spec in all_specs if profile in spec.profiles}
             return {
                 "schema_version": "fusion_agent.capabilities.v1",
                 "profile": profile,
                 "available_profiles": list(TOOL_PROFILES),
                 "frontend_transport": "stdio",
-                "active_backend": selected_backend(),
+                "active_backend": _runtime_configuration().backend,
                 "backend_capability_matrix": {
                     "autodesk_http": {
                         "implemented": sorted(AUTODESK_IMPLEMENTED_CAPABILITIES),
@@ -2047,7 +2736,7 @@ async def _read_mcp_resource(
             if not path.exists():
                 raise FileNotFoundError(path)
             events = [
-                _try_json(line)
+                _public_trace_event(_try_json(line))
                 for line in path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
@@ -2168,7 +2857,7 @@ def _resource_integer(
 
 def _bounded_json_text(payload: JsonDict) -> str:
     text = json.dumps(_jsonable(payload), ensure_ascii=False, sort_keys=True)
-    maximum = int(os.getenv("FUSION_AGENT_RESOURCE_MAX_BYTES", "1048576"))
+    maximum = _runtime_configuration().resource_max_bytes
     size = len(text.encode("utf-8"))
     if size <= maximum:
         return text
@@ -2265,10 +2954,11 @@ def _skill_payload(skill: Any, *, include_content: bool) -> JsonDict:
 
 
 def _mode(args: JsonDict, *, default: str) -> str:
+    configuration = _runtime_configuration()
     value = str(args.get("mode", _default_mode(default)))
     if value not in {"mock", "real"}:
         raise ValueError("mode must be 'mock' or 'real'")
-    if _env_bool("FUSION_AGENT_REQUIRE_REAL", False) and value != "real":
+    if configuration.require_real and value != "real":
         raise ValueError(
             "Fusion Agent is configured for real-only mode; mode must be 'real'"
         )
@@ -2276,29 +2966,19 @@ def _mode(args: JsonDict, *, default: str) -> str:
 
 
 def _default_mode(default: str = "mock") -> str:
-    value = os.getenv("FUSION_AGENT_DEFAULT_MODE")
-    if _env_bool("FUSION_AGENT_REQUIRE_REAL", False):
+    configuration = _runtime_configuration()
+    if configuration.require_real:
         return "real"
-    if value:
-        normalized = value.strip().lower()
-        if normalized not in {"mock", "real"}:
-            raise ValueError("FUSION_AGENT_DEFAULT_MODE must be 'mock' or 'real'")
-        return normalized
-    return default
+    return (
+        configuration.default_mode if configuration.default_mode_explicit else default
+    )
 
 
 def _ensure_dry_run_allowed(dry_run: bool) -> None:
-    if dry_run and not _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True):
+    if dry_run and not _runtime_configuration().allow_dry_run:
         raise ValueError(
             "Fusion Agent dry-run is disabled by FUSION_AGENT_ALLOW_DRY_RUN=0"
         )
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _required_str(args: JsonDict, key: str) -> str:
@@ -2366,13 +3046,19 @@ def _jsonable(value: Any) -> Any:
 
 def _compact_summary(name: str, payload: JsonDict, ok: bool) -> str:
     summary: JsonDict = {"ok": ok, "tool": name}
+    if not ok:
+        error = payload.get("error")
+        if isinstance(payload.get("error_code"), str):
+            summary["error_code"] = payload["error_code"]
+        if isinstance(error, dict) and isinstance(error.get("correlation_id"), str):
+            summary["correlation_id"] = error["correlation_id"]
+        return json.dumps(_jsonable(summary), ensure_ascii=False, separators=(",", ":"))
     for key in (
         "status",
         "query_type",
         "operation_id",
         "execution_path",
         "duration_ms",
-        "error",
         "reason",
         "recommended_path",
     ):
@@ -2384,11 +3070,30 @@ def _compact_summary(name: str, payload: JsonDict, ok: bool) -> str:
 
 
 def _as_call_tool_result(name: str, response: FastPathResponse) -> types.CallToolResult:
-    structured = {"ok": not response.is_error, "result": response.payload}
+    semantic_code = _semantic_failure_code(response.payload)
+    if response.is_error or semantic_code is not None:
+        code = _normalized_public_error_code(
+            response.payload.get("error_code") or semantic_code
+        )
+        return _public_call_tool_error(
+            name,
+            code=code,
+            generic_message=_generic_public_error_message(code),
+            retryable=code in _RETRYABLE_PUBLIC_ERROR_CODES,
+            safe_result=_public_failure_state(response.payload),
+        )
+
+    structured = {"ok": True, "result": response.payload}
+    if not _output_envelope_valid(name, structured):
+        return _public_call_tool_error(
+            name,
+            code="OUTPUT_SCHEMA_VIOLATION",
+            generic_message="The tool returned an invalid structured result.",
+        )
     content: list[types.ContentBlock] = [
         types.TextContent(
             type="text",
-            text=_compact_summary(name, response.payload, not response.is_error),
+            text=_compact_summary(name, response.payload, True),
         )
     ]
     content.extend(_mcp_content_blocks(response.content))
@@ -2396,8 +3101,193 @@ def _as_call_tool_result(name: str, response: FastPathResponse) -> types.CallToo
         meta=response.meta or None,
         content=content,
         structuredContent=structured,
-        isError=response.is_error,
+        isError=False,
     )
+
+
+_PUBLIC_ERROR_CODES = frozenset(
+    {item.value for item in ErrorCode}
+    | {
+        "ENDPOINT_SOURCE_NOT_ALLOWED",
+        "FAST_PATH_UNAVAILABLE_FOR_BACKEND",
+        "INTERNAL_ERROR",
+        "INCOMPLETE_INSPECTION",
+        "INVALID_REQUEST",
+        "OUTPUT_SCHEMA_VIOLATION",
+        "REQUEST_REJECTED",
+        "RESOURCE_NOT_FOUND",
+        "SURFACE_NOT_AVAILABLE_IN_PROFILE",
+        "TOOL_NOT_AVAILABLE_IN_PROFILE",
+    }
+)
+_RETRYABLE_PUBLIC_ERROR_CODES = frozenset(
+    {
+        ErrorCode.TIMEOUT.value,
+        ErrorCode.CONNECTION_UNAVAILABLE.value,
+        ErrorCode.CONNECTION_LOST.value,
+        ErrorCode.READ_TIMEOUT_MAY_STILL_BE_RUNNING.value,
+    }
+)
+
+_SEMANTIC_FAILURE_STATUSES = frozenset(
+    {
+        "execution_failed",
+        "inspection_failed",
+        "mutation_outcome_unknown",
+        "read_failed",
+        "recovery_failed",
+    }
+)
+
+
+def _semantic_failure_code(payload: JsonDict) -> str | None:
+    status = payload.get("status")
+    if status == "mutation_outcome_unknown":
+        return ErrorCode.MUTATION_OUTCOME_UNKNOWN.value
+    if status in _SEMANTIC_FAILURE_STATUSES:
+        return str(payload.get("error_code") or ErrorCode.FUSION_OPERATION_FAILED.value)
+    if payload.get("ok") is False:
+        return str(payload.get("error_code") or "REQUEST_REJECTED")
+    if payload.get("success") is False and (
+        payload.get("error") is not None or payload.get("error_code") is not None
+    ):
+        return str(payload.get("error_code") or ErrorCode.FUSION_OPERATION_FAILED.value)
+    return None
+
+
+def _public_failure_state(payload: JsonDict) -> JsonDict | None:
+    """Retain only typed recovery state; never retain diagnostics or paths."""
+
+    public: JsonDict = {}
+    status = payload.get("status")
+    if status in _SEMANTIC_FAILURE_STATUSES:
+        public["status"] = status
+    for key in (
+        "dispatched",
+        "may_have_applied",
+        "post_dispatch_replay_suppressed",
+    ):
+        if isinstance(payload.get(key), bool):
+            public[key] = payload[key]
+    outcome = payload.get("mutation_outcome")
+    if outcome in {"known", "unknown"}:
+        public["mutation_outcome"] = outcome
+    mutation_status = payload.get("mutation_status")
+    if mutation_status in {
+        "not_dispatched",
+        "observed_in_readback",
+        "outcome_unknown",
+        "unknown",
+    }:
+        public["mutation_status"] = mutation_status
+    operation_id = payload.get("operation_id")
+    if (
+        isinstance(operation_id, str)
+        and 1 <= len(operation_id) <= 128
+        and all(
+            character.isalnum() or character in "._:-" for character in operation_id
+        )
+    ):
+        public["operation_id"] = operation_id
+    return public or None
+
+
+def _normalized_public_error_code(value: Any) -> str:
+    code = str(value) if value is not None else "REQUEST_REJECTED"
+    return (
+        code if code in _PUBLIC_ERROR_CODES else ErrorCode.FUSION_OPERATION_FAILED.value
+    )
+
+
+def _generic_public_error_message(code: str) -> str:
+    return {
+        ErrorCode.FUSION_OPERATION_FAILED.value: "The downstream Fusion operation failed.",
+        ErrorCode.CONNECTION_UNAVAILABLE.value: "The Fusion connection is unavailable.",
+        ErrorCode.CONNECTION_LOST.value: "The Fusion connection was lost.",
+        ErrorCode.TIMEOUT.value: "The Fusion operation timed out.",
+        ErrorCode.READ_TIMEOUT_MAY_STILL_BE_RUNNING.value: "The Fusion read timed out.",
+        ErrorCode.MUTATION_OUTCOME_UNKNOWN.value: "The mutation outcome is unknown; do not replay it.",
+        "INCOMPLETE_INSPECTION": "The readback inspection was incomplete.",
+        "REQUEST_REJECTED": "The request was rejected before completion.",
+    }.get(code, "The operation could not be completed.")
+
+
+def _public_call_tool_error(
+    name: str,
+    *,
+    code: str,
+    generic_message: str,
+    retryable: bool = False,
+    extras: JsonDict | None = None,
+    safe_result: JsonDict | None = None,
+) -> types.CallToolResult:
+    public_error = PublicError.create(
+        code=code,
+        generic_message=generic_message,
+        retryable=retryable,
+    )
+    payload: JsonDict = {
+        "ok": False,
+        "error_code": code,
+        "error": public_error.model_dump(mode="json"),
+    }
+    payload.update(extras or {})
+    if safe_result:
+        payload["result"] = safe_result
+        if not _output_envelope_valid(name, payload):
+            payload.pop("result", None)
+    # This envelope is code-owned and contains no handler result.  Validate it
+    # as an invariant check, but never echo validator details to the caller.
+    if not _output_envelope_valid(name, payload):
+        fallback = PublicError.create(
+            code="INTERNAL_ERROR",
+            generic_message="The operation could not be completed.",
+        )
+        payload = {
+            "ok": False,
+            "error_code": "INTERNAL_ERROR",
+            "error": fallback.model_dump(mode="json"),
+        }
+    return types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text=_compact_summary(name, payload, False))
+        ],
+        structuredContent=payload,
+        isError=True,
+    )
+
+
+def _public_resource_error(
+    *, code: str, generic_message: str, protocol_code: int
+) -> McpError:
+    public_error = PublicError.create(
+        code=code,
+        generic_message=generic_message,
+        retryable=False,
+    )
+    return McpError(
+        types.ErrorData(
+            code=protocol_code,
+            message=public_error.generic_message,
+            data=public_error.model_dump(mode="json"),
+        )
+    )
+
+
+def _output_envelope_valid(name: str, payload: JsonDict) -> bool:
+    try:
+        return not any(_output_validator(name).iter_errors(payload))
+    except Exception:  # noqa: BLE001 - validator details are never public
+        return False
+
+
+@lru_cache(maxsize=None)
+def _output_validator(name: str) -> Draft202012Validator:
+    try:
+        schema = _tool_output_schema(name)
+    except ValueError:
+        schema = _open_output_schema()
+    return Draft202012Validator(schema)
 
 
 def _mcp_content_blocks(content: list[dict[str, Any]]) -> list[types.ContentBlock]:
@@ -2429,7 +3319,7 @@ def _open_output_schema() -> JsonDict:
         "properties": {
             "ok": {"type": "boolean"},
             "result": {"$ref": "#/$defs/jsonObject"},
-            "error": {"type": "string"},
+            "error": {"$ref": "#/$defs/publicError"},
             "error_code": {"type": "string"},
         },
         "required": ["ok"],
@@ -2483,6 +3373,25 @@ def _tool_output_defs() -> JsonDict:
             ]
         },
         "jsonObject": {"type": "object", "additionalProperties": _ref("jsonValue")},
+        "publicError": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "minLength": 1},
+                "generic_message": {"type": "string", "minLength": 1},
+                "correlation_id": {
+                    "type": "string",
+                    "pattern": "^diag-[0-9a-f]{32}$",
+                },
+                "retryable": {"type": "boolean"},
+            },
+            "required": [
+                "code",
+                "generic_message",
+                "correlation_id",
+                "retryable",
+            ],
+            "additionalProperties": False,
+        },
         "stringList": {
             "type": "array",
             "items": {"type": "string"},
@@ -2743,7 +3652,7 @@ def _fast_control_properties() -> JsonDict:
                 "inspection_failed",
             ],
         },
-        "error": {"type": "string"},
+        "error": _ref("publicError"),
         "error_code": _nullable({"type": "string"}),
         "reason": {"type": "string"},
         "message": {"type": "string"},
@@ -2827,6 +3736,11 @@ def _tool_result_contracts() -> dict[str, JsonDict]:
         ),
         "fusion_agent_readiness_report": _result_object(
             {
+                "schema_version": {
+                    "type": "string",
+                    "const": "fusion_agent.readiness.v2",
+                },
+                "mcp_version": string,
                 "tool_profile": {"type": "string", "enum": list(TOOL_PROFILES)},
                 "available_tool_profiles": {
                     "type": "array",
@@ -2841,6 +3755,8 @@ def _tool_result_contracts() -> dict[str, JsonDict]:
                 "recommended_startup_sequence": _ref("stringList"),
             },
             (
+                "schema_version",
+                "mcp_version",
                 "tool_profile",
                 "available_tool_profiles",
                 "doctor",
@@ -3400,7 +4316,7 @@ def _tool_output_schema(name: str) -> JsonDict:
         "properties": {
             "ok": {"type": "boolean"},
             "result": result_schema,
-            "error": {"type": "string"},
+            "error": _ref("publicError"),
             "error_code": {"type": "string"},
             "tool": {"type": "string", "const": name},
             "profile": {"type": "string", "enum": list(TOOL_PROFILES)},
@@ -3543,38 +4459,19 @@ def _tool_metadata(name: str) -> tuple[str, str, str]:
 
 
 def _fast_path_mode() -> str:
-    value = os.getenv("FUSION_AGENT_FAST_PATH_MODE", "read_only").strip().lower()
-    if value not in {"off", "read_only", "enabled"}:
-        raise ValueError(
-            "FUSION_AGENT_FAST_PATH_MODE must be off, read_only, or enabled"
-        )
-    if (
-        os.getenv("FUSION_AGENT_BENCHMARK_ROUTE_LOCK", "").strip().lower()
-        == "native_fast"
-        and os.getenv("FUSION_AGENT_BENCHMARK_TRIAL_ID")
-        and (
-            os.getenv("FUSION_AGENT_BENCHMARK_MODE", "mock").strip().lower() == "mock"
-            or _env_bool("FUSION_AGENT_BENCHMARK_CONFIRM_REAL", False)
-        )
-    ):
-        return "enabled"
-    return value
+    return _context_capability_value(
+        "fast_path",
+        allowed={"off", "read_only", "enabled"},
+        default=_runtime_configuration().fast_path_mode,
+    )
 
 
 def _execution_path() -> str:
-    value = os.getenv("FUSION_AGENT_EXECUTION_PATH", "auto").strip().lower()
-    if value not in {"auto", "native_fast", "safe_harness"}:
-        raise ValueError(
-            "FUSION_AGENT_EXECUTION_PATH must be auto, native_fast, or safe_harness"
-        )
-    route_lock = os.getenv("FUSION_AGENT_BENCHMARK_ROUTE_LOCK")
-    if route_lock:
-        route_lock = route_lock.strip().lower()
-        if route_lock not in {"native_fast", "safe_harness"} or value != route_lock:
-            raise ValueError(
-                f"benchmark route lock mismatch: locked={route_lock!r}, execution_path={value!r}"
-            )
-    return value
+    return _context_capability_value(
+        "execution_path",
+        allowed={"auto", "native_fast", "safe_harness"},
+        default=_runtime_configuration().execution_path,
+    )
 
 
 def _fast_path_block(tool_name: str, _: JsonDict) -> FastPathResponse | None:
@@ -3618,11 +4515,29 @@ def _write_fast_path_audit(
         "operation_id": operation_id,
         "script": redact_sensitive(script, key="script"),
         "request": redact_sensitive(arguments),
-        "response": redact_sensitive(response.payload),
+        "response": _public_audit_response(response),
         "is_error": response.is_error,
     }
     audit_path.write_text(_json_text(audit) + "\n", encoding="utf-8", newline="\n")
     return {"audit_path": str(audit_path)}
+
+
+def _public_audit_response(response: FastPathResponse) -> JsonDict:
+    semantic_code = _semantic_failure_code(response.payload)
+    if not response.is_error and semantic_code is None:
+        projected = redact_sensitive(response.payload)
+        return projected if isinstance(projected, dict) else {}
+    code = _normalized_public_error_code(
+        response.payload.get("error_code") or semantic_code
+    )
+    state = _public_failure_state(response.payload) or {}
+    state["error_code"] = code
+    state["error"] = PublicError.create(
+        code=code,
+        generic_message=_generic_public_error_message(code),
+        retryable=code in _RETRYABLE_PUBLIC_ERROR_CODES,
+    ).model_dump(mode="json")
+    return state
 
 
 def _schema(
@@ -3673,10 +4588,15 @@ def _mode_schema(default: str = "mock") -> JsonDict:
 
 
 def _inspection_budget_properties() -> JsonDict:
+    configuration = _runtime_configuration()
     return {
-        "max_entities_visited": _integer(1, 5000, 1000),
-        "deadline_ms": _integer(50, 5000, 1500),
-        "max_response_bytes": _integer(4096, 1_048_576, 1_048_576),
+        "max_entities_visited": _integer(
+            1, 5000, configuration.inspection_max_entities
+        ),
+        "deadline_ms": _integer(50, 5000, configuration.inspection_deadline_ms),
+        "max_response_bytes": _integer(
+            4096, 1_048_576, configuration.inspection_max_response_bytes
+        ),
     }
 
 

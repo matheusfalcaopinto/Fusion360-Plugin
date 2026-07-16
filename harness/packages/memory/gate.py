@@ -18,14 +18,18 @@ class MemoryGate:
         self.min_relevance = min_relevance
         self.max_chars = max_chars
 
-    def filter(self, records: list[MemoryRecord], current_request: str) -> list[MemoryRecord]:
+    def filter(
+        self, records: list[MemoryRecord], current_request: str
+    ) -> list[MemoryRecord]:
         """Return only allowed memory records."""
 
         allowed: list[MemoryRecord] = []
         request_lower = current_request.lower()
         for record in records:
             content_lower = record.content.lower()
-            taint_flags = set(record.taint_flags) | set(inspect_memory_content(record.content))
+            taint_flags = set(record.taint_flags) | set(
+                inspect_memory_content(record.content)
+            )
             record.taint_flags = sorted(taint_flags)
             if record.relevance_score < self.min_relevance:
                 record.safety_status = "blocked_low_relevance"
@@ -54,7 +58,10 @@ class MemoryGate:
                     record.contradiction_status = "likely"
                     record.safety_status = "blocked_contradiction"
                     continue
-            if record.trust_level in {TrustLevel.UNTRUSTED, TrustLevel.LEGACY_UNVERIFIED}:
+            if record.trust_level in {
+                TrustLevel.UNTRUSTED,
+                TrustLevel.LEGACY_UNVERIFIED,
+            }:
                 record.safety_status = "allowed_untrusted_data"
             else:
                 record.safety_status = "allowed"

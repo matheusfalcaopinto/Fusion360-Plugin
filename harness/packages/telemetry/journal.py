@@ -37,7 +37,9 @@ class SessionJournal:
 
         path = self.session_dir / name
         normalized = _jsonable(content)
-        path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
+        path.write_text(
+            json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8"
+        )
         return path
 
     def finalize(
@@ -77,7 +79,9 @@ class SessionJournal:
             "repair_replayed": bool(repaired)
             if repaired is not None
             else any(
-                attempt.get("action_applied") for attempt in repair_records if isinstance(attempt, dict)
+                attempt.get("action_applied")
+                for attempt in repair_records
+                if isinstance(attempt, dict)
             ),
             "exports": exports or [],
             "final_status": final_status,

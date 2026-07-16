@@ -13,9 +13,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from agent_core.targeted_inspection import build_targeted_inspection_script, validate_inspection_payload
+from agent_core.targeted_inspection import (
+    build_targeted_inspection_script,
+    validate_inspection_payload,
+)
 from fusion_mcp_adapter.errors import ErrorCode
-from fusion_mcp_adapter.execute_guard import normalize_execute_script, protected_script_descriptor
+from fusion_mcp_adapter.execute_guard import (
+    normalize_execute_script,
+    protected_script_descriptor,
+)
 
 
 NativeCall = Callable[..., Awaitable[Any]]
@@ -99,7 +105,13 @@ RESERVED_BINDING_NAMES = {
     "_fusion_agent_collapse_stream",
 }
 _ROOT_COMPONENT_BINDING = "__fusion_agent_root_component__"
-ADDITIVE_METHODS = {"project", "project2", "offset", "include", "intersectwithsketchplane"}
+ADDITIVE_METHODS = {
+    "project",
+    "project2",
+    "offset",
+    "include",
+    "intersectwithsketchplane",
+}
 PURE_METHODS = {
     "append",
     "cast",
@@ -160,7 +172,7 @@ PURE_FUNCTIONS = {
     "zip",
 }
 
-ACTIVE_COMMAND_SCRIPT = r'''
+ACTIVE_COMMAND_SCRIPT = r"""
 import adsk.core
 import json
 
@@ -185,7 +197,7 @@ def run(_context: str):
         "probe": "fusion_agent_active_command",
         "activeCommand": active,
     }))
-'''
+"""
 
 
 @dataclass
@@ -228,7 +240,9 @@ class _HelperSummary:
     returns_new: bool = False
 
 
-def _summary_origin(node: ast.AST | None, origins: dict[str, str], helpers: dict[str, _HelperSummary]) -> str:
+def _summary_origin(
+    node: ast.AST | None, origins: dict[str, str], helpers: dict[str, _HelperSummary]
+) -> str:
     if node is None:
         return "unknown"
     if isinstance(node, ast.Name):
@@ -238,7 +252,11 @@ def _summary_origin(node: ast.AST | None, origins: dict[str, str], helpers: dict
     if isinstance(node, ast.Call):
         name = _call_name(node.func)
         leaf = name.lower().rsplit(".", 1)[-1]
-        if isinstance(node.func, ast.Name) and node.func.id in helpers and helpers[node.func.id].returns_new:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in helpers
+            and helpers[node.func.id].returns_new
+        ):
             return "new"
         if leaf.startswith(("add", "create")) or leaf in ADDITIVE_METHODS:
             return "new"
@@ -247,13 +265,25 @@ def _summary_origin(node: ast.AST | None, origins: dict[str, str], helpers: dict
     return "unknown"
 
 
-def _summarize_helper(node: ast.FunctionDef, helpers: dict[str, _HelperSummary]) -> _HelperSummary:
-    origins = {argument.arg: f"param:{index}" for index, argument in enumerate(node.args.args)}
-    assignments = [child for child in ast.walk(node) if isinstance(child, (ast.Assign, ast.AnnAssign))]
+def _summarize_helper(
+    node: ast.FunctionDef, helpers: dict[str, _HelperSummary]
+) -> _HelperSummary:
+    origins = {
+        argument.arg: f"param:{index}" for index, argument in enumerate(node.args.args)
+    }
+    assignments = [
+        child
+        for child in ast.walk(node)
+        if isinstance(child, (ast.Assign, ast.AnnAssign))
+    ]
     for _ in range(max(1, len(assignments) + 1)):
         changed = False
         for assignment in assignments:
-            targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else [assignment.target]
+            )
             value = assignment.value
             origin = _summary_origin(value, origins, helpers)
             for target in targets:
@@ -280,7 +310,9 @@ def _summarize_helper(node: ast.FunctionDef, helpers: dict[str, _HelperSummary])
                 called = helpers[child.func.id]
                 for index, role in called.parameter_roles.items():
                     if index < len(child.args):
-                        require(_summary_origin(child.args[index], origins, helpers), role)
+                        require(
+                            _summary_origin(child.args[index], origins, helpers), role
+                        )
             elif isinstance(child.func, ast.Attribute):
                 receiver = _summary_origin(child.func.value, origins, helpers)
                 if leaf.startswith("add") or leaf in ADDITIVE_METHODS:
@@ -303,14 +335,22 @@ def _summarize_helper(node: ast.FunctionDef, helpers: dict[str, _HelperSummary])
             writes = [
                 assignment
                 for assignment in assignments
-                for target in (assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target])
+                for target in (
+                    assignment.targets
+                    if isinstance(assignment, ast.Assign)
+                    else [assignment.target]
+                )
                 if isinstance(target, ast.Name) and target.id == returned.id
             ]
-            returns_new = len(writes) == 1 and _summary_origin(
-                writes[0].value,
-                origins,
-                helpers,
-            ) == "new"
+            returns_new = (
+                len(writes) == 1
+                and _summary_origin(
+                    writes[0].value,
+                    origins,
+                    helpers,
+                )
+                == "new"
+            )
         else:
             returns_new = _summary_origin(returned, origins, helpers) == "new"
     return _HelperSummary(parameter_roles=roles, returns_new=returns_new)
@@ -324,7 +364,10 @@ def _summarize_helpers(tree: ast.Module) -> dict[str, _HelperSummary]:
     }
     summaries = {name: _HelperSummary() for name in definitions}
     for _ in range(max(1, len(definitions) + 1)):
-        updated = {name: _summarize_helper(node, summaries) for name, node in definitions.items()}
+        updated = {
+            name: _summarize_helper(node, summaries)
+            for name, node in definitions.items()
+        }
         if updated == summaries:
             break
         summaries = updated
@@ -377,7 +420,9 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
         if node.id in BLOCKED_NAMES or node.id.startswith("__"):
             self.error(node, f"blocked name: {node.id}")
-        if node.id in RESERVED_BINDING_NAMES and isinstance(node.ctx, (ast.Store, ast.Del)):
+        if node.id in RESERVED_BINDING_NAMES and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
             self.error(node, f"reserved binding may not be shadowed: {node.id}")
         self.generic_visit(node)
 
@@ -385,7 +430,10 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
         attribute = node.attr.lower()
         if attribute.startswith("__"):
             self.error(node, f"dunder access is blocked: {node.attr}")
-        if attribute in {value.lower() for value in BLOCKED_ATTRIBUTES} or attribute == "execute":
+        if (
+            attribute in {value.lower() for value in BLOCKED_ATTRIBUTES}
+            or attribute == "execute"
+        ):
             self.error(node, f"blocked Fusion operation: {node.attr}")
         self.generic_visit(node)
 
@@ -394,14 +442,30 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
         lowered = name.lower()
         leaf = lowered.rsplit(".", 1)[-1]
         blocked = False
-        if leaf in {value.lower() for value in BLOCKED_NAMES | BLOCKED_ATTRIBUTES} or leaf == "execute":
+        if (
+            leaf in {value.lower() for value in BLOCKED_NAMES | BLOCKED_ATTRIBUTES}
+            or leaf == "execute"
+        ):
             self.error(node, f"blocked call: {name}")
             blocked = True
-        if leaf.startswith(("save", "close", "import", "export", "delete", "remove", "move", "componentize")):
+        if leaf.startswith(
+            (
+                "save",
+                "close",
+                "import",
+                "export",
+                "delete",
+                "remove",
+                "move",
+                "componentize",
+            )
+        ):
             self.error(node, f"operation is Safe Harness only: {name}")
             blocked = True
         if "transform" in leaf or "visibility" in leaf or leaf in {"hide", "show"}:
-            self.error(node, f"transform or visibility operation is Safe Harness only: {name}")
+            self.error(
+                node, f"transform or visibility operation is Safe Harness only: {name}"
+            )
             blocked = True
         if any(part.startswith("__") for part in lowered.split(".")):
             self.error(node, f"dunder call is blocked: {name}")
@@ -418,23 +482,42 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
                 self.mutating = True
                 self.additive_detected = True
                 if self.change_class != "additive":
-                    self.error(node, f"risk analysis requires change_class=additive for call: {name}")
+                    self.error(
+                        node,
+                        f"risk analysis requires change_class=additive for call: {name}",
+                    )
                 if receiver not in {"component", "new"}:
-                    self.error(node, f"additive mutation receiver is not bound to target_components or a new entity: {name}")
+                    self.error(
+                        node,
+                        f"additive mutation receiver is not bound to target_components or a new entity: {name}",
+                    )
             elif leaf.startswith("set"):
                 self.mutating = True
                 if receiver == "new":
                     self.additive_detected = True
                     if self.change_class != "additive":
-                        self.error(node, f"risk analysis requires change_class=additive for call on new entity: {name}")
+                        self.error(
+                            node,
+                            f"risk analysis requires change_class=additive for call on new entity: {name}",
+                        )
                 elif receiver == "target":
                     self.scoped_update_detected = True
                     if self.change_class != "scoped_update":
-                        self.error(node, f"risk analysis requires change_class=scoped_update for call: {name}")
+                        self.error(
+                            node,
+                            f"risk analysis requires change_class=scoped_update for call: {name}",
+                        )
                 else:
                     self.scoped_update_detected = True
-                    self.error(node, f"scoped mutation receiver is not bound to targets or a new entity: {name}")
-            elif not (leaf.startswith("create") or leaf in PURE_METHODS or _root_name(node.func) in {"json", "math"}):
+                    self.error(
+                        node,
+                        f"scoped mutation receiver is not bound to targets or a new entity: {name}",
+                    )
+            elif not (
+                leaf.startswith("create")
+                or leaf in PURE_METHODS
+                or _root_name(node.func) in {"json", "math"}
+            ):
                 self.error(node, f"unclassified Fusion call is blocked: {name}")
         self.generic_visit(node)
 
@@ -480,11 +563,17 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Yield(self, node: ast.Yield) -> None:  # noqa: N802
-        self.error(node, "generator functions are blocked; run and helpers must execute synchronously")
+        self.error(
+            node,
+            "generator functions are blocked; run and helpers must execute synchronously",
+        )
         self.generic_visit(node)
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> None:  # noqa: N802
-        self.error(node, "generator functions are blocked; run and helpers must execute synchronously")
+        self.error(
+            node,
+            "generator functions are blocked; run and helpers must execute synchronously",
+        )
         self.generic_visit(node)
 
     def visit_Global(self, node: ast.Global) -> None:  # noqa: N802
@@ -500,8 +589,14 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
             return
         if isinstance(target, ast.Name) and target.id in RESERVED_BINDING_NAMES:
             self.error(node, f"reserved binding may not be overwritten: {target.id}")
-        if isinstance(target, ast.Subscript) and _root_name(target) in RESERVED_BINDING_NAMES:
-            self.error(node, f"reserved binding entries may not be overwritten: {_root_name(target)}")
+        if (
+            isinstance(target, ast.Subscript)
+            and _root_name(target) in RESERVED_BINDING_NAMES
+        ):
+            self.error(
+                node,
+                f"reserved binding entries may not be overwritten: {_root_name(target)}",
+            )
         if isinstance(target, ast.Attribute):
             self.mutating = True
             if target.attr.lower() in BLOCKED_ASSIGN_ATTRIBUTES:
@@ -511,14 +606,23 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
             if receiver == "new":
                 self.additive_detected = True
                 if self.change_class != "additive":
-                    self.error(node, f"risk analysis requires change_class=additive for attribute on new entity: {target.attr}")
+                    self.error(
+                        node,
+                        f"risk analysis requires change_class=additive for attribute on new entity: {target.attr}",
+                    )
             elif receiver == "target":
                 self.scoped_update_detected = True
                 if self.change_class != "scoped_update":
-                    self.error(node, f"risk analysis requires change_class=scoped_update for attribute: {target.attr}")
+                    self.error(
+                        node,
+                        f"risk analysis requires change_class=scoped_update for attribute: {target.attr}",
+                    )
             else:
                 self.scoped_update_detected = True
-                self.error(node, f"attribute mutation receiver is not bound to targets or a new entity: {target.attr}")
+                self.error(
+                    node,
+                    f"attribute mutation receiver is not bound to targets or a new entity: {target.attr}",
+                )
 
     def _track_provenance(self, targets: list[ast.expr], value: ast.AST | None) -> None:
         provenance = self._expr_provenance(value)
@@ -532,14 +636,25 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
         if isinstance(node, ast.Name):
             return self._provenance_scopes[-1].get(node.id, "unknown")
         if isinstance(node, ast.Subscript):
-            if isinstance(node.value, ast.Name) and node.value.id in RESERVED_BINDING_NAMES:
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in RESERVED_BINDING_NAMES
+            ):
                 key = node.slice.value if isinstance(node.slice, ast.Constant) else None
                 if not isinstance(key, str) or not key:
-                    self._binding_error(node, f"{node.value.id} requires a non-empty literal string key")
+                    self._binding_error(
+                        node, f"{node.value.id} requires a non-empty literal string key"
+                    )
                     return "unknown"
-                allowed = self.allowed_target_ids if node.value.id == "targets" else self.allowed_component_paths
+                allowed = (
+                    self.allowed_target_ids
+                    if node.value.id == "targets"
+                    else self.allowed_component_paths
+                )
                 if allowed is not None and key not in allowed:
-                    self._binding_error(node, f"undeclared {node.value.id} binding: {key}")
+                    self._binding_error(
+                        node, f"undeclared {node.value.id} binding: {key}"
+                    )
                     return "unknown"
                 return "target" if node.value.id == "targets" else "component"
             base = self._expr_provenance(node.value)
@@ -548,8 +663,15 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
             base = self._expr_provenance(node.value)
             return base if base in {"component", "new"} else "unknown"
         if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in self.helper_summaries:
-                return "new" if self.helper_summaries[node.func.id].returns_new else "unknown"
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in self.helper_summaries
+            ):
+                return (
+                    "new"
+                    if self.helper_summaries[node.func.id].returns_new
+                    else "unknown"
+                )
             leaf = _call_name(node.func).lower().rsplit(".", 1)[-1]
             if leaf.startswith(("add", "create")) or leaf in ADDITIVE_METHODS:
                 return "new"
@@ -567,15 +689,22 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
     def _check_helper_call(self, node: ast.Call, summary: _HelperSummary) -> None:
         for index, role in summary.parameter_roles.items():
             if role == "conflict":
-                self.error(node, "helper parameter mixes target and target-component mutations")
+                self.error(
+                    node, "helper parameter mixes target and target-component mutations"
+                )
                 continue
             if index >= len(node.args):
-                self.error(node, "helper mutation binding must be supplied positionally")
+                self.error(
+                    node, "helper mutation binding must be supplied positionally"
+                )
                 continue
             actual = self._expr_provenance(node.args[index])
             if actual != role:
                 binding_name = "targets" if role == "target" else "target_components"
-                self.error(node, f"helper mutation parameter {index} must derive from {binding_name}")
+                self.error(
+                    node,
+                    f"helper mutation parameter {index} must derive from {binding_name}",
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         if node.name in RESERVED_BINDING_NAMES:
@@ -673,7 +802,12 @@ def lint_fusion_script(
                 f"line {getattr(statement, 'lineno', '?')}: executable module-level code is blocked; put logic inside run or a helper"
             )
 
-    run_functions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "run"]
+    run_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "run"
+    ]
     if len(run_functions) != 1:
         errors.append("script must define exactly one top-level run function")
     else:
@@ -681,7 +815,13 @@ def lint_fusion_script(
         args = run_function.args
         if isinstance(run_function, ast.AsyncFunctionDef):
             errors.append("run must be synchronous")
-        if len(args.args) != 1 or args.args[0].arg != "_context" or args.vararg or args.kwarg or args.kwonlyargs:
+        if (
+            len(args.args) != 1
+            or args.args[0].arg != "_context"
+            or args.vararg
+            or args.kwarg
+            or args.kwonlyargs
+        ):
             errors.append("run signature must be exactly def run(_context: str)")
         annotation = args.args[0].annotation if args.args else None
         if not isinstance(annotation, ast.Name) or annotation.id != "str":
@@ -700,9 +840,13 @@ def lint_fusion_script(
         visitor.warnings.append(manual_basis_warning)
     errors.extend(visitor.errors)
     if change_class == "additive" and not visitor.additive_detected:
-        errors.append("risk analysis found no additive mutation for change_class=additive")
+        errors.append(
+            "risk analysis found no additive mutation for change_class=additive"
+        )
     if change_class == "scoped_update" and not visitor.scoped_update_detected:
-        errors.append("risk analysis found no scoped update for change_class=scoped_update")
+        errors.append(
+            "risk analysis found no scoped update for change_class=scoped_update"
+        )
     detected_change_class = (
         "mixed"
         if visitor.additive_detected and visitor.scoped_update_detected
@@ -732,9 +876,7 @@ def _manual_sketch_basis_warning(tree: ast.Module) -> str | None:
     """
 
     attributes = {
-        node.attr.lower()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
+        node.attr.lower() for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
     creates_point = any(
         isinstance(node, ast.Call)
@@ -746,7 +888,11 @@ def _manual_sketch_basis_warning(tree: ast.Module) -> str | None:
         and _call_name(node.func).lower().endswith("modeltosketchspace")
         for node in ast.walk(tree)
     )
-    if attributes.intersection({"xdirection", "ydirection"}) and creates_point and not uses_native_conversion:
+    if (
+        attributes.intersection({"xdirection", "ydirection"})
+        and creates_point
+        and not uses_native_conversion
+    ):
         return (
             "manual sketch xDirection/yDirection projection into Point3D can detach geometry; "
             "prefer sketch.modelToSketchSpace"
@@ -767,7 +913,9 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(script, str) or not script.strip():
         raise ValueError("script is required")
     api_references = arguments.get("api_references") or []
-    if not isinstance(api_references, list) or not all(isinstance(value, str) for value in api_references):
+    if not isinstance(api_references, list) or not all(
+        isinstance(value, str) for value in api_references
+    ):
         raise ValueError("api_references must be an array of strings")
     verification = arguments.get("verification") or {}
     if not isinstance(verification, dict):
@@ -775,15 +923,28 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
     queries = verification.get("queries") or []
     assertions = verification.get("assertions") or []
     requirements = verification.get("requirements") or []
-    if len(queries) > 50 or len(assertions) > 100 or not isinstance(requirements, list) or len(requirements) > 100:
-        raise ValueError("verification supports at most 50 queries, 100 assertions, and 100 requirements")
+    if (
+        len(queries) > 50
+        or len(assertions) > 100
+        or not isinstance(requirements, list)
+        or len(requirements) > 100
+    ):
+        raise ValueError(
+            "verification supports at most 50 queries, 100 assertions, and 100 requirements"
+        )
     target_query_ids = arguments.get("target_query_ids") or []
-    if not isinstance(target_query_ids, list) or not all(isinstance(value, str) for value in target_query_ids):
+    if not isinstance(target_query_ids, list) or not all(
+        isinstance(value, str) for value in target_query_ids
+    ):
         raise ValueError("target_query_ids must be an array of strings")
     if len(target_query_ids) > 20:
         raise ValueError("target_query_ids supports at most 20 entries")
-    if change_class != "read_only" and (not queries or not assertions or not target_query_ids):
-        raise ValueError("mutations require verification queries, assertions, and target_query_ids")
+    if change_class != "read_only" and (
+        not queries or not assertions or not target_query_ids
+    ):
+        raise ValueError(
+            "mutations require verification queries, assertions, and target_query_ids"
+        )
     if change_class == "read_only" and not queries:
         queries = [
             {
@@ -793,24 +954,37 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
                 "fields": ["exists", "name", "id"],
             }
         ]
-    normalized_inspection = validate_inspection_payload({"queries": queries, "limit_per_query": verification.get("limit_per_query", 20)})
+    normalized_inspection = validate_inspection_payload(
+        {"queries": queries, "limit_per_query": verification.get("limit_per_query", 20)}
+    )
     query_ids = {query["id"] for query in normalized_inspection["queries"]}
     if not set(target_query_ids).issubset(query_ids):
         raise ValueError("every target_query_id must reference a verification query")
 
     normalized_assertions = _normalize_assertions(assertions, query_ids)
-    normalized_requirements = _normalize_requirements(requirements, normalized_assertions)
+    normalized_requirements = _normalize_requirements(
+        requirements, normalized_assertions
+    )
     if change_class != "read_only":
-        asserted_query_ids = {assertion["query_id"] for assertion in normalized_assertions}
+        asserted_query_ids = {
+            assertion["query_id"] for assertion in normalized_assertions
+        }
         if not set(target_query_ids).issubset(asserted_query_ids):
-            raise ValueError("every mutation target must have at least one verification assertion")
+            raise ValueError(
+                "every mutation target must have at least one verification assertion"
+            )
     queries_by_id = {query["id"]: query for query in normalized_inspection["queries"]}
     target_component_paths: list[str] = []
     if change_class == "additive":
         for query_id in target_query_ids:
-            component_path = str((queries_by_id[query_id].get("selector") or {}).get("component_path") or "").strip()
+            component_path = str(
+                (queries_by_id[query_id].get("selector") or {}).get("component_path")
+                or ""
+            ).strip()
             if not component_path:
-                raise ValueError("every additive target query requires selector.component_path")
+                raise ValueError(
+                    "every additive target query requires selector.component_path"
+                )
             target_component_paths.append(component_path)
     return {
         "intent": intent,
@@ -843,15 +1017,23 @@ def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str
         query_id = str(raw.get("query_id") or "")
         field_name = str(raw.get("field") or "")
         operator = str(raw.get("operator") or "")
-        if query_id not in query_ids or not field_name or operator not in ASSERTION_OPERATORS:
+        if (
+            query_id not in query_ids
+            or not field_name
+            or operator not in ASSERTION_OPERATORS
+        ):
             raise ValueError(f"assertions[{index}] is invalid")
         if operator == "approx" and "tolerance" not in raw:
             raise ValueError(f"assertions[{index}] approx requires tolerance")
         if operator != "unchanged" and "expected" not in raw:
             raise ValueError(f"assertions[{index}] {operator} requires expected")
         requirement_ids = raw.get("requirement_ids") or []
-        if not isinstance(requirement_ids, list) or not all(isinstance(value, str) and value for value in requirement_ids):
-            raise ValueError(f"assertions[{index}].requirement_ids must be an array of ids")
+        if not isinstance(requirement_ids, list) or not all(
+            isinstance(value, str) and value for value in requirement_ids
+        ):
+            raise ValueError(
+                f"assertions[{index}].requirement_ids must be an array of ids"
+            )
         normalized_assertions.append(
             {
                 "id": assertion_id,
@@ -880,7 +1062,9 @@ def _normalize_requirements(
     linked_from_assertions: dict[str, list[str]] = {}
     for assertion in assertions:
         for requirement_id in assertion.get("requirement_ids") or []:
-            linked_from_assertions.setdefault(requirement_id, []).append(assertion["id"])
+            linked_from_assertions.setdefault(requirement_id, []).append(
+                assertion["id"]
+            )
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, raw in enumerate(requirements):
@@ -891,15 +1075,27 @@ def _normalize_requirements(
             raise ValueError("requirement ids must be present and unique")
         seen.add(requirement_id)
         explicit_assertions = raw.get("assertion_ids") or []
-        if not isinstance(explicit_assertions, list) or not all(isinstance(value, str) for value in explicit_assertions):
-            raise ValueError(f"requirements[{index}].assertion_ids must be an array of strings")
-        linked = list(dict.fromkeys([*explicit_assertions, *linked_from_assertions.get(requirement_id, [])]))
+        if not isinstance(explicit_assertions, list) or not all(
+            isinstance(value, str) for value in explicit_assertions
+        ):
+            raise ValueError(
+                f"requirements[{index}].assertion_ids must be an array of strings"
+            )
+        linked = list(
+            dict.fromkeys(
+                [*explicit_assertions, *linked_from_assertions.get(requirement_id, [])]
+            )
+        )
         unknown = sorted(set(linked) - assertion_ids)
         if unknown:
-            raise ValueError(f"requirements[{index}] references unknown assertions: {', '.join(unknown)}")
+            raise ValueError(
+                f"requirements[{index}] references unknown assertions: {', '.join(unknown)}"
+            )
         oracle = str(raw.get("oracle") or "contract")
         if oracle not in {"contract", "independent_oracle"}:
-            raise ValueError(f"requirements[{index}].oracle must be contract or independent_oracle")
+            raise ValueError(
+                f"requirements[{index}].oracle must be contract or independent_oracle"
+            )
         normalized.append(
             {
                 "id": requirement_id,
@@ -912,12 +1108,15 @@ def _normalize_requirements(
     unknown_requirement_links = sorted(set(linked_from_assertions) - seen)
     if unknown_requirement_links:
         raise ValueError(
-            "assertions reference unknown requirements: " + ", ".join(unknown_requirement_links)
+            "assertions reference unknown requirements: "
+            + ", ".join(unknown_requirement_links)
         )
     return normalized
 
 
-def build_native_read_arguments(arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def build_native_read_arguments(
+    arguments: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
     """Map the safe public read vocabulary to the Autodesk read schema."""
 
     query_type = str(arguments.get("query_type") or "").strip()
@@ -1026,7 +1225,9 @@ class FastPathService:
                 ):
                     content.append(block)
             image_blocks = [block for block in content if block.get("type") == "image"]
-            if not image_blocks or not all(_valid_png_block(block) for block in image_blocks):
+            if not image_blocks or not all(
+                _valid_png_block(block) for block in image_blocks
+            ):
                 return FastPathResponse(
                     {
                         "query_type": query_type,
@@ -1061,14 +1262,21 @@ class FastPathService:
         started = time.perf_counter()
         result = await self._trusted_read_native(
             "fusion_mcp_execute",
-            {"featureType": "script", "object": {"script": build_targeted_inspection_script(normalized)}},
+            {
+                "featureType": "script",
+                "object": {"script": build_targeted_inspection_script(normalized)},
+            },
             semantics="read_only",
             operation_id=operation_id,
         )
         duration_ms = int((time.perf_counter() - started) * 1000)
         if not _result_ok(result):
             return FastPathResponse(
-                {"status": "inspection_failed", "error": _result_error(result), "duration_ms": duration_ms},
+                {
+                    "status": "inspection_failed",
+                    "error": _result_error(result),
+                    "duration_ms": duration_ms,
+                },
                 is_error=True,
                 meta=copy.deepcopy(_result_meta(result)),
             )
@@ -1088,7 +1296,9 @@ class FastPathService:
         policy = lint_fusion_script(
             request["script"],
             request["change_class"],
-            allowed_target_ids=set(request["target_query_ids"]) if request["change_class"] == "scoped_update" else set(),
+            allowed_target_ids=set(request["target_query_ids"])
+            if request["change_class"] == "scoped_update"
+            else set(),
             allowed_component_paths=set(request["target_component_paths"]),
         )
         operation_id = _operation_id("fast")
@@ -1113,7 +1323,9 @@ class FastPathService:
                     "execution_path": "native_fast",
                     "status": "blocked_before_apply",
                     "policy": policy.as_dict(),
-                    "reason": "active_command" if active_command else "active_command_check_failed",
+                    "reason": "active_command"
+                    if active_command
+                    else "active_command_check_failed",
                     "active_command": active_command,
                 }
             )
@@ -1192,7 +1404,9 @@ class FastPathService:
                     "baseline": baseline,
                     "executor_guard": executor_guard,
                     "native_call_count": 2,
-                    "declared_mutation_count": 0 if request["change_class"] == "read_only" else 1,
+                    "declared_mutation_count": 0
+                    if request["change_class"] == "read_only"
+                    else 1,
                     "transport_mutating_dispatch_count": 0,
                     "mutating_call_count": 0,
                     "recovery_instruction": "No mutation was dispatched. Reduce or split the script before retrying.",
@@ -1225,7 +1439,9 @@ class FastPathService:
                 "assertions_passed": False,
                 "assertion_status": "incomplete",
                 "intent_coverage": (
-                    "partial" if verification.get("intent_coverage") == "complete" else verification.get("intent_coverage", "none")
+                    "partial"
+                    if verification.get("intent_coverage") == "complete"
+                    else verification.get("intent_coverage", "none")
                 ),
                 "contract_verified": False,
                 "readback_complete": False,
@@ -1237,11 +1453,17 @@ class FastPathService:
                 "readback_complete": True,
                 "readback_issue": None,
             }
-        execution_error = None if _result_ok(execute_result) else _result_error(execute_result)
+        execution_error = (
+            None if _result_ok(execute_result) else _result_error(execute_result)
+        )
         error_code = _result_error_code(execute_result)
         execute_data = _result_data(execute_result)
-        transport_meta = (_result_meta(execute_result).get("fusion_agent_transport") or {})
-        dispatched = bool(transport_meta.get("dispatched", execute_data.get("dispatched", True)))
+        transport_meta = (
+            _result_meta(execute_result).get("fusion_agent_transport") or {}
+        )
+        dispatched = bool(
+            transport_meta.get("dispatched", execute_data.get("dispatched", True))
+        )
         mutation_outcome = str(
             transport_meta.get("mutation_outcome")
             or ("unknown" if error_code == "MUTATION_OUTCOME_UNKNOWN" else "known")
@@ -1261,25 +1483,45 @@ class FastPathService:
                 "mutation_status": "outcome_unknown",
             }
             status = "mutation_outcome_unknown"
-            verification_source = "post_dispatch_readback" if not readback_issue else "unavailable"
+            verification_source = (
+                "post_dispatch_readback" if not readback_issue else "unavailable"
+            )
         elif error_code == "CALL_CANCELLED":
             if not dispatched:
                 status = "blocked_before_apply"
                 verification_source = "pre_apply_cancelled"
             else:
-                status = "applied_verified" if verification["contract_verified"] and not readback_issue else "outcome_unknown"
-                verification_source = "post_cancel_readback" if status == "applied_verified" else "unavailable"
-        elif execution_error and "fusion agent document guard" in execution_error.lower():
+                status = (
+                    "applied_verified"
+                    if verification["contract_verified"] and not readback_issue
+                    else "outcome_unknown"
+                )
+                verification_source = (
+                    "post_cancel_readback"
+                    if status == "applied_verified"
+                    else "unavailable"
+                )
+        elif (
+            execution_error and "fusion agent document guard" in execution_error.lower()
+        ):
             status = "blocked_before_apply"
             verification_source = "document_identity_guard"
-        elif error_code in {"MANIFEST_DRIFT", "CONNECTION_UNAVAILABLE", "CLIENT_CLOSED"}:
+        elif error_code in {
+            "MANIFEST_DRIFT",
+            "CONNECTION_UNAVAILABLE",
+            "CLIENT_CLOSED",
+        }:
             status = "blocked_before_apply"
             verification_source = "pre_apply_failure_readback"
         elif readback_issue and request["change_class"] != "read_only":
             status = "applied_unverified"
             verification_source = "partial_readback"
         elif execution_error:
-            status = "partial_change_detected" if _snapshot_changed(baseline, after) else "execution_failed"
+            status = (
+                "partial_change_detected"
+                if _snapshot_changed(baseline, after)
+                else "execution_failed"
+            )
             verification_source = "post_failure_readback"
         elif after_response.is_error:
             status = "applied_unverified"
@@ -1339,9 +1581,15 @@ class FastPathService:
             "manifest_fingerprint": self._manifest_fingerprint(),
             "duration_ms": duration_ms,
             "native_call_count": native_call_count,
-            "declared_mutation_count": 0 if request["change_class"] == "read_only" else 1,
-            "transport_mutating_dispatch_count": int(dispatched and request["change_class"] != "read_only"),
-            "mutating_call_count": int(dispatched and request["change_class"] != "read_only"),
+            "declared_mutation_count": 0
+            if request["change_class"] == "read_only"
+            else 1,
+            "transport_mutating_dispatch_count": int(
+                dispatched and request["change_class"] != "read_only"
+            ),
+            "mutating_call_count": int(
+                dispatched and request["change_class"] != "read_only"
+            ),
             "dispatched": dispatched,
             "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
             "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
@@ -1372,14 +1620,23 @@ class FastPathService:
         }
         if screenshot_payload is not None:
             response["screenshot"] = screenshot_payload
-        if request["change_class"] != "read_only" and status in {"applied_verified", "applied_partially_verified", "applied_unverified", "partial_change_detected"}:
+        if request["change_class"] != "read_only" and status in {
+            "applied_verified",
+            "applied_partially_verified",
+            "applied_unverified",
+            "partial_change_detected",
+        }:
             self._last_operation = {
                 "operation_id": operation_id,
                 "document": after.get("document") or baseline.get("document"),
                 "after_fingerprint": _snapshot_fingerprint(after),
-                "after_state_fingerprint": (after.get("summary") or {}).get("state_fingerprint"),
+                "after_state_fingerprint": (after.get("summary") or {}).get(
+                    "state_fingerprint"
+                ),
                 "state_fingerprint_truncated": bool(
-                    (after.get("summary") or {}).get("state_fingerprint_truncated", True)
+                    (after.get("summary") or {}).get(
+                        "state_fingerprint_truncated", True
+                    )
                 ),
                 "inspection_args": readback_args,
                 "after": after,
@@ -1388,7 +1645,8 @@ class FastPathService:
         return FastPathResponse(
             response,
             content=evidence_content,
-            is_error=status in {"execution_failed", "outcome_unknown", "mutation_outcome_unknown"},
+            is_error=status
+            in {"execution_failed", "outcome_unknown", "mutation_outcome_unknown"},
             meta=copy.deepcopy(_result_meta(execute_result)),
         )
 
@@ -1399,8 +1657,13 @@ class FastPathService:
             raise ValueError("action must be undo or redo")
         if arguments.get("confirm") is not True:
             raise ValueError("confirm=true is required")
-        if not self._last_operation or self._last_operation["operation_id"] != operation_id:
-            return FastPathResponse({"status": "blocked_before_apply", "reason": "operation_is_not_latest"})
+        if (
+            not self._last_operation
+            or self._last_operation["operation_id"] != operation_id
+        ):
+            return FastPathResponse(
+                {"status": "blocked_before_apply", "reason": "operation_is_not_latest"}
+            )
         recovery_phase = str(self._last_operation.get("recovery_phase") or "applied")
         expected_action = "undo" if recovery_phase == "applied" else "redo"
         if action != expected_action:
@@ -1413,7 +1676,10 @@ class FastPathService:
             )
         verification = arguments.get("verification") or {}
         normalized = validate_inspection_payload(
-            {"queries": verification.get("queries") or [], "limit_per_query": verification.get("limit_per_query", 20)}
+            {
+                "queries": verification.get("queries") or [],
+                "limit_per_query": verification.get("limit_per_query", 20),
+            }
         )
         assertions = _normalize_assertions(
             verification.get("assertions") or [],
@@ -1425,14 +1691,22 @@ class FastPathService:
             return FastPathResponse(
                 {
                     "status": "blocked_before_apply",
-                    "reason": "active_command" if active_command else "active_command_check_failed",
+                    "reason": "active_command"
+                    if active_command
+                    else "active_command_check_failed",
                     "active_command": active_command,
                 }
             )
         expected_state_fingerprint = self._last_operation.get("after_state_fingerprint")
-        if self._last_operation.get("state_fingerprint_truncated") or not expected_state_fingerprint:
+        if (
+            self._last_operation.get("state_fingerprint_truncated")
+            or not expected_state_fingerprint
+        ):
             return FastPathResponse(
-                {"status": "blocked_before_apply", "reason": "recovery_state_fingerprint_unavailable"}
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_state_fingerprint_unavailable",
+                }
             )
         current = await self.targeted_inspect(self._last_operation["inspection_args"])
         current_summary = current.payload.get("summary") or {}
@@ -1445,11 +1719,16 @@ class FastPathService:
                 current.payload.get("document") or {},
             )
         ):
-            return FastPathResponse({"status": "blocked_before_apply", "reason": "document_or_state_drift"})
+            return FastPathResponse(
+                {"status": "blocked_before_apply", "reason": "document_or_state_drift"}
+            )
         verification_before = await self.targeted_inspect(normalized)
         if verification_before.is_error:
             return FastPathResponse(
-                {"status": "blocked_before_apply", "reason": "recovery_verification_baseline_failed"}
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_verification_baseline_failed",
+                }
             )
         recovery_id = _operation_id("recover")
         result = await self._call_native(
@@ -1460,9 +1739,17 @@ class FastPathService:
         )
         after = await self.targeted_inspect(normalized)
         if not _result_ok(result):
-            status = "outcome_unknown" if _result_error_code(result) == "MUTATION_OUTCOME_UNKNOWN" else "execution_failed"
+            status = (
+                "outcome_unknown"
+                if _result_error_code(result) == "MUTATION_OUTCOME_UNKNOWN"
+                else "execution_failed"
+            )
             return FastPathResponse(
-                {"operation_id": recovery_id, "status": status, "error": _result_error(result)},
+                {
+                    "operation_id": recovery_id,
+                    "status": status,
+                    "error": _result_error(result),
+                },
                 is_error=True,
             )
         evaluated = evaluate_verification(
@@ -1473,7 +1760,9 @@ class FastPathService:
         )
         status = "recovered_verified" if evaluated["passed"] else "recovery_unverified"
         if status == "recovered_verified":
-            post_state = await self.targeted_inspect(self._last_operation["inspection_args"])
+            post_state = await self.targeted_inspect(
+                self._last_operation["inspection_args"]
+            )
             post_summary = post_state.payload.get("summary") or {}
             post_fingerprint = post_summary.get("state_fingerprint")
             if (
@@ -1523,7 +1812,9 @@ def _inspection_args_for_request(
     for component_path in request["target_component_paths"]:
         query_id = _component_query_id(component_path)
         if query_id in existing_ids:
-            raise ValueError(f"verification query id is reserved by Fusion Agent: {query_id}")
+            raise ValueError(
+                f"verification query id is reserved by Fusion Agent: {query_id}"
+            )
         existing_ids.add(query_id)
         queries.append(
             {
@@ -1534,7 +1825,9 @@ def _inspection_args_for_request(
             }
         )
     if len(queries) > 50:
-        raise ValueError("verification plus additive component bindings supports at most 50 queries")
+        raise ValueError(
+            "verification plus additive component bindings supports at most 50 queries"
+        )
     return {
         "queries": queries,
         "limit_per_query": request["verification"]["limit_per_query"],
@@ -1555,7 +1848,9 @@ def _target_record_error(match: Any, query_id: str) -> str | None:
     return None
 
 
-def _mutation_baseline_issue(request: dict[str, Any], snapshot: dict[str, Any]) -> str | None:
+def _mutation_baseline_issue(
+    request: dict[str, Any], snapshot: dict[str, Any]
+) -> str | None:
     """Fail closed before target binding when a mutation baseline is partial."""
 
     if request.get("change_class") == "read_only":
@@ -1584,7 +1879,9 @@ def _validate_targets(
     by_id = {result.get("query_id"): result for result in snapshot.get("results", [])}
     document = snapshot.get("document") or {}
     bindings: dict[str, dict[str, str]] = {"targets": {}, "target_components": {}}
-    if request["change_class"] != "read_only" and not (document.get("id") or document.get("runtime_id")):
+    if request["change_class"] != "read_only" and not (
+        document.get("id") or document.get("runtime_id")
+    ):
         return "document_stable_identity_unavailable", bindings
     for query_id in request["target_query_ids"]:
         if query_id not in by_id:
@@ -1613,7 +1910,10 @@ def _validate_targets(
             result = by_id.get(query_id) or {}
             matches = result.get("matches") or []
             if result.get("ambiguous") or len(matches) != 1:
-                return f"target_component_must_resolve_uniquely:{component_path}", bindings
+                return (
+                    f"target_component_must_resolve_uniquely:{component_path}",
+                    bindings,
+                )
             match = matches[0]
             error = _target_record_error(match, f"component:{component_path}")
             if error:
@@ -1642,16 +1942,32 @@ def evaluate_verification(
     """Evaluate the declared contract plus automatic document/count invariants."""
 
     details = []
-    baseline_results = {item.get("query_id"): item for item in baseline.get("results", [])}
+    baseline_results = {
+        item.get("query_id"): item for item in baseline.get("results", [])
+    }
     after_results = {item.get("query_id"): item for item in after.get("results", [])}
     for assertion in assertions:
-        before_value = _query_value(baseline_results.get(assertion["query_id"], {}), assertion["field"])
-        after_value = _query_value(after_results.get(assertion["query_id"], {}), assertion["field"])
+        before_value = _query_value(
+            baseline_results.get(assertion["query_id"], {}), assertion["field"]
+        )
+        after_value = _query_value(
+            after_results.get(assertion["query_id"], {}), assertion["field"]
+        )
         passed, message = _compare(assertion, before_value, after_value)
-        details.append({**assertion, "before": before_value, "actual": after_value, "passed": passed, "message": message})
+        details.append(
+            {
+                **assertion,
+                "before": before_value,
+                "actual": after_value,
+                "passed": passed,
+                "message": message,
+            }
+        )
 
     invariants = []
-    same_document = _same_document(baseline.get("document") or {}, after.get("document") or {})
+    same_document = _same_document(
+        baseline.get("document") or {}, after.get("document") or {}
+    )
     invariants.append({"name": "document_identity_unchanged", "passed": same_document})
     before_summary = baseline.get("summary") or {}
     after_summary = after.get("summary") or {}
@@ -1666,14 +1982,26 @@ def evaluate_verification(
     }
     comparable_counts = [key for key in count_keys if key in before_summary]
     if change_class == "additive":
-        counts_ok = all(after_summary.get(key, 0) >= before_summary.get(key, 0) for key in comparable_counts)
-        invariants.append({"name": "additive_counts_do_not_decrease", "passed": counts_ok})
+        counts_ok = all(
+            after_summary.get(key, 0) >= before_summary.get(key, 0)
+            for key in comparable_counts
+        )
+        invariants.append(
+            {"name": "additive_counts_do_not_decrease", "passed": counts_ok}
+        )
     elif change_class in {"read_only", "scoped_update"}:
-        counts_ok = all(after_summary.get(key) == before_summary.get(key) for key in comparable_counts)
-        invariants.append({"name": f"{change_class}_counts_unchanged", "passed": counts_ok})
+        counts_ok = all(
+            after_summary.get(key) == before_summary.get(key)
+            for key in comparable_counts
+        )
+        invariants.append(
+            {"name": f"{change_class}_counts_unchanged", "passed": counts_ok}
+        )
     visible_bbox = after_summary.get("visible_body_bbox_mm")
     if visible_bbox is not None:
-        invariants.append({"name": "visible_body_bbox_valid", "passed": _valid_bbox(visible_bbox)})
+        invariants.append(
+            {"name": "visible_body_bbox_valid", "passed": _valid_bbox(visible_bbox)}
+        )
     target_matches = [
         match
         for result in after.get("results", [])
@@ -1689,11 +2017,17 @@ def evaluate_verification(
         invariants.append(
             {
                 "name": "target_feature_health",
-                "passed": all(_healthy_feature_value(value) for value in feature_health),
+                "passed": all(
+                    _healthy_feature_value(value) for value in feature_health
+                ),
                 "values": feature_health,
             }
         )
-    bounding_boxes = [match.get("bounding_box_mm") for match in target_matches if match.get("bounding_box_mm") is not None]
+    bounding_boxes = [
+        match.get("bounding_box_mm")
+        for match in target_matches
+        if match.get("bounding_box_mm") is not None
+    ]
     if bounding_boxes:
         bbox_ok = all(_valid_bbox(bbox) for bbox in bounding_boxes)
         invariants.append({"name": "target_bounding_boxes_valid", "passed": bbox_ok})
@@ -1708,8 +2042,12 @@ def evaluate_verification(
     requirement_results = []
     for requirement in requirements:
         assertion_ids = list(requirement.get("assertion_ids") or [])
-        covered = bool(assertion_ids) and all(assertion_id in assertion_results for assertion_id in assertion_ids)
-        requirement_passed = covered and all(assertion_results[assertion_id]["passed"] for assertion_id in assertion_ids)
+        covered = bool(assertion_ids) and all(
+            assertion_id in assertion_results for assertion_id in assertion_ids
+        )
+        requirement_passed = covered and all(
+            assertion_results[assertion_id]["passed"] for assertion_id in assertion_ids
+        )
         independent = requirement.get("oracle") == "independent_oracle"
         requirement_results.append(
             {
@@ -1719,13 +2057,17 @@ def evaluate_verification(
                 **({"oracle_evidence": "not_available"} if independent else {}),
             }
         )
-    required_results = [item for item in requirement_results if item.get("required", True)]
+    required_results = [
+        item for item in requirement_results if item.get("required", True)
+    ]
     if not required_results:
         intent_coverage = "none"
     elif all(item["covered"] for item in required_results):
         intent_coverage = "complete"
     else:
-        intent_coverage = "partial" if any(item["covered"] for item in required_results) else "none"
+        intent_coverage = (
+            "partial" if any(item["covered"] for item in required_results) else "none"
+        )
     contract_verified = bool(
         required_results
         and intent_coverage == "complete"
@@ -1773,7 +2115,9 @@ def _healthy_feature_value(value: str) -> bool:
     normalized = value.replace("_", "").replace(" ", "").lower()
     if normalized in {"0", "ok", "healthy", "noerror"}:
         return True
-    return "healthy" in normalized and not any(part in normalized for part in ("unhealthy", "warning", "error"))
+    return "healthy" in normalized and not any(
+        part in normalized for part in ("unhealthy", "warning", "error")
+    )
 
 
 def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool, str]:
@@ -1785,7 +2129,12 @@ def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool,
         elif operator == "ne":
             passed = actual != expected
         elif operator == "approx":
-            passed = math.isclose(float(actual), float(expected), abs_tol=float(assertion["tolerance"]), rel_tol=0.0)
+            passed = math.isclose(
+                float(actual),
+                float(expected),
+                abs_tol=float(assertion["tolerance"]),
+                rel_tol=0.0,
+            )
         elif operator == "gte":
             passed = actual >= expected
         elif operator == "lte":
@@ -1802,7 +2151,10 @@ def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool,
             passed = False
     except (TypeError, ValueError, KeyError):
         passed = False
-    return passed, "ok" if passed else f"expected {operator} {expected!r}, got {actual!r}"
+    return (
+        passed,
+        "ok" if passed else f"expected {operator} {expected!r}, got {actual!r}",
+    )
 
 
 def _query_value(result: dict[str, Any], field_name: str) -> Any:
@@ -1834,7 +2186,9 @@ def _guard_script(
     expected_runtime_id = json.dumps(document.get("runtime_id") or "")
     binding_payload = bindings or {"targets": {}, "target_components": {}}
     expected_targets = json.dumps(binding_payload.get("targets") or {}, sort_keys=True)
-    expected_components = json.dumps(binding_payload.get("target_components") or {}, sort_keys=True)
+    expected_components = json.dumps(
+        binding_payload.get("target_components") or {}, sort_keys=True
+    )
     root_component_binding = json.dumps(_ROOT_COMPONENT_BINDING)
     parsed = ast.parse(script)
     entrypoints = [
@@ -1930,7 +2284,9 @@ def _snapshot_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
 
 def _snapshot_fingerprint(snapshot: dict[str, Any]) -> str:
     comparable = {key: snapshot.get(key) for key in ("document", "summary", "results")}
-    return hashlib.sha256(json.dumps(comparable, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(comparable, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _operation_id(prefix: str) -> str:
@@ -1952,13 +2308,19 @@ def _result_data(result: Any) -> dict[str, Any]:
 
 
 def _result_content(result: Any) -> list[dict[str, Any]]:
-    value = result.get("content", []) if isinstance(result, dict) else getattr(result, "content", [])
+    value = (
+        result.get("content", [])
+        if isinstance(result, dict)
+        else getattr(result, "content", [])
+    )
     content = []
     for block in value or []:
         if isinstance(block, dict):
             content.append(block)
         elif hasattr(block, "model_dump"):
-            content.append(block.model_dump(by_alias=True, mode="json", exclude_none=True))
+            content.append(
+                block.model_dump(by_alias=True, mode="json", exclude_none=True)
+            )
     return content
 
 
@@ -1972,12 +2334,18 @@ def _result_meta(result: Any) -> dict[str, Any]:
 
 def _result_error(result: Any) -> str:
     if isinstance(result, dict):
-        return str(result.get("error_message") or result.get("error") or "native call failed")
+        return str(
+            result.get("error_message") or result.get("error") or "native call failed"
+        )
     return str(getattr(result, "error_message", None) or "native call failed")
 
 
 def _result_error_code(result: Any) -> str | None:
-    value = result.get("error_code") if isinstance(result, dict) else getattr(result, "error_code", None)
+    value = (
+        result.get("error_code")
+        if isinstance(result, dict)
+        else getattr(result, "error_code", None)
+    )
     return str(value) if value is not None else None
 
 
@@ -2020,7 +2388,9 @@ def _extract_image(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str,
             candidates.append(value)
     for candidate in candidates:
         encoded = candidate.get("base64Data") or candidate.get("data")
-        mime_type = candidate.get("mimeType") or candidate.get("mime_type") or "image/png"
+        mime_type = (
+            candidate.get("mimeType") or candidate.get("mime_type") or "image/png"
+        )
         if isinstance(encoded, str) and mime_type.startswith("image/"):
             try:
                 base64.b64decode(encoded, validate=True)
@@ -2036,7 +2406,10 @@ def _extract_image(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str,
 
 
 def _valid_png_block(block: dict[str, Any]) -> bool:
-    if str(block.get("mimeType") or block.get("mime_type") or "").lower() != "image/png":
+    if (
+        str(block.get("mimeType") or block.get("mime_type") or "").lower()
+        != "image/png"
+    ):
         return False
     encoded = block.get("data")
     if not isinstance(encoded, str):

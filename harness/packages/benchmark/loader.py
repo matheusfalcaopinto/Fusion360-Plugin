@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from benchmark.filesystem import path_exists, path_is_dir, read_text
 from benchmark.models import BenchmarkCase, BenchmarkSuite
 from benchmark.registry import validate_case_registry
 
@@ -21,14 +22,14 @@ def load_benchmark_suite(path: Path | str) -> BenchmarkSuite:
     """Load exactly one strict v2 JSON suite; never substitute fallback cases."""
 
     suite_path = Path(path)
-    if suite_path.is_dir():
+    if path_is_dir(suite_path):
         suite_path = suite_path / "benchmark_suite_v2.json"
-    if not suite_path.exists():
+    if not path_exists(suite_path):
         raise FileNotFoundError(f"benchmark suite does not exist: {suite_path}")
     if suite_path.suffix.lower() != ".json":
         raise BenchmarkSuiteError("benchmark_suite.v2 must be a JSON file")
     try:
-        payload = json.loads(suite_path.read_text(encoding="utf-8"))
+        payload = json.loads(read_text(suite_path))
     except json.JSONDecodeError as exc:
         raise BenchmarkSuiteError(f"invalid benchmark JSON: {exc}") from exc
     if not isinstance(payload, dict):
@@ -55,7 +56,9 @@ def suite_fingerprint(suite: BenchmarkSuite) -> str:
     """Return the canonical, formatting-independent suite hash."""
 
     payload = suite.model_dump(mode="json")
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    serialized = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -66,8 +69,14 @@ def _reject_embedded_code(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = str(key).lower().replace("-", "_")
-            if normalized in forbidden or normalized.endswith("_script") or normalized.endswith("_code"):
-                raise BenchmarkSuiteError(f"embedded executable field is forbidden at {path}.{key}")
+            if (
+                normalized in forbidden
+                or normalized.endswith("_script")
+                or normalized.endswith("_code")
+            ):
+                raise BenchmarkSuiteError(
+                    f"embedded executable field is forbidden at {path}.{key}"
+                )
             _reject_embedded_code(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):

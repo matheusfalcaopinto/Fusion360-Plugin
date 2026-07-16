@@ -16,7 +16,9 @@ def test_autodesk_backend_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(create_fusion_client(), RealMcpClient)
 
 
-def test_faust_backend_uses_persistent_stdio_command(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_faust_backend_uses_persistent_stdio_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("FUSION_AGENT_BACKEND", "faust_stdio")
     monkeypatch.setenv("FUSION_FAUST_COMMAND", "python -m fusion360_mcp_server")
     client = create_fusion_client()

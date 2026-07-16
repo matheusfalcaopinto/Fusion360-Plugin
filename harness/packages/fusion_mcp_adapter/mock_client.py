@@ -46,7 +46,9 @@ MOCK_NATIVE_TOOLS = {
 class MockMcpClient:
     """In-memory mock that simulates enough Fusion state for tests and benchmarks."""
 
-    def __init__(self, units: str = "mm", fail_next: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, units: str = "mm", fail_next: dict[str, str] | None = None
+    ) -> None:
         self.state = FusionState(
             units=units,
             components={"root": ComponentState(name="root")},
@@ -59,7 +61,10 @@ class MockMcpClient:
 
         return ToolManifest(
             source="mock",
-            tools=[ToolDefinition(name=name, description=f"Mock tool {name}") for name in sorted(MOCK_NATIVE_TOOLS)],
+            tools=[
+                ToolDefinition(name=name, description=f"Mock tool {name}")
+                for name in sorted(MOCK_NATIVE_TOOLS)
+            ],
         )
 
     async def call_tool(
@@ -85,20 +90,47 @@ class MockMcpClient:
 
     def _tool_inspect_design(self, _: dict[str, Any]) -> dict[str, Any]:
         self._refresh_bounding_boxes()
-        return {"state": self.state.model_dump()}
+        return {
+            "state": self.state.model_dump(),
+            "complete": True,
+            "counts_exact": True,
+            "truncated": False,
+            "stop_reason": "complete",
+            "producer": "fusion_agent_mock",
+            "document_identity": "mock:active_document",
+            "provenance": {"backend": "deterministic_mock"},
+        }
 
     def _tool_create_parameter(self, args: dict[str, Any]) -> dict[str, Any]:
         name = args["name"]
         if name in self.state.parameters:
             self.state.parameters[name] = args["expression"]
-            return {"parameter": {"name": name, "expression": args["expression"], "updated": True}}
+            return {
+                "parameter": {
+                    "name": name,
+                    "expression": args["expression"],
+                    "updated": True,
+                }
+            }
         self.state.parameters[name] = args["expression"]
-        return {"parameter": {"name": name, "expression": args["expression"], "updated": False}}
+        return {
+            "parameter": {
+                "name": name,
+                "expression": args["expression"],
+                "updated": False,
+            }
+        }
 
     def _tool_update_parameter(self, args: dict[str, Any]) -> dict[str, Any]:
         self.state.parameters[args["name"]] = args["expression"]
         self._refresh_bounding_boxes()
-        return {"parameter": {"name": args["name"], "expression": args["expression"], "updated": True}}
+        return {
+            "parameter": {
+                "name": args["name"],
+                "expression": args["expression"],
+                "updated": True,
+            }
+        }
 
     def _tool_create_component(self, args: dict[str, Any]) -> dict[str, Any]:
         name = args["name"]
@@ -160,7 +192,9 @@ class MockMcpClient:
             bbox_expr=bbox_expr,
             bounding_box_mm=bbox,
         )
-        self.state.components.setdefault(component, ComponentState(name=component)).bodies.append(body_name)
+        self.state.components.setdefault(
+            component, ComponentState(name=component)
+        ).bodies.append(body_name)
         self.state.components[component].features.append(args["name"])
         self.state.features[args["name"]] = {
             "name": args["name"],
@@ -169,7 +203,10 @@ class MockMcpClient:
             "health": "ok",
             "body": body_name,
         }
-        return {"body": self.state.bodies[body_name].model_dump(), "feature": self.state.features[args["name"]]}
+        return {
+            "body": self.state.bodies[body_name].model_dump(),
+            "feature": self.state.features[args["name"]],
+        }
 
     def _tool_cut_profile(self, args: dict[str, Any]) -> dict[str, Any]:
         target = args["target_body"]
@@ -185,8 +222,13 @@ class MockMcpClient:
             "target_body": target,
             "count": count,
         }
-        self.state.components[self.state.bodies[target].component].features.append(args["name"])
-        return {"body": self.state.bodies[target].model_dump(), "feature": self.state.features[args["name"]]}
+        self.state.components[self.state.bodies[target].component].features.append(
+            args["name"]
+        )
+        return {
+            "body": self.state.bodies[target].model_dump(),
+            "feature": self.state.features[args["name"]],
+        }
 
     def _tool_apply_fillet(self, args: dict[str, Any]) -> dict[str, Any]:
         self.state.features[args["name"]] = {
@@ -226,13 +268,24 @@ class MockMcpClient:
                 expression_to_mm(args["mount_hole_spacing"], self.state.parameters),
                 expression_to_mm(args["mount_hole_spacing"], self.state.parameters),
             ],
-            "mount_hole_diameter_mm": expression_to_mm(args["mount_hole_diameter"], self.state.parameters),
-            "pilot_diameter_mm": expression_to_mm(args["pilot_diameter"], self.state.parameters),
-            "shaft_diameter_mm": expression_to_mm(args["shaft_diameter"], self.state.parameters),
+            "mount_hole_diameter_mm": expression_to_mm(
+                args["mount_hole_diameter"], self.state.parameters
+            ),
+            "pilot_diameter_mm": expression_to_mm(
+                args["pilot_diameter"], self.state.parameters
+            ),
+            "shaft_diameter_mm": expression_to_mm(
+                args["shaft_diameter"], self.state.parameters
+            ),
         }
-        return {"body": self.state.bodies[body_name].model_dump(), "feature": self.state.features[args["name"]]}
+        return {
+            "body": self.state.bodies[body_name].model_dump(),
+            "feature": self.state.features[args["name"]],
+        }
 
-    def _tool_create_nema17_polish_details(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _tool_create_nema17_polish_details(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
         target = args["target_body"]
         if target not in self.state.bodies:
             raise ValueError(f"target body not found: {target}")
@@ -256,20 +309,31 @@ class MockMcpClient:
             "target_body": target,
         }
         self.state.components[component].features.append(args["name"])
-        lamination_bodies = [name for name in body_names if name.startswith("nema17_lamination_ring_")]
+        lamination_bodies = [
+            name for name in body_names if name.startswith("nema17_lamination_ring_")
+        ]
         wire_bodies = [name for name in body_names if name.startswith("nema17_wire_")]
-        screw_shadow_bodies = [name for name in body_names if name.startswith("nema17_mount_hole_shadow_")]
+        screw_shadow_bodies = [
+            name for name in body_names if name.startswith("nema17_mount_hole_shadow_")
+        ]
         self.state.polish_metrics = {
             "body_names": sorted(body_names),
             "lamination_body_count": len(lamination_bodies),
             "wire_count": len(wire_bodies),
             "screw_shadow_count": len(screw_shadow_bodies),
             "connector_present": "nema17_rear_connector_body" in body_names,
-            "side_panel_count": len([name for name in body_names if name.startswith("nema17_side_panel_")]),
+            "side_panel_count": len(
+                [name for name in body_names if name.startswith("nema17_side_panel_")]
+            ),
         }
-        return {"feature": self.state.features[args["name"]], "polish_metrics": self.state.polish_metrics}
+        return {
+            "feature": self.state.features[args["name"]],
+            "polish_metrics": self.state.polish_metrics,
+        }
 
-    def _tool_create_nema17_external_assembly(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _tool_create_nema17_external_assembly(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
         assembly = args["assembly_component"]
         required_components = list(args["component_names"])
         required_bodies = list(args["body_names"])
@@ -280,15 +344,25 @@ class MockMcpClient:
 
         face_width = expression_to_mm(args["face_width"], self.state.parameters)
         body_length = expression_to_mm(args["body_length"], self.state.parameters)
-        front_plate_thickness = expression_to_mm(args["front_plate_thickness"], self.state.parameters)
-        rear_plate_thickness = expression_to_mm(args["rear_plate_thickness"], self.state.parameters)
+        front_plate_thickness = expression_to_mm(
+            args["front_plate_thickness"], self.state.parameters
+        )
+        rear_plate_thickness = expression_to_mm(
+            args["rear_plate_thickness"], self.state.parameters
+        )
         pilot_diameter = expression_to_mm(args["pilot_diameter"], self.state.parameters)
         pilot_length = expression_to_mm(args["pilot_length"], self.state.parameters)
         shaft_length = expression_to_mm(args["shaft_length"], self.state.parameters)
         shaft_diameter = expression_to_mm(args["shaft_diameter"], self.state.parameters)
-        connector_width = expression_to_mm(args["connector_width"], self.state.parameters)
-        connector_height = expression_to_mm(args["connector_height"], self.state.parameters)
-        connector_depth = expression_to_mm(args["connector_depth"], self.state.parameters)
+        connector_width = expression_to_mm(
+            args["connector_width"], self.state.parameters
+        )
+        connector_height = expression_to_mm(
+            args["connector_height"], self.state.parameters
+        )
+        connector_depth = expression_to_mm(
+            args["connector_depth"], self.state.parameters
+        )
         wire_length = expression_to_mm(args["wire_length"], self.state.parameters)
         wire_diameter = expression_to_mm(args["wire_diameter"], self.state.parameters)
         stack_length = body_length - front_plate_thickness - rear_plate_thickness
@@ -310,7 +384,9 @@ class MockMcpClient:
             "nema17_wire_black": "nema17_wiring_component",
         }
         for index in range(1, int(args.get("lamination_count", 20)) + 1):
-            body_component_map[f"nema17_stator_lamination_{index:02d}_body"] = "nema17_stator_stack_component"
+            body_component_map[f"nema17_stator_lamination_{index:02d}_body"] = (
+                "nema17_stator_stack_component"
+            )
 
         for body_name in required_bodies:
             component = body_component_map.get(body_name, assembly)
@@ -331,7 +407,9 @@ class MockMcpClient:
                 bbox = [wire_diameter, wire_diameter, wire_length]
             elif body_name.startswith("nema17_connector_pin_"):
                 bbox = [wire_diameter * 0.45, wire_diameter * 0.45, 0.35]
-            self.state.bodies[body_name] = BodyState(name=body_name, component=component, bounding_box_mm=bbox)
+            self.state.bodies[body_name] = BodyState(
+                name=body_name, component=component, bounding_box_mm=bbox
+            )
             if body_name not in self.state.components[component].bodies:
                 self.state.components[component].bodies.append(body_name)
 
@@ -348,23 +426,34 @@ class MockMcpClient:
                 expression_to_mm(args["mount_hole_spacing"], self.state.parameters),
                 expression_to_mm(args["mount_hole_spacing"], self.state.parameters),
             ],
-            "mount_hole_diameter_mm": expression_to_mm(args["mount_hole_diameter"], self.state.parameters),
-            "pilot_diameter_mm": expression_to_mm(args["pilot_diameter"], self.state.parameters),
+            "mount_hole_diameter_mm": expression_to_mm(
+                args["mount_hole_diameter"], self.state.parameters
+            ),
+            "pilot_diameter_mm": expression_to_mm(
+                args["pilot_diameter"], self.state.parameters
+            ),
             "shaft_diameter_mm": shaft_diameter,
         }
         self.state.assembly_metrics = {
             "assembly_component": assembly,
             "component_names": sorted(required_components),
             "body_names": sorted(required_bodies),
-            "body_components": {name: self.state.bodies[name].component for name in required_bodies},
+            "body_components": {
+                name: self.state.bodies[name].component for name in required_bodies
+            },
             "stator_lamination_count": int(args.get("lamination_count", 20)),
             "wire_count": 4,
             "connector_present": "nema17_rear_connector_body" in required_bodies,
             "legacy_visible_nema17_body_count": 0,
         }
-        return {"feature": self.state.features[args["name"]], "assembly_metrics": self.state.assembly_metrics}
+        return {
+            "feature": self.state.features[args["name"]],
+            "assembly_metrics": self.state.assembly_metrics,
+        }
 
-    def _tool_create_profile2020_aluminum_extrusion(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _tool_create_profile2020_aluminum_extrusion(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
         component = args["component"]
         body_name = args["body_name"]
         self.state.components.setdefault(component, ComponentState(name=component))
@@ -374,7 +463,9 @@ class MockMcpClient:
         length = expression_to_mm(args["length"], self.state.parameters)
         slot_width = expression_to_mm(args["slot_width"], self.state.parameters)
         slot_depth = expression_to_mm(args["slot_depth"], self.state.parameters)
-        center_bore = expression_to_mm(args["center_bore_diameter"], self.state.parameters)
+        center_bore = expression_to_mm(
+            args["center_bore_diameter"], self.state.parameters
+        )
 
         self.state.bodies[body_name] = BodyState(
             name=body_name,
@@ -405,9 +496,14 @@ class MockMcpClient:
             "web_relief_count": int(args.get("web_relief_count", 4)),
             "material": "Aluminum 6063-T6 clear anodized",
         }
-        return {"feature": self.state.features[args["name"]], "profile2020_metrics": self.state.profile2020_metrics}
+        return {
+            "feature": self.state.features[args["name"]],
+            "profile2020_metrics": self.state.profile2020_metrics,
+        }
 
-    def _tool_create_mgn12_linear_rail_assembly(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _tool_create_mgn12_linear_rail_assembly(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
         assembly = args["assembly_component"]
         required_components = list(args["component_names"])
         required_bodies = list(args["body_names"])
@@ -420,15 +516,29 @@ class MockMcpClient:
         rail_width = expression_to_mm(args["rail_width"], self.state.parameters)
         rail_height = expression_to_mm(args["rail_height"], self.state.parameters)
         rail_pitch = expression_to_mm(args["rail_hole_pitch"], self.state.parameters)
-        rail_counterbore = expression_to_mm(args["rail_counterbore_diameter"], self.state.parameters)
+        rail_counterbore = expression_to_mm(
+            args["rail_counterbore_diameter"], self.state.parameters
+        )
         rail_hole = expression_to_mm(args["rail_hole_diameter"], self.state.parameters)
-        carriage_length = expression_to_mm(args["carriage_length"], self.state.parameters)
+        carriage_length = expression_to_mm(
+            args["carriage_length"], self.state.parameters
+        )
         carriage_width = expression_to_mm(args["carriage_width"], self.state.parameters)
-        carriage_total_height = expression_to_mm(args["carriage_total_height"], self.state.parameters)
-        carriage_top_height = expression_to_mm(args["carriage_top_height"], self.state.parameters)
-        mount_x = expression_to_mm(args["carriage_mount_x_spacing"], self.state.parameters)
-        mount_y = expression_to_mm(args["carriage_mount_y_spacing"], self.state.parameters)
-        mount_thread = expression_to_mm(args["carriage_mount_thread_diameter"], self.state.parameters)
+        carriage_total_height = expression_to_mm(
+            args["carriage_total_height"], self.state.parameters
+        )
+        carriage_top_height = expression_to_mm(
+            args["carriage_top_height"], self.state.parameters
+        )
+        mount_x = expression_to_mm(
+            args["carriage_mount_x_spacing"], self.state.parameters
+        )
+        mount_y = expression_to_mm(
+            args["carriage_mount_y_spacing"], self.state.parameters
+        )
+        mount_thread = expression_to_mm(
+            args["carriage_mount_thread_diameter"], self.state.parameters
+        )
         rail_hole_count = int(rail_length // rail_pitch)
 
         body_component_map = {
@@ -445,11 +555,23 @@ class MockMcpClient:
         }
         body_bbox_map = {
             "mgn12_rail_body": [rail_length, rail_width, rail_height],
-            "mgn12_carriage_top_body": [carriage_length, carriage_width, carriage_top_height],
+            "mgn12_carriage_top_body": [
+                carriage_length,
+                carriage_width,
+                carriage_top_height,
+            ],
             "mgn12_carriage_left_skirt_body": [carriage_length, 3.0, 8.0],
             "mgn12_carriage_right_skirt_body": [carriage_length, 3.0, 8.0],
-            "mgn12_carriage_front_end_cap_body": [3.0, carriage_width, carriage_total_height - 3.0],
-            "mgn12_carriage_rear_end_cap_body": [3.0, carriage_width, carriage_total_height - 3.0],
+            "mgn12_carriage_front_end_cap_body": [
+                3.0,
+                carriage_width,
+                carriage_total_height - 3.0,
+            ],
+            "mgn12_carriage_rear_end_cap_body": [
+                3.0,
+                carriage_width,
+                carriage_total_height - 3.0,
+            ],
             "mgn12_ball_return_left_body": [38.0, 1.2, 1.2],
             "mgn12_ball_return_right_body": [38.0, 1.2, 1.2],
             "mgn12_front_rail_stop_body": [3.0, rail_width, rail_height],
@@ -458,7 +580,9 @@ class MockMcpClient:
         for body_name in required_bodies:
             component = body_component_map.get(body_name, assembly)
             bbox = body_bbox_map.get(body_name, [1.0, 1.0, 1.0])
-            self.state.bodies[body_name] = BodyState(name=body_name, component=component, bounding_box_mm=bbox)
+            self.state.bodies[body_name] = BodyState(
+                name=body_name, component=component, bounding_box_mm=bbox
+            )
             if body_name not in self.state.components[component].bodies:
                 self.state.components[component].bodies.append(body_name)
 
@@ -473,7 +597,9 @@ class MockMcpClient:
             "assembly_component": assembly,
             "component_names": sorted(required_components),
             "body_names": sorted(required_bodies),
-            "body_components": {name: self.state.bodies[name].component for name in required_bodies},
+            "body_components": {
+                name: self.state.bodies[name].component for name in required_bodies
+            },
             "rail_length_mm": rail_length,
             "rail_width_mm": rail_width,
             "rail_height_mm": rail_height,
@@ -492,7 +618,10 @@ class MockMcpClient:
             "rail_material": "steel",
             "carriage_material": "steel",
         }
-        return {"feature": self.state.features[args["name"]], "mgn12_metrics": self.state.mgn12_metrics}
+        return {
+            "feature": self.state.features[args["name"]],
+            "mgn12_metrics": self.state.mgn12_metrics,
+        }
 
     def _tool_create_desktop_cnc_assembly(self, args: dict[str, Any]) -> dict[str, Any]:
         assembly = args["assembly_component"]
@@ -512,17 +641,37 @@ class MockMcpClient:
         rail_width = expression_to_mm(args["rail_width"], self.state.parameters)
         rail_height = expression_to_mm(args["rail_height"], self.state.parameters)
         motor_face = expression_to_mm(args["motor_face_width"], self.state.parameters)
-        motor_length = expression_to_mm(args["motor_body_length"], self.state.parameters)
-        shaft_diameter = expression_to_mm(args["motor_shaft_diameter"], self.state.parameters)
-        shaft_length = expression_to_mm(args["motor_shaft_length"], self.state.parameters)
-        leadscrew_diameter = expression_to_mm(args["leadscrew_diameter"], self.state.parameters)
-        coupler_diameter = expression_to_mm(args["coupler_diameter"], self.state.parameters)
+        motor_length = expression_to_mm(
+            args["motor_body_length"], self.state.parameters
+        )
+        shaft_diameter = expression_to_mm(
+            args["motor_shaft_diameter"], self.state.parameters
+        )
+        shaft_length = expression_to_mm(
+            args["motor_shaft_length"], self.state.parameters
+        )
+        leadscrew_diameter = expression_to_mm(
+            args["leadscrew_diameter"], self.state.parameters
+        )
+        coupler_diameter = expression_to_mm(
+            args["coupler_diameter"], self.state.parameters
+        )
         coupler_length = expression_to_mm(args["coupler_length"], self.state.parameters)
-        plate_thickness = expression_to_mm(args["plate_thickness"], self.state.parameters)
-        spoilboard_length = expression_to_mm(args["spoilboard_length"], self.state.parameters)
-        spoilboard_width = expression_to_mm(args["spoilboard_width"], self.state.parameters)
-        spoilboard_thickness = expression_to_mm(args["spoilboard_thickness"], self.state.parameters)
-        spindle_diameter = expression_to_mm(args["spindle_diameter"], self.state.parameters)
+        plate_thickness = expression_to_mm(
+            args["plate_thickness"], self.state.parameters
+        )
+        spoilboard_length = expression_to_mm(
+            args["spoilboard_length"], self.state.parameters
+        )
+        spoilboard_width = expression_to_mm(
+            args["spoilboard_width"], self.state.parameters
+        )
+        spoilboard_thickness = expression_to_mm(
+            args["spoilboard_thickness"], self.state.parameters
+        )
+        spindle_diameter = expression_to_mm(
+            args["spindle_diameter"], self.state.parameters
+        )
         spindle_length = expression_to_mm(args["spindle_length"], self.state.parameters)
 
         body_component_map = {
@@ -578,7 +727,11 @@ class MockMcpClient:
             "cnc_left_upright_2020_profile_body": [profile, profile, gantry_height],
             "cnc_right_upright_2020_profile_body": [profile, profile, gantry_height],
             "cnc_gantry_2020_profile_body": [frame_width, profile, profile],
-            "cnc_spoilboard_body": [spoilboard_length, spoilboard_width, spoilboard_thickness],
+            "cnc_spoilboard_body": [
+                spoilboard_length,
+                spoilboard_width,
+                spoilboard_thickness,
+            ],
             "cnc_y_left_mgn12_rail_body": [rail_width, rail_length, rail_height],
             "cnc_y_right_mgn12_rail_body": [rail_width, rail_length, rail_height],
             "cnc_x_mgn12_rail_body": [rail_length, rail_width, rail_height],
@@ -597,9 +750,21 @@ class MockMcpClient:
             "cnc_x_motor_shaft_body": [shaft_diameter, shaft_diameter, shaft_length],
             "cnc_y_motor_shaft_body": [shaft_diameter, shaft_diameter, shaft_length],
             "cnc_z_motor_shaft_body": [shaft_diameter, shaft_diameter, shaft_length],
-            "cnc_x_t8_leadscrew_body": [rail_length, leadscrew_diameter, leadscrew_diameter],
-            "cnc_y_t8_leadscrew_body": [leadscrew_diameter, rail_length, leadscrew_diameter],
-            "cnc_z_t8_leadscrew_body": [leadscrew_diameter, leadscrew_diameter, z_rail_length],
+            "cnc_x_t8_leadscrew_body": [
+                rail_length,
+                leadscrew_diameter,
+                leadscrew_diameter,
+            ],
+            "cnc_y_t8_leadscrew_body": [
+                leadscrew_diameter,
+                rail_length,
+                leadscrew_diameter,
+            ],
+            "cnc_z_t8_leadscrew_body": [
+                leadscrew_diameter,
+                leadscrew_diameter,
+                z_rail_length,
+            ],
             "cnc_x_coupler_body": [coupler_length, coupler_diameter, coupler_diameter],
             "cnc_y_coupler_body": [coupler_diameter, coupler_length, coupler_diameter],
             "cnc_z_coupler_body": [coupler_diameter, coupler_diameter, coupler_length],
@@ -616,7 +781,9 @@ class MockMcpClient:
         for body_name in required_bodies:
             component = body_component_map.get(body_name, assembly)
             bbox = body_bbox_map.get(body_name, [1.0, 1.0, 1.0])
-            self.state.bodies[body_name] = BodyState(name=body_name, component=component, bounding_box_mm=bbox)
+            self.state.bodies[body_name] = BodyState(
+                name=body_name, component=component, bounding_box_mm=bbox
+            )
             if body_name not in self.state.components[component].bodies:
                 self.state.components[component].bodies.append(body_name)
 
@@ -631,7 +798,9 @@ class MockMcpClient:
             "assembly_component": assembly,
             "component_names": sorted(required_components),
             "body_names": sorted(required_bodies),
-            "body_components": {name: self.state.bodies[name].component for name in required_bodies},
+            "body_components": {
+                name: self.state.bodies[name].component for name in required_bodies
+            },
             "profile_count": 8,
             "rail_count": 4,
             "motor_count": 3,
@@ -648,9 +817,14 @@ class MockMcpClient:
             "rail_material": "steel",
             "plate_material": "aluminum",
         }
-        return {"feature": self.state.features[args["name"]], "cnc_metrics": self.state.cnc_metrics}
+        return {
+            "feature": self.state.features[args["name"]],
+            "cnc_metrics": self.state.cnc_metrics,
+        }
 
-    def _tool_create_spacer_plate_assembly(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _tool_create_spacer_plate_assembly(
+        self, args: dict[str, Any]
+    ) -> dict[str, Any]:
         assembly = args["assembly_component"]
         required_components = list(args["component_names"])
         required_bodies = list(args["body_names"])
@@ -662,10 +836,16 @@ class MockMcpClient:
 
         plate_length = expression_to_mm(args["plate_length"], self.state.parameters)
         plate_width = expression_to_mm(args["plate_width"], self.state.parameters)
-        plate_thickness = expression_to_mm(args["plate_thickness"], self.state.parameters)
+        plate_thickness = expression_to_mm(
+            args["plate_thickness"], self.state.parameters
+        )
         plate_gap = expression_to_mm(args["plate_gap"], self.state.parameters)
-        standoff_diameter = expression_to_mm(args["standoff_diameter"], self.state.parameters)
-        standoff_height = expression_to_mm(args["standoff_height"], self.state.parameters)
+        standoff_diameter = expression_to_mm(
+            args["standoff_diameter"], self.state.parameters
+        )
+        standoff_height = expression_to_mm(
+            args["standoff_height"], self.state.parameters
+        )
 
         body_component_map = {
             "spacer_top_plate_body": "spacer_top_plate_component",
@@ -675,7 +855,11 @@ class MockMcpClient:
         body_bbox_map = {
             "spacer_top_plate_body": [plate_length, plate_width, plate_thickness],
             "spacer_bottom_plate_body": [plate_length, plate_width, plate_thickness],
-            "spacer_standoff_body": [standoff_diameter, standoff_diameter, standoff_height],
+            "spacer_standoff_body": [
+                standoff_diameter,
+                standoff_diameter,
+                standoff_height,
+            ],
         }
         for body_name in required_bodies:
             component = body_component_map.get(body_name, assembly)
@@ -702,9 +886,15 @@ class MockMcpClient:
         self.state.components[assembly].features.append(args["name"])
         self.state.physical_properties.update(
             {
-                "spacer_top_plate_component": _physical_payload(plate_length * plate_width * plate_thickness),
-                "spacer_bottom_plate_component": _physical_payload(plate_length * plate_width * plate_thickness),
-                "spacer_standoff_component": _physical_payload(3.14159 * (standoff_diameter / 2.0) ** 2 * plate_gap),
+                "spacer_top_plate_component": _physical_payload(
+                    plate_length * plate_width * plate_thickness
+                ),
+                "spacer_bottom_plate_component": _physical_payload(
+                    plate_length * plate_width * plate_thickness
+                ),
+                "spacer_standoff_component": _physical_payload(
+                    3.14159 * (standoff_diameter / 2.0) ** 2 * plate_gap
+                ),
             }
         )
         self.state.interference = {"count": 0, "pairs": []}
@@ -725,7 +915,12 @@ class MockMcpClient:
             self.state.components.setdefault(component, ComponentState(name=component))
             self.state.occurrences.setdefault(
                 f"{component}_occurrence",
-                {"name": f"{component}_occurrence", "component": component, "parent": assembly, "index": 1},
+                {
+                    "name": f"{component}_occurrence",
+                    "component": component,
+                    "parent": assembly,
+                    "index": 1,
+                },
             )
 
         leaf_length = expression_to_mm(args["leaf_length"], self.state.parameters)
@@ -733,7 +928,9 @@ class MockMcpClient:
         leaf_thickness = expression_to_mm(args["leaf_thickness"], self.state.parameters)
         pin_diameter = expression_to_mm(args["pin_diameter"], self.state.parameters)
         pin_length = expression_to_mm(args["pin_length"], self.state.parameters)
-        knuckle_diameter = expression_to_mm(args["knuckle_outer_diameter"], self.state.parameters)
+        knuckle_diameter = expression_to_mm(
+            args["knuckle_outer_diameter"], self.state.parameters
+        )
         knuckle_length = expression_to_mm(args["knuckle_length"], self.state.parameters)
 
         body_component_map = {
@@ -748,9 +945,21 @@ class MockMcpClient:
             "hinge_left_leaf_body": [leaf_length, leaf_width, leaf_thickness],
             "hinge_right_leaf_body": [leaf_length, leaf_width, leaf_thickness],
             "hinge_pin_body": [pin_length, pin_diameter, pin_diameter],
-            "hinge_left_knuckle_01_body": [knuckle_length, knuckle_diameter, knuckle_diameter],
-            "hinge_left_knuckle_02_body": [knuckle_length, knuckle_diameter, knuckle_diameter],
-            "hinge_right_knuckle_body": [knuckle_length, knuckle_diameter, knuckle_diameter],
+            "hinge_left_knuckle_01_body": [
+                knuckle_length,
+                knuckle_diameter,
+                knuckle_diameter,
+            ],
+            "hinge_left_knuckle_02_body": [
+                knuckle_length,
+                knuckle_diameter,
+                knuckle_diameter,
+            ],
+            "hinge_right_knuckle_body": [
+                knuckle_length,
+                knuckle_diameter,
+                knuckle_diameter,
+            ],
         }
         for body_name in required_bodies:
             component = body_component_map.get(body_name, assembly)
@@ -770,9 +979,15 @@ class MockMcpClient:
         self.state.components[assembly].features.append(args["name"])
         self.state.physical_properties.update(
             {
-                "hinge_left_leaf_component": _physical_payload(leaf_length * leaf_width * leaf_thickness),
-                "hinge_right_leaf_component": _physical_payload(leaf_length * leaf_width * leaf_thickness),
-                "hinge_pin_component": _physical_payload(3.14159 * (pin_diameter / 2.0) ** 2 * pin_length),
+                "hinge_left_leaf_component": _physical_payload(
+                    leaf_length * leaf_width * leaf_thickness
+                ),
+                "hinge_right_leaf_component": _physical_payload(
+                    leaf_length * leaf_width * leaf_thickness
+                ),
+                "hinge_pin_component": _physical_payload(
+                    3.14159 * (pin_diameter / 2.0) ** 2 * pin_length
+                ),
             }
         )
         self.state.interference = {"count": 0, "pairs": []}
@@ -787,7 +1002,9 @@ class MockMcpClient:
         updated = {}
         for item in args.get("metadata", []):
             component_name = item["component"]
-            component = self.state.components.setdefault(component_name, ComponentState(name=component_name))
+            component = self.state.components.setdefault(
+                component_name, ComponentState(name=component_name)
+            )
             metadata = dict(item)
             component.metadata = metadata
             self.state.component_metadata[component_name] = metadata
@@ -831,7 +1048,9 @@ class MockMcpClient:
         targets = list(args.get("targets") or self.state.components.keys())
         measured = {}
         for target in targets:
-            measured[target] = self.state.physical_properties.get(target) or _physical_payload(1.0)
+            measured[target] = self.state.physical_properties.get(
+                target
+            ) or _physical_payload(1.0)
             self.state.physical_properties[target] = measured[target]
         return {"physical_properties": measured}
 
@@ -844,7 +1063,9 @@ class MockMcpClient:
             return {"bounding_box_mm": [0.0, 0.0, 0.0]}
         maxes = [0.0, 0.0, 0.0]
         for body in self.state.bodies.values():
-            maxes = [max(a, b) for a, b in zip(maxes, body.bounding_box_mm, strict=True)]
+            maxes = [
+                max(a, b) for a, b in zip(maxes, body.bounding_box_mm, strict=True)
+            ]
         return {"bounding_box_mm": maxes}
 
     def _tool_validate_named_objects(self, _: dict[str, Any]) -> dict[str, Any]:
@@ -861,8 +1082,15 @@ class MockMcpClient:
     def _tool_export_file(self, args: dict[str, Any]) -> dict[str, Any]:
         path = Path(args["path"])
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"mock {args['format']} export for {args.get('target', 'design')}\n", encoding="utf-8")
-        self.state.exports[str(path)] = {"path": str(path), "format": args["format"], "bytes": path.stat().st_size}
+        path.write_text(
+            f"mock {args['format']} export for {args.get('target', 'design')}\n",
+            encoding="utf-8",
+        )
+        self.state.exports[str(path)] = {
+            "path": str(path),
+            "format": args["format"],
+            "bytes": path.stat().st_size,
+        }
         return {"export": self.state.exports[str(path)]}
 
     def _bbox_expr_for_extrude(self, args: dict[str, Any]) -> list[str]:
@@ -880,9 +1108,16 @@ class MockMcpClient:
     def _refresh_bounding_boxes(self) -> None:
         for body in self.state.bodies.values():
             if body.bbox_expr:
-                body.bounding_box_mm = [expression_to_mm(expr, self.state.parameters) for expr in body.bbox_expr]
+                body.bounding_box_mm = [
+                    expression_to_mm(expr, self.state.parameters)
+                    for expr in body.bbox_expr
+                ]
 
 
 def _physical_payload(volume_mm3: float) -> dict[str, float]:
     volume_cm3 = max(volume_mm3 / 1000.0, 0.001)
-    return {"mass_kg": volume_cm3 * 0.0027, "volume_mm3": max(volume_mm3, 0.001), "density_g_cm3": 2.7}
+    return {
+        "mass_kg": volume_cm3 * 0.0027,
+        "volume_mm3": max(volume_mm3, 0.001),
+        "density_g_cm3": 2.7,
+    }

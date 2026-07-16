@@ -7,15 +7,25 @@ import json
 import os
 import platform
 import re
-import shutil
 import sys
-import tempfile
+from collections.abc import Mapping
 from uuid import uuid4
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from benchmark.models import BenchmarkReport, BenchmarkRun
+from benchmark.filesystem import (
+    atomic_write_text,
+    list_files,
+    mkdir,
+    path_exists,
+    path_is_dir,
+    physical_artifact_name,
+    read_text,
+    replace,
+    rmtree,
+)
 from telemetry.trace import redact_sensitive
 
 
@@ -38,44 +48,69 @@ class BenchmarkArtifactStore:
         oracles: dict[str, dict[str, Any]],
     ) -> BenchmarkRun:
         run_dir = self._run_dir(report.run_id)
-        self.root.mkdir(parents=True, exist_ok=True)
-        if run_dir.exists():
+        mkdir(self.root)
+        if path_exists(run_dir):
             raise FileExistsError(run_dir)
         staging = self.root / f".{report.run_id}.{uuid4().hex}.tmp"
-        staging.mkdir(exist_ok=False)
+        if path_exists(staging):  # pragma: no cover - UUID collision guard
+            raise FileExistsError(staging)
+        mkdir(staging)
         try:
             trace_dir = staging / "traces"
             oracle_dir = staging / "oracles"
-            trace_dir.mkdir()
-            oracle_dir.mkdir()
+            mkdir(trace_dir)
+            mkdir(oracle_dir)
 
             trial_lines = "".join(
-                json.dumps(trial.model_dump(mode="json"), sort_keys=True, ensure_ascii=False) + "\n"
+                json.dumps(
+                    trial.model_dump(mode="json"), sort_keys=True, ensure_ascii=False
+                )
+                + "\n"
                 for trial in report.trials
             )
             _atomic_write(staging / "trials.jsonl", trial_lines)
             _atomic_write(
                 staging / "report.json",
-                json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True, ensure_ascii=False),
+                json.dumps(
+                    report.model_dump(mode="json"),
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
             )
             _atomic_write(staging / "summary.md", _summary_markdown(report))
             _atomic_write(
                 staging / "environment.json",
-                json.dumps(redact_sensitive(environment), indent=2, sort_keys=True, ensure_ascii=False),
+                json.dumps(
+                    redact_sensitive(environment),
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ),
             )
             for trial_id, trace in sorted(traces.items()):
                 _atomic_write(
-                    trace_dir / f"{_safe_trial_id(trial_id)}.json",
-                    json.dumps(_sanitize_trace(trace), indent=2, sort_keys=True, ensure_ascii=False),
+                    trace_dir / physical_artifact_name(_safe_trial_id(trial_id)),
+                    json.dumps(
+                        _sanitize_trace(trace),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
                 )
             for trial_id, oracle in sorted(oracles.items()):
                 _atomic_write(
-                    oracle_dir / f"{_safe_trial_id(trial_id)}.json",
-                    json.dumps(redact_sensitive(oracle), indent=2, sort_keys=True, ensure_ascii=False),
+                    oracle_dir / physical_artifact_name(_safe_trial_id(trial_id)),
+                    json.dumps(
+                        redact_sensitive(oracle),
+                        indent=2,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
                 )
-            os.replace(staging, run_dir)
+            replace(staging, run_dir)
         except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            rmtree(staging)
             raise
         report_path = run_dir / "report.json"
         summary_path = run_dir / "summary.md"
@@ -105,10 +140,14 @@ class BenchmarkArtifactStore:
         if not 1 <= limit <= 1_000:
             raise ValueError("limit must be between 1 and 1000")
         if run_id is None:
-            path = Path(legacy_path) if legacy_path else self.output_dir / "benchmark_report.json"
-            if not path.exists():
+            path = (
+                Path(legacy_path)
+                if legacy_path
+                else self.output_dir / "benchmark_report.json"
+            )
+            if not path_exists(path):
                 raise FileNotFoundError(path)
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_text(path))
             if isinstance(payload, list):
                 page = payload[offset : offset + limit]
                 return {
@@ -122,17 +161,21 @@ class BenchmarkArtifactStore:
             return {"legacy": True, "path": str(path), "report": payload}
 
         run_dir = self._run_dir(run_id)
-        if not run_dir.is_dir():
+        if not path_is_dir(run_dir):
             raise FileNotFoundError(run_dir)
         if view == "summary":
             path = run_dir / "summary.md"
-            return {"run_id": run_id, "view": view, "text": path.read_text(encoding="utf-8")}
+            return {"run_id": run_id, "view": view, "text": read_text(path)}
         if view == "environment":
             path = run_dir / "environment.json"
-            return {"run_id": run_id, "view": view, "environment": json.loads(path.read_text(encoding="utf-8"))}
+            return {
+                "run_id": run_id,
+                "view": view,
+                "environment": json.loads(read_text(path)),
+            }
         if view == "report":
             path = run_dir / "report.json"
-            report = json.loads(path.read_text(encoding="utf-8"))
+            report = json.loads(read_text(path))
             trials = report.pop("trials", [])
             return {
                 "run_id": run_id,
@@ -145,7 +188,9 @@ class BenchmarkArtifactStore:
             }
         if view == "trials":
             path = run_dir / "trials.jsonl"
-            records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+            records = [
+                json.loads(line) for line in read_text(path).splitlines() if line
+            ]
             return {
                 "run_id": run_id,
                 "view": view,
@@ -155,7 +200,7 @@ class BenchmarkArtifactStore:
                 "items": records[offset : offset + limit],
             }
         if view in {"traces", "oracles"}:
-            files = sorted((run_dir / view).glob("*.json"))
+            files = list_files(run_dir / view, suffix=".json")
             page = files[offset : offset + limit]
             return {
                 "run_id": run_id,
@@ -163,9 +208,11 @@ class BenchmarkArtifactStore:
                 "offset": offset,
                 "limit": limit,
                 "total": len(files),
-                "items": [json.loads(path.read_text(encoding="utf-8")) for path in page],
+                "items": [json.loads(read_text(path)) for path in page],
             }
-        raise ValueError("view must be report, summary, trials, environment, traces, or oracles")
+        raise ValueError(
+            "view must be report, summary, trials, environment, traces, or oracles"
+        )
 
     def _run_dir(self, run_id: str) -> Path:
         if not _RUN_ID.fullmatch(run_id):
@@ -177,19 +224,25 @@ class BenchmarkArtifactStore:
         return run_dir
 
 
-def collect_environment(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Collect non-secret provenance fields expected by release reports."""
+def collect_environment(
+    extra: dict[str, Any] | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Capture non-secret provenance once from explicit startup inputs."""
 
+    values = os.environ if environment is None else environment
     payload: dict[str, Any] = {
         "python": sys.version,
         "python_executable": sys.executable,
         "platform": platform.platform(),
         "machine": platform.machine(),
-        "plugin_version": os.getenv("FUSION_AGENT_PLUGIN_VERSION"),
-        "wheel_version": os.getenv("FUSION_AGENT_WHEEL_VERSION") or _installed_wheel_version(),
-        "fusion_version": os.getenv("FUSION_VERSION"),
-        "mcp_fingerprint": os.getenv("FUSION_MCP_MANIFEST_FINGERPRINT"),
-        "git_commit": os.getenv("GIT_COMMIT"),
+        "plugin_version": values.get("FUSION_AGENT_PLUGIN_VERSION"),
+        "wheel_version": values.get("FUSION_AGENT_WHEEL_VERSION")
+        or _installed_wheel_version(),
+        "fusion_version": values.get("FUSION_VERSION"),
+        "mcp_fingerprint": values.get("FUSION_MCP_MANIFEST_FINGERPRINT"),
+        "git_commit": values.get("GIT_COMMIT"),
     }
     if extra:
         payload.update(extra)
@@ -245,15 +298,27 @@ def _sanitize_trace(trace: dict[str, Any]) -> dict[str, Any]:
     trace = dict(trace)
     for key in list(trace):
         normalized = key.lower()
-        if any(part in normalized for part in ("prompt", "stdout", "stderr", "observation", "script", "content")):
+        if any(
+            part in normalized
+            for part in (
+                "prompt",
+                "stdout",
+                "stderr",
+                "observation",
+                "script",
+                "content",
+            )
+        ):
             value = trace.pop(key)
-            serialized = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+            serialized = json.dumps(
+                value, sort_keys=True, default=str, ensure_ascii=False
+            ).encode("utf-8")
             trace[f"{key}_redacted"] = {
                 "sha256": hashlib.sha256(serialized).hexdigest(),
                 "type": type(value).__name__,
                 "size": len(serialized),
             }
-    return redact_sensitive(trace)
+    return cast(dict[str, Any], redact_sensitive(trace))
 
 
 def _safe_trial_id(trial_id: str) -> str:
@@ -263,20 +328,7 @@ def _safe_trial_id(trial_id: str) -> str:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Keep the temporary leaf short for Windows MAX_PATH compatibility; the
-    # unique staging directory already provides run/file isolation.
-    descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".tmp")
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-    except BaseException:
-        temp.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, text)
 
 
 def _percent(value: Any) -> str:

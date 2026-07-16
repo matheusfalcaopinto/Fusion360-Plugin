@@ -29,7 +29,13 @@ from benchmark.runner import (
 from benchmark.statistics import _rollout_status
 
 
-SUITE = Path(__file__).parents[1] / "packages" / "fusion_agent_assets" / "benchmarks" / "benchmark_suite_v2.json"
+SUITE = (
+    Path(__file__).parents[1]
+    / "packages"
+    / "fusion_agent_assets"
+    / "benchmarks"
+    / "benchmark_suite_v2.json"
+)
 
 
 def test_strict_v2_loader_has_required_cases_and_no_fallback(tmp_path: Path) -> None:
@@ -93,22 +99,37 @@ def test_stability_cases_use_code_owned_independent_budget_evidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_internal_mock_is_deterministic_counterbalanced_and_writes_all_artifacts(tmp_path: Path) -> None:
+async def test_internal_mock_is_deterministic_counterbalanced_and_writes_all_artifacts(
+    tmp_path: Path,
+) -> None:
     prior_lock = os.environ.get(ROUTE_LOCK_ENV)
     prior_path = os.environ.get(EXECUTION_PATH_ENV)
     config = BenchmarkRunConfig(repetitions=2, warmups=1, seed=9)
 
     first_runner = BenchmarkRunner(output_dir=tmp_path / "first")
-    first = await first_runner.run_suite(SUITE, config=config, run_id="bench_deterministic01")
+    first = await first_runner.run_suite(
+        SUITE, config=config, run_id="bench_deterministic01"
+    )
     second_runner = BenchmarkRunner(output_dir=tmp_path / "second")
-    second = await second_runner.run_suite(SUITE, config=config, run_id="bench_deterministic02")
+    second = await second_runner.run_suite(
+        SUITE, config=config, run_id="bench_deterministic02"
+    )
 
     assert len(first.report.trials) == 14 * 2 * 3
+
     def signature(run):
         return [
-            (trial.case_id, trial.warmup, trial.repetition, trial.execution_path, trial.status, trial.metrics)
+            (
+                trial.case_id,
+                trial.warmup,
+                trial.repetition,
+                trial.execution_path,
+                trial.status,
+                trial.metrics,
+            )
             for trial in run.report.trials
         ]
+
     assert signature(first) == signature(second)
     assert first.report.summary == second.report.summary
     assert first.report.summary["measured_trial_count"] == 56
@@ -116,12 +137,20 @@ async def test_internal_mock_is_deterministic_counterbalanced_and_writes_all_art
     assert first.report.summary["paired"]["pair_count"] == 28
     assert first.report.summary["paired"]["duration_delta_ms"]["p50"] < 0
     assert first.report.summary["paired"]["call_count_delta"]["p50"] < 0
-    assert first.report.summary["paired"]["duration_delta_ms"]["bootstrap_95"]["samples"] == 2000
+    assert (
+        first.report.summary["paired"]["duration_delta_ms"]["bootstrap_95"]["samples"]
+        == 2000
+    )
     assert first.report.summary["gates"]["all_required"] is True
-    assert first.report.summary["gates"]["one_initialize_per_session_generation"] is True
+    assert (
+        first.report.summary["gates"]["one_initialize_per_session_generation"] is True
+    )
     assert sum(trial.metrics["initialize_count"] for trial in first.report.trials) == 2
     assert first.report.summary["rollout"]["native_read"]["verified_trials"] == 0
-    assert first.report.summary["rollout"]["additive_fast_execute"]["verified_mutations"] == 0
+    assert (
+        first.report.summary["rollout"]["additive_fast_execute"]["verified_mutations"]
+        == 0
+    )
     assert first.report.summary["rollout"]["scoped_update"]["verified_mutations"] == 0
     assert all(trial.metrics["expectations_met"] for trial in first.report.trials)
 
@@ -152,7 +181,9 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
     tmp_path: Path,
 ) -> None:
     suite_output = tmp_path / "outputs"
-    baseline_runner = BenchmarkRunner(output_dir=suite_output, environment_metadata={"git_commit": "abc"})
+    baseline_runner = BenchmarkRunner(
+        output_dir=suite_output, environment_metadata={"git_commit": "abc"}
+    )
     await baseline_runner.run_suite(
         SUITE,
         config=BenchmarkRunConfig(),
@@ -186,13 +217,17 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
         ),
         (
             "bench_modelmismatch1",
-            BenchmarkRunConfig(model="different", baseline_run_id="bench_comparablebase01"),
+            BenchmarkRunConfig(
+                model="different", baseline_run_id="bench_comparablebase01"
+            ),
             {"git_commit": "abc"},
             "model",
         ),
         (
             "bench_reasonmismatch1",
-            BenchmarkRunConfig(reasoning_effort="medium", baseline_run_id="bench_comparablebase01"),
+            BenchmarkRunConfig(
+                reasoning_effort="medium", baseline_run_id="bench_comparablebase01"
+            ),
             {"git_commit": "abc"},
             "reasoning_effort",
         ),
@@ -213,7 +248,9 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
             await runner.run_suite(SUITE, config=config, run_id=run_id)
         assert counting.calls == 0
         aborted = json.loads(
-            (suite_output / "benchmarks" / run_id / "report.json").read_text(encoding="utf-8")
+            (suite_output / "benchmarks" / run_id / "report.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert aborted["status"] == "aborted"
         assert aborted["trials"] == []
@@ -226,7 +263,12 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
         config=BenchmarkRunConfig(baseline_run_id="bench_comparablebase01"),
         run_id="bench_comparablecur01",
     )
-    assert comparable.report.summary["gate_details"]["safe_harness_p90_regression"]["status"] == "measured"
+    assert (
+        comparable.report.summary["gate_details"]["safe_harness_p90_regression"][
+            "status"
+        ]
+        == "measured"
+    )
 
     baseline_environment = baseline_runner.artifacts.read(
         run_id="bench_comparablebase01", view="environment"
@@ -257,7 +299,9 @@ async def test_rollout_requires_real_independent_expectation_and_dispatch_eviden
         config=BenchmarkRunConfig(),
         run_id="bench_rolloutsource01",
     )
-    native = [trial for trial in source.report.trials if trial.execution_path == "native_fast"]
+    native = [
+        trial for trial in source.report.trials if trial.execution_path == "native_fast"
+    ]
     read = next(trial for trial in native if trial.risk == "read_only")
     additive = next(trial for trial in native if trial.risk == "additive")
     scoped = next(trial for trial in native if trial.risk == "scoped_update")
@@ -274,7 +318,11 @@ async def test_rollout_requires_real_independent_expectation_and_dispatch_eviden
             for index in range(count)
         ]
 
-    trials = copies(read, 50, "read") + copies(additive, 30, "add") + copies(scoped, 20, "scope")
+    trials = (
+        copies(read, 50, "read")
+        + copies(additive, 30, "add")
+        + copies(scoped, 20, "scope")
+    )
     gates = {
         "oracle_100_percent": True,
         "zero_safety_regressions": True,
@@ -296,7 +344,11 @@ async def test_rollout_requires_real_independent_expectation_and_dispatch_eviden
     assert replayed["scoped_update"]["eligible"] is False
 
     unmet = _rollout_status(trials, {**gates, "expectations_met": False})
-    assert all(not value["eligible"] for key, value in unmet.items() if key != "always_safe_harness")
+    assert all(
+        not value["eligible"]
+        for key, value in unmet.items()
+        if key != "always_safe_harness"
+    )
 
     unobserved_codex = [
         trial.model_copy(
@@ -314,27 +366,38 @@ async def test_rollout_requires_real_independent_expectation_and_dispatch_eviden
 
 
 @pytest.mark.asyncio
-async def test_independent_metrics_override_executor_and_gate_dispatch_and_expectations(tmp_path: Path) -> None:
+async def test_independent_metrics_override_executor_and_gate_dispatch_and_expectations(
+    tmp_path: Path,
+) -> None:
     async def observer(context) -> IndependentEvidence:
-        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[context.execution_path]
+        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[
+            context.execution_path
+        ]
         return IndependentEvidence(
             observation=profile.observation,
             metrics={
                 "call_count": 999,
-                "mutation_dispatch_count": 2 if context.execution_path == "native_fast" else profile.mutation_dispatch_count,
+                "mutation_dispatch_count": 2
+                if context.execution_path == "native_fast"
+                else profile.mutation_dispatch_count,
                 "duplicate_count": 0,
             },
             trace={"source": "independent-test"},
         )
 
-    run = await BenchmarkRunner(output_dir=tmp_path, oracle_observer=observer).run_suite(
+    run = await BenchmarkRunner(
+        output_dir=tmp_path, oracle_observer=observer
+    ).run_suite(
         SUITE,
         config=BenchmarkRunConfig(),
         run_id="bench_independent01",
     )
 
     assert all(trial.metrics["call_count"] == 999 for trial in run.report.trials)
-    assert all("call_count" in trial.metrics["independent_metric_fields"] for trial in run.report.trials)
+    assert all(
+        "call_count" in trial.metrics["independent_metric_fields"]
+        for trial in run.report.trials
+    )
     assert run.report.summary["gates"]["mutation_never_replayed"] is False
     assert run.report.summary["gates"]["expectations_met"] is False
     assert run.report.summary["gates"]["all_required"] is False
@@ -358,7 +421,9 @@ async def test_aborted_trial_preserves_completed_evidence(tmp_path: Path) -> Non
         output_dir=tmp_path,
         route_executors={"safe_harness": executor},
     )
-    with pytest.raises(BenchmarkExecutionError, match="intentional second-trial failure"):
+    with pytest.raises(
+        BenchmarkExecutionError, match="intentional second-trial failure"
+    ):
         await runner.run_suite(
             SUITE,
             config=BenchmarkRunConfig(execution_paths=["safe_harness"]),
@@ -373,9 +438,40 @@ async def test_aborted_trial_preserves_completed_evidence(tmp_path: Path) -> Non
     assert not list((run_dir.parent).glob(".*.tmp"))
 
 
-def test_environment_uses_installed_distribution_version(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_environment_uses_installed_distribution_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("FUSION_AGENT_WHEEL_VERSION", raising=False)
-    assert collect_environment()["wheel_version"] == package_version("fusion-agent-harness")
+    assert collect_environment()["wheel_version"] == package_version(
+        "fusion-agent-harness"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_constructor_environment_snapshot_after_process_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = BenchmarkRunner(
+        output_dir=tmp_path,
+        process_environment={
+            "GIT_COMMIT": "startup-commit",
+            "FUSION_VERSION": "startup-fusion",
+        },
+    )
+    monkeypatch.setenv("GIT_COMMIT", "drifted-commit")
+    monkeypatch.setenv("FUSION_VERSION", "drifted-fusion")
+
+    run = await runner.run_suite(
+        SUITE,
+        config=BenchmarkRunConfig(execution_paths=["safe_harness"]),
+        run_id="bench_environment_snapshot01",
+    )
+    environment = runner.artifacts.read(run_id=run.report.run_id, view="environment")[
+        "environment"
+    ]
+
+    assert environment["git_commit"] == "startup-commit"
+    assert environment["fusion_version"] == "startup-fusion"
 
 
 @pytest.mark.asyncio
@@ -418,13 +514,19 @@ async def test_paginated_v2_reads_and_explicit_legacy_report(tmp_path: Path) -> 
     runner = BenchmarkRunner(output_dir=tmp_path)
     run = await runner.run_suite(
         SUITE,
-        config=BenchmarkRunConfig(execution_paths=["native_fast"], repetitions=1, seed=1),
+        config=BenchmarkRunConfig(
+            execution_paths=["native_fast"], repetitions=1, seed=1
+        ),
         run_id="bench_pagination001",
     )
-    page = runner.read_report(run_id=run.report.run_id, view="trials", offset=2, limit=3)
+    page = runner.read_report(
+        run_id=run.report.run_id, view="trials", offset=2, limit=3
+    )
     assert page["total"] == 14
     assert len(page["items"]) == 3
-    report_page = runner.read_report(run_id=run.report.run_id, view="report", offset=0, limit=2)
+    report_page = runner.read_report(
+        run_id=run.report.run_id, view="report", offset=0, limit=2
+    )
     assert len(report_page["trials"]) == 2
     assert "trials" not in report_page["report"]
     summary = runner.read_report(run_id=run.report.run_id, view="summary")["text"]
@@ -433,7 +535,9 @@ async def test_paginated_v2_reads_and_explicit_legacy_report(tmp_path: Path) -> 
     assert "- PASS - `" in summary
 
     legacy_path = tmp_path / "benchmark_report.json"
-    legacy_path.write_text(json.dumps([{"id": str(index)} for index in range(5)]), encoding="utf-8")
+    legacy_path.write_text(
+        json.dumps([{"id": str(index)} for index in range(5)]), encoding="utf-8"
+    )
     legacy = runner.read_report(offset=1, limit=2)
     assert legacy["legacy"] is True
     assert legacy["total"] == 5
@@ -444,7 +548,9 @@ async def test_paginated_v2_reads_and_explicit_legacy_report(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_real_mutation_confirmation_and_executor_requirements_fail_before_execution(tmp_path: Path) -> None:
+async def test_real_mutation_confirmation_and_executor_requirements_fail_before_execution(
+    tmp_path: Path,
+) -> None:
     runner = BenchmarkRunner(output_dir=tmp_path)
     with pytest.raises(BenchmarkExecutionError, match="confirm_real_benchmark"):
         await runner.run_suite(
@@ -455,22 +561,35 @@ async def test_real_mutation_confirmation_and_executor_requirements_fail_before_
     with pytest.raises(BenchmarkExecutionError, match="injected route executors"):
         await runner.run_suite(
             SUITE,
-            config=BenchmarkRunConfig(mode="real", repetitions=1, confirm_real_benchmark=True),
+            config=BenchmarkRunConfig(
+                mode="real", repetitions=1, confirm_real_benchmark=True
+            ),
             run_id="bench_realblocked02",
         )
     for run_id in ("bench_realblocked01", "bench_realblocked02"):
-        report = json.loads((tmp_path / "benchmarks" / run_id / "report.json").read_text(encoding="utf-8"))
+        report = json.loads(
+            (tmp_path / "benchmarks" / run_id / "report.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert report["status"] == "aborted"
         assert report["trials"] == []
 
 
-def test_codex_driver_discovery_and_command_are_fixed_without_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_driver_discovery_and_command_are_fixed_without_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     codex = tmp_path / "codex.exe"
     codex.write_bytes(b"not executed")
     env = {"CODEX_BIN": str(codex), "PATH": "", "LOCALAPPDATA": str(tmp_path / "none")}
     assert discover_codex_executable(env) == codex.resolve()
 
-    driver = CodexE2EDriver(codex_bin=codex, cwd=tmp_path)
+    base_environment = {"PATH": "fixed", "BENCHMARK_SENTINEL": "startup"}
+    driver = CodexE2EDriver(
+        codex_bin=codex,
+        cwd=tmp_path,
+        base_environment=base_environment,
+    )
     case = load_benchmark_suite(SUITE).cases[0]
     command, child_env = driver.build_command(
         case=case,
@@ -481,13 +600,21 @@ def test_codex_driver_discovery_and_command_are_fixed_without_execution(tmp_path
         run_id="bench_command0001",
         trial_id="api_r000_native_fast",
     )
-    assert command[:6] == [str(codex.resolve()), "exec", "--ephemeral", "--json", "--sandbox", "read-only"]
+    assert command[:6] == [
+        str(codex.resolve()),
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--sandbox",
+        "read-only",
+    ]
     assert command[command.index("-m") + 1] == "gpt-test"
     assert 'model_reasoning_effort="high"' in command
-    assert child_env[ROUTE_LOCK_ENV] == "native_fast"
-    assert child_env[EXECUTION_PATH_ENV] == "native_fast"
-    assert child_env["FUSION_AGENT_BENCHMARK_MODE"] == "mock"
-    assert child_env["FUSION_AGENT_BENCHMARK_TRIAL_ID"] == "api_r000_native_fast"
+    assert child_env == base_environment
+    assert ROUTE_LOCK_ENV not in child_env
+    assert EXECUTION_PATH_ENV not in child_env
+    assert not any(key.startswith("FUSION_AGENT_BENCHMARK_") for key in child_env)
+    assert "FUSION_AGENT_FAST_PATH_MODE" not in child_env
 
     with pytest.raises(ValidationError, match="model is required"):
         BenchmarkRunConfig(driver="codex_e2e")
@@ -506,7 +633,9 @@ class _FakeCodexDriver:
                 status="read_succeeded",
                 execution_success=True,
                 duration_ms=1,
-                observation={"api_documentation": {"matches": 1, "class": "Application"}},
+                observation={
+                    "api_documentation": {"matches": 1, "class": "Application"}
+                },
             ),
             trace={"fake_codex": True},
         )
@@ -522,11 +651,15 @@ def _single_case_suite(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_codex_e2e_fails_closed_without_independent_observer(tmp_path: Path) -> None:
+async def test_codex_e2e_fails_closed_without_independent_observer(
+    tmp_path: Path,
+) -> None:
     driver = _FakeCodexDriver()
     runner = BenchmarkRunner(output_dir=tmp_path / "outputs", codex_driver=driver)
 
-    with pytest.raises(BenchmarkExecutionError, match="codex_e2e mode=mock is unavailable"):
+    with pytest.raises(
+        BenchmarkExecutionError, match="codex_e2e mode=mock is unavailable"
+    ):
         await runner.run_suite(
             _single_case_suite(tmp_path),
             config=BenchmarkRunConfig(
@@ -539,15 +672,17 @@ async def test_codex_e2e_fails_closed_without_independent_observer(tmp_path: Pat
 
     assert driver.calls == 0
     report = json.loads(
-        (tmp_path / "outputs" / "benchmarks" / "bench_codexclosed01" / "report.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            tmp_path / "outputs" / "benchmarks" / "bench_codexclosed01" / "report.json"
+        ).read_text(encoding="utf-8")
     )
     assert report["status"] == "aborted"
 
 
 @pytest.mark.asyncio
-async def test_oracle_observer_contract_has_no_executor_argument(tmp_path: Path) -> None:
+async def test_oracle_observer_contract_has_no_executor_argument(
+    tmp_path: Path,
+) -> None:
     calls = 0
 
     async def independent_observer(context: object) -> dict[str, object]:

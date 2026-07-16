@@ -50,7 +50,9 @@ def _manifest(*names: str) -> ToolManifest:
 
 
 @pytest.mark.asyncio
-async def test_real_facade_is_built_from_live_manifest_not_stale_disk(tmp_path: Path) -> None:
+async def test_real_facade_is_built_from_live_manifest_not_stale_disk(
+    tmp_path: Path,
+) -> None:
     store = ManifestStore(tmp_path / "manifests")
     stale = _manifest("stale_disk_tool")
     store.save_if_changed(stale)
@@ -73,7 +75,9 @@ async def test_real_facade_is_built_from_live_manifest_not_stale_disk(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_real_health_pings_without_implicitly_accepting_manifest_drift(tmp_path: Path) -> None:
+async def test_real_health_pings_without_implicitly_accepting_manifest_drift(
+    tmp_path: Path,
+) -> None:
     store = ManifestStore(tmp_path / "manifests")
     cached = _manifest("fusion_mcp_read", "fusion_mcp_execute")
     store.save_if_changed(cached)
@@ -105,10 +109,14 @@ async def test_controller_closes_the_lazy_client_it_owns() -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_reports_corrupt_manifest_instead_of_raising(tmp_path: Path) -> None:
+async def test_health_reports_corrupt_manifest_instead_of_raising(
+    tmp_path: Path,
+) -> None:
     store = ManifestStore(tmp_path / "manifests")
     store.root.mkdir(parents=True)
-    (store.root / "fusion_mcp_tools_latest_real.json").write_text("{broken", encoding="utf-8")
+    (store.root / "fusion_mcp_tools_latest_real.json").write_text(
+        "{broken", encoding="utf-8"
+    )
     live = _manifest("fusion_mcp_read", "fusion_mcp_execute")
     controller = SessionController(
         real_client=_LiveClient(live),  # type: ignore[arg-type]

@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from benchmark.filesystem import (
+    atomic_create_text,
+    mkdir,
+    path_exists,
+    physical_artifact_name,
+    read_text,
+    unlink,
+)
+from benchmark.provenance import RevisionIdentity
 from telemetry.trace import redact_sensitive
 
 
@@ -45,7 +54,9 @@ class PublicBenchmarkSubject(_StrictModel):
 
 class PublicBenchmarkCase(_StrictModel):
     id: str = Field(pattern=r"^b0[2-7]_[a-z0-9_]+$")
-    fixture_path: str = Field(pattern=r"^benchmark_parametric_suite/cases/b0[2-7]_[a-z0-9_]+$")
+    fixture_path: str = Field(
+        pattern=r"^benchmark_parametric_suite/cases/b0[2-7]_[a-z0-9_]+$"
+    )
     risk: Literal["additive", "scoped_update"]
     oracle_required: bool = True
 
@@ -80,7 +91,9 @@ class PublicBenchmarkManifest(_StrictModel):
             if len(values) != len(set(values)):
                 raise ValueError(f"duplicate {label} id")
         case_ids = {item.id for item in self.cases}
-        unknown = sorted({case_id for fault in self.faults for case_id in fault.case_ids} - case_ids)
+        unknown = sorted(
+            {case_id for fault in self.faults for case_id in fault.case_ids} - case_ids
+        )
         if unknown:
             raise ValueError(f"fault scenarios reference unknown cases: {unknown}")
         if not self.clean_room:
@@ -99,6 +112,7 @@ class PublicBenchmarkConfig(_StrictModel):
 class AdapterPreflight(_StrictModel):
     ready: bool
     observed_revision: str | None = Field(default=None, min_length=1, max_length=200)
+    revision_identity: RevisionIdentity | None = None
     environment: dict[str, str] = Field(default_factory=dict)
     reason: str | None = Field(default=None, min_length=1, max_length=500)
 
@@ -141,13 +155,16 @@ class AdapterExecution(_StrictModel):
     state: Literal["completed", "failed", "not_run"]
     metrics: NormalizedPublicMetrics = Field(default_factory=NormalizedPublicMetrics)
     reason: str | None = Field(default=None, min_length=1, max_length=1_000)
+    independent_oracle: bool = False
     evidence: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _state_is_honest(self) -> "AdapterExecution":
         if self.state == "completed":
             if self.metrics.task_success is None or self.metrics.oracle_passed is None:
-                raise ValueError("completed execution requires task_success and oracle_passed")
+                raise ValueError(
+                    "completed execution requires task_success and oracle_passed"
+                )
         elif not self.reason:
             raise ValueError("failed/not_run execution requires a reason")
         return self
@@ -161,6 +178,8 @@ class PublicBenchmarkResult(_StrictModel):
     evidence_mode: Literal["mock", "real", "not_run"]
     reason: str | None = None
     observed_revision: str | None = None
+    revision_identity: RevisionIdentity | None = None
+    independent_oracle: bool = False
     metrics: NormalizedPublicMetrics = Field(default_factory=NormalizedPublicMetrics)
     evidence: dict[str, Any] = Field(default_factory=dict)
 
@@ -199,19 +218,32 @@ def load_public_manifest(path: Path | str) -> tuple[PublicBenchmarkManifest, str
     """Load and fingerprint a strict, non-executable comparison manifest."""
 
     manifest_path = Path(path)
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = json.loads(read_text(manifest_path))
     if _contains_executable_field(payload):
         raise ValueError("public benchmark manifest contains an executable field")
     manifest = PublicBenchmarkManifest.model_validate(payload)
-    canonical = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
     return manifest, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class PublicBenchmarkRunner:
     """Run comparable tasks while keeping missing evidence explicit."""
 
-    def __init__(self, adapters: Mapping[str, PublicBenchmarkAdapter] | None = None) -> None:
+    def __init__(
+        self,
+        adapters: Mapping[str, PublicBenchmarkAdapter] | None = None,
+        *,
+        environment_snapshot: Mapping[str, str] | None = None,
+    ) -> None:
         self.adapters = dict(adapters or {})
+        # Capture process metadata at runner construction. A long-running MCP
+        # request must never re-read process-global authorization/provenance
+        # after yielding to an adapter.
+        self.environment_snapshot = dict(
+            os.environ if environment_snapshot is None else environment_snapshot
+        )
 
     async def run(
         self,
@@ -228,7 +260,9 @@ class PublicBenchmarkRunner:
             known = {subject.id for subject in subjects}
             unknown = requested - known
             if unknown:
-                raise ValueError(f"unknown public benchmark subjects: {sorted(unknown)}")
+                raise ValueError(
+                    f"unknown public benchmark subjects: {sorted(unknown)}"
+                )
             subjects = [subject for subject in subjects if subject.id in requested]
         tasks = _tasks(manifest, include_faults=run_config.include_faults)
         results: list[PublicBenchmarkResult] = []
@@ -240,35 +274,60 @@ class PublicBenchmarkRunner:
             if run_config.mode == "real" and not run_config.confirm_real_benchmark:
                 results.extend(_not_run(subject, tasks, "real_execution_not_confirmed"))
                 continue
-            if run_config.mode == "real" and not run_config.disposable_fixture_confirmed:
-                results.extend(_not_run(subject, tasks, "disposable_fixture_not_confirmed"))
+            if (
+                run_config.mode == "real"
+                and not run_config.disposable_fixture_confirmed
+            ):
+                results.extend(
+                    _not_run(subject, tasks, "disposable_fixture_not_confirmed")
+                )
                 continue
             try:
                 preflight = await adapter.preflight(subject, run_config)
             except Exception as exc:  # noqa: BLE001 - external adapters normalize at boundary
-                results.extend(_not_run(subject, tasks, f"preflight_error:{type(exc).__name__}:{exc}"))
+                results.extend(
+                    _not_run(
+                        subject, tasks, f"preflight_error:{type(exc).__name__}:{exc}"
+                    )
+                )
                 continue
             revision_error = _revision_error(subject.pin, preflight)
             if not preflight.ready or revision_error:
-                results.extend(_not_run(subject, tasks, revision_error or preflight.reason or "preflight_not_ready"))
+                results.extend(
+                    _not_run(
+                        subject,
+                        tasks,
+                        revision_error or preflight.reason or "preflight_not_ready",
+                    )
+                )
                 continue
             for task in tasks:
                 try:
                     execution = await adapter.execute(subject, task, run_config)
                 except Exception as exc:  # noqa: BLE001 - a started external trial is a failure, not not_run
-                    execution = AdapterExecution(state="failed", reason=f"adapter_error:{type(exc).__name__}:{exc}")
+                    execution = AdapterExecution(
+                        state="failed",
+                        reason=f"adapter_error:{type(exc).__name__}:{exc}",
+                    )
                 results.append(
                     PublicBenchmarkResult(
                         subject_id=subject.id,
                         adapter_id=subject.adapter_id,
                         task=task,
                         state=execution.state,
-                        evidence_mode=run_config.mode if execution.state != "not_run" else "not_run",
+                        evidence_mode=run_config.mode
+                        if execution.state != "not_run"
+                        else "not_run",
                         reason=execution.reason,
                         observed_revision=preflight.observed_revision,
+                        revision_identity=preflight.revision_identity,
+                        independent_oracle=execution.independent_oracle,
                         metrics=execution.metrics,
                         evidence=redact_sensitive(
-                            {"preflight_environment": preflight.environment, **execution.evidence}
+                            {
+                                "preflight_environment": preflight.environment,
+                                **execution.evidence,
+                            }
                         ),
                     )
                 )
@@ -284,37 +343,43 @@ class PublicBenchmarkRunner:
             environment={
                 "python": sys.version,
                 "platform": platform.platform(),
-                "git_commit": os.getenv("GIT_COMMIT"),
-                "fusion_version": os.getenv("FUSION_VERSION"),
+                "git_commit": self.environment_snapshot.get("GIT_COMMIT"),
+                "fusion_version": self.environment_snapshot.get("FUSION_VERSION"),
             },
             summary=_summary(results),
             results=results,
         )
 
     @staticmethod
-    def write(report: PublicBenchmarkReport, output_dir: Path | str) -> tuple[Path, Path]:
+    def write(
+        report: PublicBenchmarkReport, output_dir: Path | str
+    ) -> tuple[Path, Path]:
         """Write normalized JSON and Markdown reports."""
 
         root = Path(output_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        json_path = root / f"{report.run_id}.json"
-        markdown_path = root / f"{report.run_id}.md"
-        if json_path.exists() or markdown_path.exists():
-            raise FileExistsError(f"public benchmark report already exists: {report.run_id}")
+        mkdir(root)
+        json_path = root / physical_artifact_name(report.run_id, suffix=".json")
+        markdown_path = root / physical_artifact_name(report.run_id, suffix=".md")
+        if path_exists(json_path) or path_exists(markdown_path):
+            raise FileExistsError(
+                f"public benchmark report already exists: {report.run_id}"
+            )
+        created: list[Path] = []
         try:
-            with json_path.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(report.model_dump_json(indent=2))
-                handle.write("\n")
-            with markdown_path.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(_markdown(report))
+            atomic_create_text(json_path, report.model_dump_json(indent=2) + "\n")
+            created.append(json_path)
+            atomic_create_text(markdown_path, _markdown(report))
+            created.append(markdown_path)
         except BaseException:
-            json_path.unlink(missing_ok=True)
-            markdown_path.unlink(missing_ok=True)
+            for created_path in created:
+                unlink(created_path, missing_ok=True)
             raise
         return json_path, markdown_path
 
 
-def _tasks(manifest: PublicBenchmarkManifest, *, include_faults: bool) -> list[PublicBenchmarkTask]:
+def _tasks(
+    manifest: PublicBenchmarkManifest, *, include_faults: bool
+) -> list[PublicBenchmarkTask]:
     cases = {case.id: case for case in manifest.cases}
     tasks = [
         PublicBenchmarkTask(
@@ -366,31 +431,104 @@ def _revision_error(pin: RevisionPin, preflight: AdapterPreflight) -> str | None
     observed = preflight.observed_revision or ""
     if pin.kind in {"git", "pypi"} and observed != pin.value:
         return f"revision_mismatch:expected={pin.value}:observed={observed}"
+    if pin.kind == "workspace":
+        identity = preflight.revision_identity
+        if identity is None:
+            return "workspace_revision_identity_missing"
+        if identity.scheme != pin.value:
+            return f"revision_mismatch:expected_scheme={pin.value}:observed_scheme={identity.scheme}"
+        if (
+            identity.observed_git_commit is None
+            or identity.observed_source_manifest_sha256 is None
+        ):
+            return "workspace_revision_observation_incomplete"
+        if identity.explicit_mismatch:
+            return (
+                "revision_mismatch:"
+                f"expected_git={identity.expected_git_commit}:observed_git={identity.observed_git_commit}:"
+                "expected_manifest="
+                f"{identity.expected_source_manifest_sha256}:"
+                f"observed_manifest={identity.observed_source_manifest_sha256}"
+            )
     if pin.kind in {"runtime", "workspace"} and not observed:
         return "runtime_revision_missing"
     return None
 
 
 def _summary(results: list[PublicBenchmarkResult]) -> dict[str, Any]:
-    states = {state: sum(item.state == state for item in results) for state in ("completed", "failed", "not_run")}
+    states = {
+        state: sum(item.state == state for item in results)
+        for state in ("completed", "failed", "not_run")
+    }
     by_subject: dict[str, dict[str, int]] = {}
     for result in results:
-        counts = by_subject.setdefault(result.subject_id, {"completed": 0, "failed": 0, "not_run": 0})
+        counts = by_subject.setdefault(
+            result.subject_id, {"completed": 0, "failed": 0, "not_run": 0}
+        )
         counts[result.state] += 1
     completed = [item for item in results if item.state == "completed"]
+    own_results = [item for item in results if item.subject_id == "fusion_agent_codex"]
+    own_task_ids = {item.task.task_id for item in own_results}
+    own_subject_complete = bool(own_results) and all(
+        _completed_with_independent_oracle(item)
+        and item.revision_identity is not None
+        and item.revision_identity.exact
+        for item in own_results
+    )
+    comparator_results: dict[str, list[PublicBenchmarkResult]] = {}
+    for item in results:
+        if item.subject_id != "fusion_agent_codex":
+            comparator_results.setdefault(item.subject_id, []).append(item)
+    eligible_comparators = sorted(
+        subject_id
+        for subject_id, subject_results in comparator_results.items()
+        if own_task_ids
+        and {item.task.task_id for item in subject_results} == own_task_ids
+        and all(_completed_with_independent_oracle(item) for item in subject_results)
+    )
+    scoreable = own_subject_complete and bool(eligible_comparators)
     return {
         "task_count": len(results),
         "states": states,
         "by_subject": by_subject,
         "oracle_pass_rate": (
-            sum(item.metrics.oracle_passed is True for item in completed) / len(completed) if completed else None
+            sum(item.metrics.oracle_passed is True for item in completed)
+            / len(completed)
+            if completed
+            else None
         ),
-        "scoreable": bool(completed),
+        "scoreable": scoreable,
+        "scoreability": {
+            "own_subject_complete": own_subject_complete,
+            "own_task_count": len(own_task_ids),
+            "eligible_comparators": eligible_comparators,
+            "requires_independent_oracle": True,
+            "requires_exact_workspace_revision": True,
+        },
     }
 
 
+def _completed_with_independent_oracle(result: PublicBenchmarkResult) -> bool:
+    return bool(
+        result.state == "completed"
+        and result.metrics.task_success is not None
+        and result.metrics.oracle_passed is not None
+        and result.independent_oracle
+        and result.observed_revision
+    )
+
+
 def _contains_executable_field(value: Any) -> bool:
-    forbidden = {"command", "script", "python", "code", "shell", "executable", "args", "env"}
+    forbidden = {
+        "command",
+        "script",
+        "python",
+        "code",
+        "shell",
+        "executable",
+        "args",
+        "env",
+    }
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = re.sub(r"[^a-z]", "", str(key).lower())

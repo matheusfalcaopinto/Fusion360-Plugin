@@ -17,13 +17,17 @@ class MemoryRetriever:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
-    def retrieve(self, query: str, project: str | None = None, limit: int = 5) -> list[MemoryRecord]:
+    def retrieve(
+        self, query: str, project: str | None = None, limit: int = 5
+    ) -> list[MemoryRecord]:
         """Return ranked memory records for a query."""
 
         query_tokens = set(_tokens(query))
         records = []
         for record in self.store.iter_records(project=project):
-            haystack = set(_tokens(f"{record.summary}\n{record.content}\n{' '.join(record.tags)}"))
+            haystack = set(
+                _tokens(f"{record.summary}\n{record.content}\n{' '.join(record.tags)}")
+            )
             lexical_score = len(query_tokens & haystack) / max(1, len(query_tokens))
             trust_weight = {
                 TrustLevel.VERIFIED: 1.0,
@@ -35,7 +39,9 @@ class MemoryRetriever:
             if score > 0:
                 record.relevance_score = score
                 records.append(record)
-        return sorted(records, key=lambda item: item.relevance_score, reverse=True)[:limit]
+        return sorted(records, key=lambda item: item.relevance_score, reverse=True)[
+            :limit
+        ]
 
 
 def _tokens(text: str) -> list[str]:

@@ -12,7 +12,12 @@ from agent_core.executor import ExecutionContext
 from cad_spec.models import CadSpec
 from telemetry.trace import JsonlTraceLogger
 from verifier.geometry import GeometryVerifier
-from verifier.result_models import FailureCode, VerificationIssue, VerificationResult
+from verifier.result_models import (
+    DecisionStatus,
+    FailureCode,
+    VerificationIssue,
+    VerificationResult,
+)
 
 
 class RepairAttempt(BaseModel):
@@ -46,18 +51,34 @@ class RepairLoop:
         self.session_id = session_id
         self.attempts: list[RepairAttempt] = []
 
-    async def run(self, spec: CadSpec, context: ExecutionContext | None = None) -> VerificationResult:
+    async def run(
+        self, spec: CadSpec, context: ExecutionContext | None = None
+    ) -> VerificationResult:
         """Verify and apply bounded repairs when possible."""
 
         verification = await self.verifier.verify(spec)
         attempt = 0
         action_counts: dict[str, int] = defaultdict(int)
 
-        while not verification.passed and attempt < self.max_total_attempts:
+        # Incomplete evidence is not a failed assertion and must never become
+        # authority to mutate.  Only a conclusive failed verdict may enter a
+        # repair recipe.
+        while (
+            verification.status is DecisionStatus.FAILED
+            and attempt < self.max_total_attempts
+        ):
             issue = verification.issues[0]
             action = self._action_for(issue.code)
             if action == "stop_no_safe_recipe":
-                self._record_attempt(attempt + 1, issue, action, success=False, applied=False, spec=spec, reason="no_safe_recipe")
+                self._record_attempt(
+                    attempt + 1,
+                    issue,
+                    action,
+                    success=False,
+                    applied=False,
+                    spec=spec,
+                    reason="no_safe_recipe",
+                )
                 break
             if action_counts[action] >= self.max_attempts_per_transaction:
                 self._record_attempt(
@@ -84,7 +105,9 @@ class RepairLoop:
                 applied = False
 
             attempt += 1
-            self._record_attempt(attempt, issue, action, success=applied, applied=applied, spec=spec)
+            self._record_attempt(
+                attempt, issue, action, success=applied, applied=applied, spec=spec
+            )
             if not applied:
                 break
 
@@ -124,7 +147,9 @@ class RepairLoop:
                     "action": action,
                     "action_applied": applied,
                     "planned_components": len(spec.components),
-                    "planned_features": sum(len(component.features) for component in spec.components),
+                    "planned_features": sum(
+                        len(component.features) for component in spec.components
+                    ),
                 }
             )
 
@@ -141,7 +166,9 @@ class RepairLoop:
             return "replay_exports"
         return "stop_no_safe_recipe"
 
-    async def _repair_unit_mismatch(self, spec: CadSpec, issue: VerificationIssue) -> bool:
+    async def _repair_unit_mismatch(
+        self, spec: CadSpec, issue: VerificationIssue
+    ) -> bool:
         # safe default: do not mutate geometry/parameters automatically
         issue_details = issue.details or {}
         expected = issue_details.get("expected")
@@ -149,7 +176,9 @@ class RepairLoop:
         _ = self._classify_unit_ratio(expected, actual)
         return False
 
-    async def _repair_activate_component(self, spec: CadSpec, context: ExecutionContext | None, issue: VerificationIssue) -> bool:
+    async def _repair_activate_component(
+        self, spec: CadSpec, context: ExecutionContext | None, issue: VerificationIssue
+    ) -> bool:
         if not self.executor or not spec.components:
             return False
         target = spec.components[0].name
@@ -158,7 +187,9 @@ class RepairLoop:
         except Exception:
             return False
 
-    async def _repair_replay_features(self, spec: CadSpec, context: ExecutionContext | None) -> bool:
+    async def _repair_replay_features(
+        self, spec: CadSpec, context: ExecutionContext | None
+    ) -> bool:
         if not self.executor:
             return False
         try:
@@ -167,7 +198,9 @@ class RepairLoop:
         except Exception:
             return False
 
-    async def _repair_replay_exports(self, spec: CadSpec, issue: VerificationIssue, context: ExecutionContext | None) -> bool:
+    async def _repair_replay_exports(
+        self, spec: CadSpec, issue: VerificationIssue, context: ExecutionContext | None
+    ) -> bool:
         if not self.executor:
             return False
         try:
@@ -190,7 +223,11 @@ class RepairLoop:
 
         if len(expected_values) != len(actual_values) or not expected_values:
             return "unknown_scale"
-        ratios = [actual / expected for actual, expected in zip(actual_values, expected_values, strict=True) if expected]
+        ratios = [
+            actual / expected
+            for actual, expected in zip(actual_values, expected_values, strict=True)
+            if expected
+        ]
         for ratio in ratios:
             if abs(ratio - 10.0) <= 0.05:
                 return "x10"

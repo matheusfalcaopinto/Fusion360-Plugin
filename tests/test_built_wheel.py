@@ -10,12 +10,18 @@ from pathlib import Path
 
 import tomllib
 
+from benchmark.filesystem import io_path
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_rebuilt_wheel_is_deterministic_and_imports_from_clean_sha_path(tmp_path: Path) -> None:
-    version = tomllib.loads((ROOT / "harness" / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+def test_rebuilt_wheel_is_deterministic_and_imports_from_clean_sha_path(
+    tmp_path: Path,
+) -> None:
+    version = tomllib.loads(
+        (ROOT / "harness" / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["version"]
     build = [sys.executable, str(ROOT / "scripts" / "build-distribution.py")]
     first = subprocess.run(build, cwd=ROOT, text=True, capture_output=True, check=True)
     wheel = next((ROOT / "wheels").glob(f"fusion_agent_harness-{version}-*.whl"))
@@ -33,11 +39,15 @@ def test_rebuilt_wheel_is_deterministic_and_imports_from_clean_sha_path(tmp_path
     extraction = tmp_path / second_sha
     extraction.mkdir()
     with zipfile.ZipFile(wheel) as archive:
-        metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
         metadata = archive.read(metadata_name).decode("utf-8")
         assert "Provides-Extra: faust" in metadata
-        assert 'Requires-Dist: fusion360-mcp-server==0.1.0; extra == "faust"' in metadata
-        archive.extractall(extraction)
+        assert (
+            'Requires-Dist: fusion360-mcp-server==0.1.0; extra == "faust"' in metadata
+        )
+        archive.extractall(io_path(extraction))
 
     code = """
 import importlib.metadata

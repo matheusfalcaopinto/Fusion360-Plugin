@@ -9,7 +9,9 @@ from typing import Any
 
 LENGTH_UNITS = {"mm": 1.0, "cm": 10.0, "in": 25.4}
 ANGLE_UNITS = {"deg", "rad"}
-UNIT_EXPRESSION_RE = re.compile(r"^\s*-?\d+(?:\.\d+)?\s*(mm|cm|in|deg|rad)\s*$", re.IGNORECASE)
+UNIT_EXPRESSION_RE = re.compile(
+    r"^\s*-?\d+(?:\.\d+)?\s*(mm|cm|in|deg|rad)\s*$", re.IGNORECASE
+)
 PARAMETER_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
 DIMENSION_KEYS = {
@@ -67,7 +69,9 @@ def validate_dimension_expression(value: Any, path: str = "value") -> str:
     """Validate one explicit unit string or named parameter expression."""
 
     if not isinstance(value, str):
-        raise ValueError(f"{path} must be an explicit unit string or parameter expression")
+        raise ValueError(
+            f"{path} must be an explicit unit string or parameter expression"
+        )
     if is_unit_expression(value) or is_parameter_expression(value):
         return value
     raise ValueError(f"{path} must include units or name a parameter: {value!r}")
@@ -95,7 +99,9 @@ def _reject_numeric_tree(value: Any, path: str) -> None:
     if isinstance(value, bool):
         return
     if isinstance(value, int | float):
-        raise ValueError(f"{path} is an ambiguous numeric dimension; use an explicit unit string")
+        raise ValueError(
+            f"{path} is an ambiguous numeric dimension; use an explicit unit string"
+        )
     if isinstance(value, Mapping):
         for key, child in value.items():
             _reject_numeric_tree(child, f"{path}.{key}")
@@ -106,7 +112,9 @@ def _reject_numeric_tree(value: Any, path: str) -> None:
         validate_dimension_expression(value, path)
 
 
-def expression_to_mm(expression: str, parameters: Mapping[str, str] | None = None) -> float:
+def expression_to_mm(
+    expression: str, parameters: Mapping[str, str] | None = None
+) -> float:
     """Resolve a simple length expression to millimeters."""
 
     parameters = parameters or {}
@@ -117,7 +125,9 @@ def expression_to_mm(expression: str, parameters: Mapping[str, str] | None = Non
             raise ValueError(f"cyclic parameter reference: {current}")
         visited.add(current)
         current = parameters[current]
-    match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in)\s*", current, re.IGNORECASE)
+    match = re.fullmatch(
+        r"\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in)\s*", current, re.IGNORECASE
+    )
     if not match:
         raise ValueError(f"cannot resolve length expression to mm: {expression!r}")
     value = float(match.group(1))

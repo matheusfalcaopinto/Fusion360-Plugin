@@ -19,10 +19,18 @@ class MemoryContentRejected(ValueError):
 
 
 _INSTRUCTION_PATTERNS = (
-    re.compile(r"\bignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above)\s+instructions?\b", re.I),
+    re.compile(
+        r"\bignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above)\s+instructions?\b",
+        re.I,
+    ),
     re.compile(r"\b(?:system|developer)\s+(?:prompt|message|instructions?)\b", re.I),
-    re.compile(r"\b(?:reveal|print|repeat|exfiltrate)\s+(?:the\s+)?(?:system|developer)\s+prompt\b", re.I),
-    re.compile(r"\b(?:run|execute)\s+(?:this|the following)\s+(?:command|script|tool)\b", re.I),
+    re.compile(
+        r"\b(?:reveal|print|repeat|exfiltrate)\s+(?:the\s+)?(?:system|developer)\s+prompt\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:run|execute)\s+(?:this|the following)\s+(?:command|script|tool)\b", re.I
+    ),
 )
 _TOOL_DIRECTIVE_PATTERNS = (
     re.compile(r"<\/?(?:tool_call|function_call|assistant|system)(?:\s|>)", re.I),
@@ -31,7 +39,10 @@ _TOOL_DIRECTIVE_PATTERNS = (
 )
 _SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-    re.compile(r"\b(?:api[_ -]?key|access[_ -]?token|bearer|password)\s*[:=]\s*['\"]?[A-Za-z0-9_./+\-=]{16,}", re.I),
+    re.compile(
+        r"\b(?:api[_ -]?key|access[_ -]?token|bearer|password)\s*[:=]\s*['\"]?[A-Za-z0-9_./+\-=]{16,}",
+        re.I,
+    ),
     re.compile(r"\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{20,}\b"),
 )
 

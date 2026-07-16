@@ -58,8 +58,18 @@ LEGACY_EXPANDED_SCHEMAS = {
         "properties": {
             "mode": {"type": "string", "enum": ["mock", "real"], "default": "real"},
             "project": {"type": "string"},
-            "max_occurrences": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 500},
-            "max_bodies": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 500},
+            "max_occurrences": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "default": 500,
+            },
+            "max_bodies": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "default": 500,
+            },
             "include_transforms": {"type": "boolean", "default": False},
         },
         "required": ["project"],

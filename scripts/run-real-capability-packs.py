@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from benchmark.real_capability_packs import run_real_capability_packs
+from fusion_agent_mcp.runtime import RuntimeConfiguration
 
 
 def main() -> int:
@@ -24,7 +25,15 @@ def main() -> int:
         help="Repository-local directory for the normalized JSON result and I/O artifacts.",
     )
     arguments = parser.parse_args()
-    result = asyncio.run(run_real_capability_packs(arguments.artifact_root))
+    # Environment is read once before the event loop exists. Every real-Fusion
+    # operation receives this immutable runtime snapshot.
+    configuration = RuntimeConfiguration.from_environment()
+    result = asyncio.run(
+        run_real_capability_packs(
+            arguments.artifact_root,
+            configuration=configuration,
+        )
+    )
     print(
         json.dumps(
             {

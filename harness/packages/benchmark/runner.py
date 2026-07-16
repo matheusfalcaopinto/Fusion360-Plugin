@@ -6,19 +6,22 @@ import asyncio
 import hashlib
 import inspect
 import json
-import os
 import time
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
+from agent_core.request_context import RequestContext, bind_request_context
 from benchmark.artifacts import BenchmarkArtifactStore, collect_environment
-from benchmark.codex_driver import EXECUTION_PATH_ENV, ROUTE_LOCK_ENV, CodexE2EDriver
+from benchmark.codex_driver import CodexE2EDriver
 from benchmark.fixtures import SCRIPT_REGISTRY, FixtureDefinition
+from benchmark.filesystem import atomic_write_text, mkdir, read_bytes
 from benchmark.loader import load_benchmark_suite, suite_fingerprint
 from benchmark.models import (
     BenchmarkCase,
@@ -36,6 +39,10 @@ from benchmark.statistics import aggregate_trials
 
 _IN_PROCESS_ROUTE_LOCK = asyncio.Lock()
 _REAL_TRIAL_LOCK = asyncio.Lock()
+_ROUTE_CONTEXT: ContextVar[tuple[ExecutionPath, str] | None] = ContextVar(
+    "fusion_agent_benchmark_route",
+    default=None,
+)
 _STABLE_BASELINE_ENVIRONMENT_FIELDS = (
     "python",
     "platform",
@@ -98,7 +105,10 @@ class InternalRouteExecutor(Protocol):
         """Run one isolated trial and return a normalized observation."""
 
 
-RouteExecutor = InternalRouteExecutor | Callable[[TrialContext], Awaitable[ExecutionObservation] | ExecutionObservation]
+RouteExecutor = (
+    InternalRouteExecutor
+    | Callable[[TrialContext], Awaitable[ExecutionObservation] | ExecutionObservation]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,13 +123,21 @@ class IndependentEvidence:
 class IndependentOracleObserver(Protocol):
     """Read fixture state/trace independently of the executor being scored."""
 
-    async def observe(self, context: TrialContext) -> IndependentEvidence | dict[str, Any]:
+    async def observe(
+        self, context: TrialContext
+    ) -> IndependentEvidence | dict[str, Any]:
         """Return programmatic evidence consumed by the registered oracle."""
 
 
-OracleObserver = IndependentOracleObserver | Callable[
-    [TrialContext], Awaitable[IndependentEvidence | dict[str, Any]] | IndependentEvidence | dict[str, Any]
-]
+OracleObserver = (
+    IndependentOracleObserver
+    | Callable[
+        [TrialContext],
+        Awaitable[IndependentEvidence | dict[str, Any]]
+        | IndependentEvidence
+        | dict[str, Any],
+    ]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +194,9 @@ class CanonicalMockExecutor:
 
     async def execute(self, context: TrialContext) -> ExecutionObservation:
         enforce_route_lock(context.execution_path)
-        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[context.execution_path]
+        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[
+            context.execution_path
+        ]
         session_key = f"mock:{context.execution_path}"
         initialize_count = 0 if session_key in self._initialized_sessions else 1
         self._initialized_sessions.add(session_key)
@@ -214,7 +234,9 @@ class CanonicalMockOracleObserver:
     """Separate code path that reads the canonical mock fixture outcome."""
 
     async def observe(self, context: TrialContext) -> IndependentEvidence:
-        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[context.execution_path]
+        profile = SCRIPT_REGISTRY[context.case.script_id].profiles[
+            context.execution_path
+        ]
         return IndependentEvidence(
             observation=deepcopy(profile.observation),
             metrics={
@@ -250,6 +272,7 @@ class BenchmarkRunner:
         real_lifecycle: RealTrialLifecycle | None = None,
         codex_driver: CodexE2EDriver | None = None,
         environment_metadata: dict[str, Any] | None = None,
+        process_environment: Mapping[str, str] | None = None,
     ) -> None:
         # Kept for constructor compatibility. P2 does not instantiate or own a
         # new controller; the server injects route-specific runtime executors.
@@ -262,6 +285,10 @@ class BenchmarkRunner:
         self.real_lifecycle = real_lifecycle
         self.codex_driver = codex_driver
         self.environment_metadata = dict(environment_metadata or {})
+        self.environment_snapshot = collect_environment(
+            self.environment_metadata,
+            environment=process_environment,
+        )
         self.artifacts = BenchmarkArtifactStore(self.output_dir)
         self._mock_executor = CanonicalMockExecutor()
         self._mock_oracle_observer = CanonicalMockOracleObserver()
@@ -276,12 +303,20 @@ class BenchmarkRunner:
         """Execute a strict suite and write one immutable artifact directory."""
 
         suite = load_benchmark_suite(suite_path)
-        run_config = config if isinstance(config, BenchmarkRunConfig) else BenchmarkRunConfig.model_validate(config or {})
+        run_config = (
+            config
+            if isinstance(config, BenchmarkRunConfig)
+            else BenchmarkRunConfig.model_validate(config or {})
+        )
         selected_cases = [
-            case for case in suite.cases if any(path in case.execution_paths for path in run_config.execution_paths)
+            case
+            for case in suite.cases
+            if any(path in case.execution_paths for path in run_config.execution_paths)
         ]
         if not selected_cases:
-            raise BenchmarkExecutionError("no suite cases support the selected execution_paths")
+            raise BenchmarkExecutionError(
+                "no suite cases support the selected execution_paths"
+            )
         run_id = run_id or _new_run_id()
         suite_digest = suite_fingerprint(suite)
         started_at = datetime.now(timezone.utc).isoformat()
@@ -290,20 +325,18 @@ class BenchmarkRunner:
         oracles: dict[str, dict[str, Any]] = {}
         order_index = 0
         artifact_dir = self.artifacts.root / run_id
-        environment = collect_environment(
-            {
-                **self.environment_metadata,
-                "run_id": run_id,
-                "suite_id": suite.suite_id,
-                "suite_fingerprint": suite_digest,
-                "driver": run_config.driver,
-                "mode": run_config.mode,
-                "model": run_config.model,
-                "reasoning_effort": run_config.reasoning_effort,
-                "seed": run_config.seed,
-                "baseline_run_id": run_config.baseline_run_id,
-            }
-        )
+        environment = {
+            **self.environment_snapshot,
+            "run_id": run_id,
+            "suite_id": suite.suite_id,
+            "suite_fingerprint": suite_digest,
+            "driver": run_config.driver,
+            "mode": run_config.mode,
+            "model": run_config.model,
+            "reasoning_effort": run_config.reasoning_effort,
+            "seed": run_config.seed,
+            "baseline_run_id": run_config.baseline_run_id,
+        }
         baseline_safe_p90: float | None = None
         used_paths = list(
             dict.fromkeys(
@@ -324,10 +357,13 @@ class BenchmarkRunner:
                 missing = sorted(set(used_paths) - set(self.route_executors))
                 if missing:
                     raise BenchmarkExecutionError(
-                        "real internal benchmark requires injected route executors: " + ", ".join(missing)
+                        "real internal benchmark requires injected route executors: "
+                        + ", ".join(missing)
                     )
             if run_config.mode == "real" and self.oracle_observer is None:
-                raise BenchmarkExecutionError("real benchmark requires an injected independent oracle_observer")
+                raise BenchmarkExecutionError(
+                    "real benchmark requires an injected independent oracle_observer"
+                )
             if run_config.mode == "real" and self.real_lifecycle is None:
                 raise BenchmarkExecutionError(
                     "real benchmark requires an injected real_lifecycle with fixture isolation and restoration"
@@ -354,7 +390,11 @@ class BenchmarkRunner:
                 await self.real_lifecycle.preflight(used_paths, selected_cases)
 
             for case_index, case in enumerate(selected_cases):
-                paths = [path for path in run_config.execution_paths if path in case.execution_paths]
+                paths = [
+                    path
+                    for path in run_config.execution_paths
+                    if path in case.execution_paths
+                ]
                 for warmup, repetition in _trial_repetitions(run_config):
                     ordered_paths = _balanced_order(
                         paths,
@@ -382,20 +422,29 @@ class BenchmarkRunner:
                             dry_run=run_config.dry_run,
                             fixture_marker=f"{run_id}:{trial_id}",
                         )
-                        observation, driver_trace, evidence = await self._execute_and_observe(context, run_config)
+                        (
+                            observation,
+                            driver_trace,
+                            evidence,
+                        ) = await self._execute_and_observe(context, run_config)
                         oracle_started = time.perf_counter()
-                        oracle_input = observation.model_copy(update={"observation": evidence.observation})
+                        oracle_input = observation.model_copy(
+                            update={"observation": evidence.observation}
+                        )
                         oracle = oracle_for(case)(fixture, oracle_input, case)
                         oracle_ms = (time.perf_counter() - oracle_started) * 1000
                         if run_config.mode == "real":
                             observation = observation.model_copy(
                                 update={
                                     "duration_ms": observation.duration_ms + oracle_ms,
-                                    "verification_ms": observation.verification_ms + oracle_ms,
+                                    "verification_ms": observation.verification_ms
+                                    + oracle_ms,
                                 }
                             )
                         metrics = _trial_metrics(observation)
-                        metrics["expectations_met"] = _expectations_met(case, observation)
+                        metrics["expectations_met"] = _expectations_met(
+                            case, observation
+                        )
                         trial = BenchmarkTrial(
                             trial_id=trial_id,
                             run_id=run_id,
@@ -411,9 +460,12 @@ class BenchmarkRunner:
                             warmup=warmup,
                             order_index=order_index,
                             model=run_config.model,
-                            reasoning_effort=run_config.reasoning_effort if run_config.driver == "codex_e2e" else None,
+                            reasoning_effort=run_config.reasoning_effort
+                            if run_config.driver == "codex_e2e"
+                            else None,
                             status=observation.status,
-                            first_pass_success=oracle.passed and observation.retry_count == 0,
+                            first_pass_success=oracle.passed
+                            and observation.retry_count == 0,
                             final_success=oracle.passed,
                             repair_loop_count=observation.retry_count,
                             oracle=oracle,
@@ -457,7 +509,9 @@ class BenchmarkRunner:
                 trials=trials,
                 artifact_dir=artifact_dir,
             )
-            return self.artifacts.write_run(report, environment=environment, traces=traces, oracles=oracles)
+            return self.artifacts.write_run(
+                report, environment=environment, traces=traces, oracles=oracles
+            )
         except BaseException as exc:
             aborted_summary = aggregate_trials(
                 trials,
@@ -489,7 +543,9 @@ class BenchmarkRunner:
                 )
             except BaseException as artifact_exc:
                 if hasattr(exc, "add_note"):
-                    exc.add_note(f"failed to persist aborted benchmark {run_id}: {artifact_exc}")
+                    exc.add_note(
+                        f"failed to persist aborted benchmark {run_id}: {artifact_exc}"
+                    )
             if isinstance(exc, asyncio.CancelledError):
                 raise
             wrapped = BenchmarkExecutionError(f"{exc} (aborted_run_id={run_id})")
@@ -532,7 +588,11 @@ class BenchmarkRunner:
                 "dry_run": dry_run,
             },
         )
-        return [BenchmarkResult.from_trial(trial) for trial in run.report.trials if not trial.warmup]
+        return [
+            BenchmarkResult.from_trial(trial)
+            for trial in run.report.trials
+            if not trial.warmup
+        ]
 
     def read_report(
         self,
@@ -557,9 +617,9 @@ class BenchmarkRunner:
         """Retain the v0.1 explicit legacy writer without overwriting v2 runs."""
 
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir(path.parent)
         payload = [result.model_dump(mode="json") for result in results]
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
         return path
 
     def _baseline_safe_p90(
@@ -573,11 +633,20 @@ class BenchmarkRunner:
     ) -> float | None:
         if run_id is None:
             return None
-        baseline = self.artifacts.read(run_id=run_id, view="report", offset=0, limit=1)["report"]
-        if baseline.get("suite_id") != suite_id or baseline.get("suite_fingerprint") != suite_digest:
-            raise BenchmarkExecutionError("baseline_run_id must reference the same benchmark suite fingerprint")
+        baseline = self.artifacts.read(run_id=run_id, view="report", offset=0, limit=1)[
+            "report"
+        ]
+        if (
+            baseline.get("suite_id") != suite_id
+            or baseline.get("suite_fingerprint") != suite_digest
+        ):
+            raise BenchmarkExecutionError(
+                "baseline_run_id must reference the same benchmark suite fingerprint"
+            )
         if baseline.get("status", "completed") != "completed":
-            raise BenchmarkExecutionError("baseline_run_id must reference a completed benchmark run")
+            raise BenchmarkExecutionError(
+                "baseline_run_id must reference a completed benchmark run"
+            )
         baseline_config = baseline.get("config") or {}
         comparable_config = {
             "driver": current_config.driver,
@@ -590,9 +659,13 @@ class BenchmarkRunner:
             for name, expected in comparable_config.items()
             if baseline_config.get(name) != expected
         ]
-        if sorted(baseline_config.get("execution_paths") or []) != sorted(current_config.execution_paths):
+        if sorted(baseline_config.get("execution_paths") or []) != sorted(
+            current_config.execution_paths
+        ):
             mismatches.append("execution_paths")
-        baseline_environment = self.artifacts.read(run_id=run_id, view="environment")["environment"]
+        baseline_environment = self.artifacts.read(run_id=run_id, view="environment")[
+            "environment"
+        ]
         for name in _STABLE_BASELINE_ENVIRONMENT_FIELDS:
             before = baseline_environment.get(name)
             current = current_environment.get(name)
@@ -602,7 +675,8 @@ class BenchmarkRunner:
                 mismatches.append(f"environment.{name}")
         if mismatches:
             raise BenchmarkExecutionError(
-                "baseline_run_id is not comparable; mismatched fields: " + ", ".join(sorted(set(mismatches)))
+                "baseline_run_id is not comparable; mismatched fields: "
+                + ", ".join(sorted(set(mismatches)))
             )
         value = (
             baseline.get("summary", {})
@@ -612,7 +686,9 @@ class BenchmarkRunner:
             .get("p90")
         )
         if not isinstance(value, (int, float)) or value <= 0:
-            raise BenchmarkExecutionError("baseline_run_id has no positive safe_harness p90")
+            raise BenchmarkExecutionError(
+                "baseline_run_id has no positive safe_harness p90"
+            )
         return float(value)
 
     async def _execute_and_observe(
@@ -621,10 +697,14 @@ class BenchmarkRunner:
         config: BenchmarkRunConfig,
     ) -> tuple[ExecutionObservation, dict[str, Any], IndependentEvidence]:
         if config.mode != "real":
-            observation, trace = await self._execute_trial_unlocked(context, config)
-            evidence = await self._observe_oracle(context, config)
-            observation = _apply_independent_evidence(observation, evidence)
-            return observation, trace, evidence
+            mock_observation, mock_trace = await self._execute_trial_unlocked(
+                context, config
+            )
+            mock_evidence = await self._observe_oracle(context, config)
+            mock_observation = _apply_independent_evidence(
+                mock_observation, mock_evidence
+            )
+            return mock_observation, mock_trace, mock_evidence
 
         lifecycle = self.real_lifecycle
         if lifecycle is None:  # Defensive: run_suite preflight already rejects this.
@@ -651,7 +731,9 @@ class BenchmarkRunner:
                 failure = exc
 
             teardown_started = time.perf_counter()
-            cleanup_task = asyncio.create_task(lifecycle.finalize(context, start, failure))
+            cleanup_task = asyncio.create_task(
+                lifecycle.finalize(context, start, failure)
+            )
             try:
                 finish = await asyncio.shield(cleanup_task)
             except asyncio.CancelledError as cancellation:
@@ -677,8 +759,12 @@ class BenchmarkRunner:
             if failure is not None:
                 _validate_real_finish(finish, context, prior_failure=failure)
                 raise failure
-            if observation is None or evidence is None:  # pragma: no cover - invariant guard
-                raise BenchmarkExecutionError(f"real trial {context.trial_id} produced no observation")
+            if (
+                observation is None or evidence is None
+            ):  # pragma: no cover - invariant guard
+                raise BenchmarkExecutionError(
+                    f"real trial {context.trial_id} produced no observation"
+                )
 
             observation = observation.model_copy(
                 update={
@@ -715,7 +801,9 @@ class BenchmarkRunner:
     ) -> tuple[ExecutionObservation, dict[str, Any]]:
         if config.driver == "codex_e2e":
             if self.codex_driver is None or not config.model:
-                raise BenchmarkExecutionError("codex_e2e driver/model is not configured")
+                raise BenchmarkExecutionError(
+                    "codex_e2e driver/model is not configured"
+                )
             invocation = await self.codex_driver.run(
                 case=context.case,
                 execution_path=context.execution_path,
@@ -730,14 +818,43 @@ class BenchmarkRunner:
 
         executor: RouteExecutor
         if config.mode == "mock":
-            executor = self.route_executors.get(context.execution_path, self._mock_executor)
+            executor = self.route_executors.get(
+                context.execution_path, self._mock_executor
+            )
         else:
             try:
                 executor = self.route_executors[context.execution_path]
             except KeyError as exc:
-                raise BenchmarkExecutionError(f"missing real executor for {context.execution_path}") from exc
+                raise BenchmarkExecutionError(
+                    f"missing real executor for {context.execution_path}"
+                ) from exc
+        request_context = RequestContext(
+            request_id=context.trial_id,
+            session_id=context.run_id,
+            trial_id=context.trial_id,
+            profile="benchmark",
+            mode=context.mode,
+            backend=context.execution_path,
+            document_identity=context.fixture_marker,
+            spec_digest=hashlib.sha256(
+                context.case.model_dump_json().encode("utf-8")
+            ).hexdigest(),
+            timeouts={"trial": context.case.timeout_seconds},
+            capabilities=(
+                f"execution_path:{context.execution_path}",
+                (
+                    "fast_path:enabled"
+                    if context.execution_path == "native_fast"
+                    else "fast_path:read_only"
+                ),
+                "fixture:disposable",
+            ),
+        )
         async with _IN_PROCESS_ROUTE_LOCK:
-            with route_lock(context.execution_path, context):
+            with (
+                bind_request_context(request_context),
+                route_lock(context.execution_path, context),
+            ):
                 started = time.perf_counter()
                 observation = await _invoke_executor(executor, context)
                 wall_ms = (time.perf_counter() - started) * 1000
@@ -763,9 +880,11 @@ class BenchmarkRunner:
             # registry data that does not observe what the subprocess did.
             observer = self._mock_oracle_observer
         else:
-            raise BenchmarkExecutionError("independent oracle observer is not configured")
+            raise BenchmarkExecutionError(
+                "independent oracle observer is not configured"
+            )
         target = observer.observe if hasattr(observer, "observe") else observer
-        value = target(context)  # type: ignore[operator]
+        value = target(context)
         if inspect.isawaitable(value):
             value = await value
         if isinstance(value, IndependentEvidence):
@@ -775,9 +894,11 @@ class BenchmarkRunner:
         return IndependentEvidence(observation=value)
 
 
-async def _invoke_executor(executor: RouteExecutor, context: TrialContext) -> ExecutionObservation:
+async def _invoke_executor(
+    executor: RouteExecutor, context: TrialContext
+) -> ExecutionObservation:
     target = executor.execute if hasattr(executor, "execute") else executor
-    value = target(context)  # type: ignore[operator]
+    value = target(context)
     if inspect.isawaitable(value):
         value = await value
     if not isinstance(value, ExecutionObservation):
@@ -794,7 +915,8 @@ def _apply_independent_evidence(
     unknown = sorted(set(evidence.metrics) - _INDEPENDENT_METRIC_FIELDS)
     if unknown:
         raise BenchmarkExecutionError(
-            "independent observer returned unsupported metric fields: " + ", ".join(unknown)
+            "independent observer returned unsupported metric fields: "
+            + ", ".join(unknown)
         )
     payload = observation.model_dump(mode="python")
     payload.update(evidence.metrics)
@@ -809,44 +931,44 @@ def _apply_independent_evidence(
 
 
 @contextmanager
-def route_lock(path: ExecutionPath, context: TrialContext):
-    """Set and restore the in-process route lock for serialized internal trials."""
+def route_lock(path: ExecutionPath, context: TrialContext) -> Iterator[None]:
+    """Bind a route to this task without mutating process-global state."""
 
-    names = (ROUTE_LOCK_ENV, EXECUTION_PATH_ENV, "FUSION_AGENT_BENCHMARK_TRIAL_ID")
-    previous = {name: os.environ.get(name) for name in names}
-    os.environ[ROUTE_LOCK_ENV] = path
-    os.environ[EXECUTION_PATH_ENV] = path
-    os.environ["FUSION_AGENT_BENCHMARK_TRIAL_ID"] = context.trial_id
+    if path not in {"safe_harness", "native_fast"}:
+        raise BenchmarkExecutionError(f"unsupported benchmark route: {path}")
+    token = _ROUTE_CONTEXT.set((path, context.trial_id))
     try:
         yield
     finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+        _ROUTE_CONTEXT.reset(token)
 
 
 def enforce_route_lock(requested_path: ExecutionPath) -> None:
     """Fail closed when a route tries to escape the benchmark arm."""
 
-    locked = os.getenv(ROUTE_LOCK_ENV)
-    selected = os.getenv(EXECUTION_PATH_ENV)
-    if locked != requested_path or selected != requested_path:
+    active = _ROUTE_CONTEXT.get()
+    locked = active[0] if active is not None else None
+    trial_id = active[1] if active is not None else None
+    if locked != requested_path:
         raise BenchmarkExecutionError(
-            f"route lock violation: requested={requested_path}, locked={locked}, selected={selected}"
+            f"route lock violation: requested={requested_path}, locked={locked}, trial_id={trial_id}"
         )
 
 
-def _validate_real_confirmation(cases: list[BenchmarkCase], config: BenchmarkRunConfig) -> None:
+def _validate_real_confirmation(
+    cases: list[BenchmarkCase], config: BenchmarkRunConfig
+) -> None:
     if config.mode != "real":
         return
     has_mutation = any(
-        case.risk != "read_only" and any(path in case.execution_paths for path in config.execution_paths)
+        case.risk != "read_only"
+        and any(path in case.execution_paths for path in config.execution_paths)
         for case in cases
     )
     if has_mutation and not config.confirm_real_benchmark:
-        raise BenchmarkExecutionError("confirm_real_benchmark=true is required for real mutating cases")
+        raise BenchmarkExecutionError(
+            "confirm_real_benchmark=true is required for real mutating cases"
+        )
 
 
 def _validate_real_start(start: RealTrialStart, context: TrialContext) -> None:
@@ -861,7 +983,8 @@ def _validate_real_start(start: RealTrialStart, context: TrialContext) -> None:
         violations.append("fixture is not a distinct unsaved document")
     if violations:
         raise BenchmarkExecutionError(
-            f"real trial blocked before route dispatch for {context.trial_id}: " + "; ".join(violations)
+            f"real trial blocked before route dispatch for {context.trial_id}: "
+            + "; ".join(violations)
         )
 
 
@@ -897,7 +1020,9 @@ def _validate_real_finish(
         )
 
 
-def _validate_real_observation(observation: ExecutionObservation, context: TrialContext) -> None:
+def _validate_real_observation(
+    observation: ExecutionObservation, context: TrialContext
+) -> None:
     """Abort the suite immediately if real-fixture containment was not proven."""
 
     violations: list[str] = []
@@ -919,7 +1044,8 @@ def _validate_real_observation(observation: ExecutionObservation, context: Trial
         violations.append("parallel real trial overlap detected")
     if violations:
         raise BenchmarkExecutionError(
-            f"real trial containment failed for {context.trial_id}: " + "; ".join(violations)
+            f"real trial containment failed for {context.trial_id}: "
+            + "; ".join(violations)
         )
 
 
@@ -999,7 +1125,9 @@ def _expectations_met(case: BenchmarkCase, observation: ExecutionObservation) ->
     if expected.max_call_count is not None:
         checks.append(observation.call_count <= expected.max_call_count)
     if expected.mutation_dispatch_count is not None:
-        checks.append(observation.mutation_dispatch_count == expected.mutation_dispatch_count)
+        checks.append(
+            observation.mutation_dispatch_count == expected.mutation_dispatch_count
+        )
     if expected.expected_status in {"outcome_unknown", "manifest_drift"}:
         checks[0] = True
     return all(checks)
@@ -1013,4 +1141,4 @@ def _new_run_id() -> str:
 def suite_file_digest(path: Path | str) -> str:
     """Small public helper for CI artifact provenance."""
 
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return hashlib.sha256(read_bytes(path)).hexdigest()

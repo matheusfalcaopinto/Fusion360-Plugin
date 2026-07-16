@@ -40,14 +40,17 @@ jobs:
         shell: bash
         env:
           REASON: ${{ steps.configuration.outputs.reason }}
+          TESTED_COMMIT: ${{ github.sha }}
         run: |
-          mkdir -p nightly-artifacts
-          python -c "import json,os,pathlib; pathlib.Path('nightly-artifacts/nightly-status.json').write_text(json.dumps({'schema_version':'fusion_real_nightly.v1','status':'not_run','reason':os.environ['REASON']},indent=2)+'\n',encoding='utf-8')"
-      - uses: actions/upload-artifact@v4
+          mkdir -p nightly-public
+          python -c "import hashlib,json,os,pathlib; root=pathlib.Path('nightly-public'); status={'schema_version':'fusion_real_nightly.v1','status':'not_run','reason':os.environ['REASON'],'tested_commit':os.environ['TESTED_COMMIT'],'fixture_policy':'disposable_unsaved_only','save_user_documents':False}; (root/'nightly-status.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n',encoding='utf-8'); summary={'schema_version':'fusion_real_nightly_public.v1','status':'not_run','tested_commit':os.environ['TESTED_COMMIT'],'fixture_policy':'disposable_unsaved_only','save_user_documents':False,'checks':{}}; (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n',encoding='utf-8'); lines=[f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}' for path in sorted(root.glob('*.json'))]; (root/'SHA256SUMS').write_text('\n'.join(lines)+'\n',encoding='utf-8')"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: steps.configuration.outputs.ready != 'true'
         with:
           name: fusion-real-nightly-not-run
-          path: nightly-artifacts/nightly-status.json
+          path: nightly-public/**
+          if-no-files-found: error
+          retention-days: 7
 
   real-fusion:
     needs: preflight
@@ -62,12 +65,10 @@ jobs:
       FUSION_AGENT_ALLOW_DRY_RUN: "0"
       FUSION_AGENT_BACKEND: autodesk_http
       FUSION_AGENT_TELEMETRY: "1"
-      FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
-      FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
       GIT_COMMIT: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
           cache: pip
@@ -75,10 +76,15 @@ jobs:
         run: python -m pip install -e "./harness[test]"
       - name: Prepare isolated artifact directory
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path nightly-artifacts | Out-Null
+        run: |
+          Remove-Item -LiteralPath nightly-private -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath nightly-public -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path nightly-private | Out-Null
       - id: runtime_configuration
         name: Confirm runtime configuration on the Fusion runner
         shell: pwsh
+        env:
+          FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
         run: |
           $ready = -not [string]::IsNullOrWhiteSpace($env:FUSION_MCP_ENDPOINT)
           "ready=$($ready.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -88,41 +94,89 @@ jobs:
       - name: Doctor
         if: steps.runtime_configuration.outputs.ready == 'true'
         shell: pwsh
-        run: fusion-agent doctor | Tee-Object -FilePath nightly-artifacts/doctor.json
+        env:
+          FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
+          FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
+        run: fusion-agent doctor | Tee-Object -FilePath nightly-private/doctor.json
       - name: Probe real MCP transport
         if: steps.runtime_configuration.outputs.ready == 'true'
         shell: pwsh
-        run: fusion-agent tools probe | Tee-Object -FilePath nightly-artifacts/probe.json
-      - name: Read-only active-design check
-        if: steps.runtime_configuration.outputs.ready == 'true'
-        shell: pwsh
-        run: fusion-agent inspect --real | Tee-Object -FilePath nightly-artifacts/read-only-inspection.json
+        env:
+          FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
+          FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
+        run: fusion-agent tools probe | Tee-Object -FilePath nightly-private/probe.json
       - id: reference_suite
         name: Run B02-B07 only in disposable unsaved fixtures
         if: steps.runtime_configuration.outputs.ready == 'true'
         shell: pwsh
         env:
-          FUSION_AGENT_FAST_PATH_MODE: enabled
-          FUSION_AGENT_EXECUTION_PATH: native_fast
-          FUSION_AGENT_BENCHMARK_ROUTE_LOCK: native_fast
-          FUSION_AGENT_BENCHMARK_TRIAL_ID: fusion-real-nightly
           FUSION_AGENT_BENCHMARK_MODE: real
           FUSION_AGENT_BENCHMARK_CONFIRM_REAL: "1"
-        run: python benchmark_parametric_suite/run_reference_suite.py
+          FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
+          FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
+        run: |
+          Remove-Item -LiteralPath benchmark_parametric_suite/reference_suite_result.json -Force -ErrorAction SilentlyContinue
+          python benchmark_parametric_suite/run_reference_suite.py --git-commit "${{ github.sha }}" --nightly-run-identity "${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Create private fail-closed host I/O policy
+        if: steps.runtime_configuration.outputs.ready == 'true'
+        shell: pwsh
+        run: |
+          $privateRoot = (Resolve-Path nightly-private).Path
+          $ioRoot = Join-Path $privateRoot "io"
+          New-Item -ItemType Directory -Force -Path $ioRoot | Out-Null
+          @{
+            schema_version = "fusion_agent.authority_policy.v1"
+            import_roots = @(
+              @{
+                id = "nightly-import"
+                path = $ioRoot
+                formats = @("step", "stp")
+                default = $true
+              }
+            )
+            export_roots = @(
+              @{
+                id = "nightly-export"
+                path = $ioRoot
+                formats = @("step", "stp", "stl")
+                default = $true
+              }
+            )
+            allow_overwrite = $false
+            capability_ttl_seconds = 1800
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $privateRoot "authority-policy.json")
       - id: capability_packs
         name: Run non-experimental CadSpec v2 packs in disposable unsaved fixtures
         if: steps.runtime_configuration.outputs.ready == 'true'
         shell: pwsh
-        run: python scripts/run-real-capability-packs.py --artifact-root nightly-artifacts
+        env:
+          FUSION_MCP_ENDPOINT: ${{ secrets.FUSION_MCP_ENDPOINT }}
+          FUSION_MCP_BEARER_TOKEN: ${{ secrets.FUSION_MCP_BEARER_TOKEN }}
+          FUSION_AGENT_AUTHORITY_POLICY_PATH: ${{ github.workspace }}/nightly-private/authority-policy.json
+        run: python scripts/run-real-capability-packs.py --artifact-root nightly-private
+      - id: collect_reference_proof
+        name: Collect only the current reference-suite proof
+        if: always() && steps.runtime_configuration.outputs.ready == 'true'
+        continue-on-error: true
+        shell: pwsh
+        run: python scripts/collect-nightly-reference-proof.py --source benchmark_parametric_suite/reference_suite_result.json --destination nightly-private/reference_suite_result.json --expected-commit "${{ github.sha }}" --expected-run-identity "${{ github.run_id }}-${{ github.run_attempt }}"
       - id: record_status
         name: Preserve suite artifacts and status
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path benchmark_parametric_suite/reference_suite_result.json) {
-            Copy-Item benchmark_parametric_suite/reference_suite_result.json nightly-artifacts/reference_suite_result.json
+          if ("${{ steps.collect_reference_proof.outcome }}" -ne "success") {
+            Remove-Item -LiteralPath nightly-private/reference_suite_result.json -Force -ErrorAction SilentlyContinue
+            $referenceStatus = if ("${{ steps.runtime_configuration.outputs.ready }}" -eq "true") { "failed" } else { "not_run" }
+            @{
+              schema_version = "fusion_parametric_reference_suite_result.v1"
+              status = $referenceStatus
+              reason = "current_run_proof_unavailable"
+              tested_commit = "${{ github.sha }}"
+              nightly_run_identity = "${{ github.run_id }}-${{ github.run_attempt }}"
+            } | ConvertTo-Json | Set-Content -Encoding utf8 nightly-private/reference_suite_result.json
           }
-          if (-not (Test-Path nightly-artifacts/capability-packs.json)) {
+          if (-not (Test-Path nightly-private/capability-packs.json)) {
             $capabilityOutcome = "${{ steps.capability_packs.outcome }}"
             $capabilityStatus = if ("${{ steps.runtime_configuration.outputs.ready }}" -ne "true" -or $capabilityOutcome -eq "skipped") {
               "not_run"
@@ -143,10 +197,12 @@ jobs:
               evidence_mode = "not_executed"
               fixture_policy = "disposable_unsaved_only"
               save_user_documents = $false
-            } | ConvertTo-Json | Set-Content -Encoding utf8 nightly-artifacts/capability-packs.json
+            } | ConvertTo-Json | Set-Content -Encoding utf8 nightly-private/capability-packs.json
           }
           $workflowStatus = if ("${{ steps.runtime_configuration.outputs.ready }}" -ne "true") {
             "not_run"
+          } elseif ("${{ steps.collect_reference_proof.outcome }}" -ne "success") {
+            "failed"
           } elseif ("${{ job.status }}" -eq "success") {
             "passed"
           } else {
@@ -155,28 +211,23 @@ jobs:
           $payload = @{
             schema_version = "fusion_real_nightly.v1"
             status = $workflowStatus
-            git_commit = "${{ github.sha }}"
+            tested_commit = "${{ github.sha }}"
             fixture_policy = "disposable_unsaved_only"
             save_user_documents = $false
           }
-          $payload | ConvertTo-Json | Set-Content -Encoding utf8 nightly-artifacts/nightly-status.json
+          $payload | ConvertTo-Json | Set-Content -Encoding utf8 nightly-private/nightly-status.json
           "run_state=$workflowStatus" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-      - uses: actions/upload-artifact@v4
+      - name: Project fixed public nightly artifacts
+        if: always()
+        shell: pwsh
+        run: python scripts/prepare-nightly-public.py --private-root nightly-private --public-root nightly-public
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: fusion-real-nightly-status
-          path: |
-            nightly-artifacts/**
-            manifests/**
-            logs/**
-            harness/manifests/**
-            harness/logs/**
-            outputs/**
-            fusion_captures/**
-            benchmark_parametric_suite/reference_suite_result.json
-            benchmark_parametric_suite/cases/*/reference_result.json
-            benchmark_parametric_suite/cases/*/images/**
-          if-no-files-found: warn
+          path: nightly-public/**
+          if-no-files-found: error
+          retention-days: 7
 
   outcome:
     needs: [preflight, real-fusion]

@@ -9,7 +9,10 @@ import pytest
 
 from benchmark_parametric_suite.payload_probe.calibration import PayloadScriptCalibrator
 from benchmark_parametric_suite.payload_probe.cli import validate as validate_offline
-from benchmark_parametric_suite.payload_probe.loader import PayloadMatrixError, load_probe_matrix
+from benchmark_parametric_suite.payload_probe.loader import (
+    PayloadMatrixError,
+    load_probe_matrix,
+)
 from benchmark_parametric_suite.payload_probe.models import (
     CanaryContract,
     CleanupReceipt,
@@ -35,7 +38,9 @@ MATRIX = ROOT / "benchmark_parametric_suite" / "payload_probe_matrix.json"
 
 
 def _context() -> ProbeTrialContext:
-    canaries = CanaryContract.for_trial(run_id="run_payload_test", trial_id="pp_trial_0001")
+    canaries = CanaryContract.for_trial(
+        run_id="run_payload_test", trial_id="pp_trial_0001"
+    )
     return ProbeTrialContext(
         run_id="run_payload_test",
         trial_id=canaries.trial_id,
@@ -65,9 +70,23 @@ def _fixture(context: ProbeTrialContext) -> ProbeTrialFixture:
 def _readback(context: ProbeTrialContext, outcome: str) -> ProbeReadback:
     canaries = context.canaries
     values = {
-        "complete": (canaries.trial_id, canaries.start_value, canaries.mutation_value, canaries.end_value, "changed", True),
+        "complete": (
+            canaries.trial_id,
+            canaries.start_value,
+            canaries.mutation_value,
+            canaries.end_value,
+            "changed",
+            True,
+        ),
         "silent_noop": (None, None, None, None, "baseline", False),
-        "partial": (canaries.trial_id, canaries.start_value, None, None, "changed", False),
+        "partial": (
+            canaries.trial_id,
+            canaries.start_value,
+            None,
+            None,
+            "changed",
+            False,
+        ),
         "contaminated": ("foreign", None, None, None, "changed", False),
     }[outcome]
     return ProbeReadback(
@@ -85,15 +104,32 @@ def _readback(context: ProbeTrialContext, outcome: str) -> ProbeReadback:
 def test_matrix_and_production_protector_calibrate_exact_canonical_sizes() -> None:
     matrix = load_probe_matrix(MATRIX)
     assert tuple(target.target_protected_bytes for target in matrix.targets) == (
-        20480, 24576, 28672, 31744, 32512, 32767,
-        32768, 32769, 33024, 36864, 37976, 40960,
+        20480,
+        24576,
+        28672,
+        31744,
+        32512,
+        32767,
+        32768,
+        32769,
+        33024,
+        36864,
+        37976,
+        40960,
     )
     assert matrix.warmups == 1
-    assert all(not item.eligible_as_expectation and not item.eligible_as_oracle for item in matrix.historical_observations)
+    assert all(
+        not item.eligible_as_expectation and not item.eligible_as_oracle
+        for item in matrix.historical_observations
+    )
     calibrator = PayloadScriptCalibrator(normalize_execute_script)
-    canaries = CanaryContract.for_trial(run_id="offline_validation", trial_id="pp_calibration")
+    canaries = CanaryContract.for_trial(
+        run_id="offline_validation", trial_id="pp_calibration"
+    )
     scripts = [
-        calibrator.calibrate(target_protected_bytes=item.target_protected_bytes, canaries=canaries)
+        calibrator.calibrate(
+            target_protected_bytes=item.target_protected_bytes, canaries=canaries
+        )
         for item in matrix.targets
     ]
     assert [item.protected_payload_bytes for item in scripts] == [
@@ -102,7 +138,12 @@ def test_matrix_and_production_protector_calibrate_exact_canonical_sizes() -> No
     assert len({item.ast_topology_sha256 for item in scripts}) == 1
     assert len({item.padding_invariant_sha256 for item in scripts}) == 1
     raw = scripts[-1].raw_script
-    assert raw.index("'start'") < raw.index("_payload_probe_padding") < raw.index("'mutation'") < raw.index("'end'")
+    assert (
+        raw.index("'start'")
+        < raw.index("_payload_probe_padding")
+        < raw.index("'mutation'")
+        < raw.index("'end'")
+    )
 
 
 def test_matrix_rejects_using_history_as_an_expectation(tmp_path: Path) -> None:
@@ -123,7 +164,9 @@ def test_matrix_rejects_using_history_as_an_expectation(tmp_path: Path) -> None:
         ("contaminated", ProbeClassification.CONTAMINATED),
     ],
 )
-def test_classifier_emits_only_explicit_state_classes(outcome: str, expected: ProbeClassification) -> None:
+def test_classifier_emits_only_explicit_state_classes(
+    outcome: str, expected: ProbeClassification
+) -> None:
     context = _context()
     receipt = DispatchReceipt(
         mutating_dispatch_count=1,
@@ -165,7 +208,13 @@ class _Dispatcher:
 
 
 class _Lifecycle:
-    def __init__(self, *, outcome: str = "complete", cleanup_safe: bool = True, reuse_fresh: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        outcome: str = "complete",
+        cleanup_safe: bool = True,
+        reuse_fresh: bool = False,
+    ) -> None:
         self.outcome = outcome
         self.cleanup_safe = cleanup_safe
         self.reuse_fresh = reuse_fresh
@@ -176,7 +225,9 @@ class _Lifecycle:
         self.prepared.append(context)
         generation = "persistent-generation"
         if context.process_mode == "fresh_process":
-            generation = "reused-fresh" if self.reuse_fresh else f"fresh-{context.trial_id}"
+            generation = (
+                "reused-fresh" if self.reuse_fresh else f"fresh-{context.trial_id}"
+            )
         return ProbeTrialFixture(
             trial_id=context.trial_id,
             document_id="doc-1",
@@ -188,10 +239,14 @@ class _Lifecycle:
             unsaved=True,
         )
 
-    async def readback(self, context: ProbeTrialContext, fixture: ProbeTrialFixture) -> ProbeReadback:
+    async def readback(
+        self, context: ProbeTrialContext, fixture: ProbeTrialFixture
+    ) -> ProbeReadback:
         return _readback(context, self.outcome)
 
-    async def cleanup_trial(self, context: ProbeTrialContext, fixture: ProbeTrialFixture) -> CleanupReceipt:
+    async def cleanup_trial(
+        self, context: ProbeTrialContext, fixture: ProbeTrialFixture
+    ) -> CleanupReceipt:
         self.cleaned.append(context)
         return CleanupReceipt(
             document_closed=self.cleanup_safe,
@@ -215,7 +270,9 @@ def _runner(tmp_path: Path, dispatcher: _Dispatcher, lifecycle: _Lifecycle):
 
 
 @pytest.mark.asyncio
-async def test_runner_separates_warmups_and_dispatches_once_per_trial(tmp_path: Path) -> None:
+async def test_runner_separates_warmups_and_dispatches_once_per_trial(
+    tmp_path: Path,
+) -> None:
     dispatcher = _Dispatcher()
     lifecycle = _Lifecycle()
     report = await _runner(tmp_path, dispatcher, lifecycle).run(
@@ -233,11 +290,15 @@ async def test_runner_separates_warmups_and_dispatches_once_per_trial(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_partial_aborts_after_one_dispatch_without_retry_and_cleans_up(tmp_path: Path) -> None:
+async def test_partial_aborts_after_one_dispatch_without_retry_and_cleans_up(
+    tmp_path: Path,
+) -> None:
     dispatcher = _Dispatcher()
     lifecycle = _Lifecycle(outcome="partial")
     with pytest.raises(PayloadProbeAbort) as caught:
-        await _runner(tmp_path, dispatcher, lifecycle).run(ProbeRunConfig(run_id="payload_partial_001"))
+        await _runner(tmp_path, dispatcher, lifecycle).run(
+            ProbeRunConfig(run_id="payload_partial_001")
+        )
     assert len(dispatcher.calls) == 1
     assert len(lifecycle.cleaned) == 1
     assert caught.value.report.status == "aborted"
@@ -245,7 +306,9 @@ async def test_partial_aborts_after_one_dispatch_without_retry_and_cleans_up(tmp
 
 
 @pytest.mark.asyncio
-async def test_dispatch_timeout_is_never_retried_and_restoration_is_attempted(tmp_path: Path) -> None:
+async def test_dispatch_timeout_is_never_retried_and_restoration_is_attempted(
+    tmp_path: Path,
+) -> None:
     dispatcher = _Dispatcher(delay=0.05)
     lifecycle = _Lifecycle(outcome="silent_noop")
     with pytest.raises(PayloadProbeAbort) as caught:
@@ -262,16 +325,22 @@ async def test_restore_failure_aborts_suite(tmp_path: Path) -> None:
     dispatcher = _Dispatcher()
     lifecycle = _Lifecycle(cleanup_safe=False)
     with pytest.raises(PayloadProbeAbort, match="restoration failure"):
-        await _runner(tmp_path, dispatcher, lifecycle).run(ProbeRunConfig(run_id="payload_restore_001"))
+        await _runner(tmp_path, dispatcher, lifecycle).run(
+            ProbeRunConfig(run_id="payload_restore_001")
+        )
     assert len(dispatcher.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_fresh_process_generation_must_be_unique_and_invalid_trial_is_not_dispatched(tmp_path: Path) -> None:
+async def test_fresh_process_generation_must_be_unique_and_invalid_trial_is_not_dispatched(
+    tmp_path: Path,
+) -> None:
     dispatcher = _Dispatcher()
     lifecycle = _Lifecycle(reuse_fresh=True)
     with pytest.raises(PayloadProbeAbort):
-        await _runner(tmp_path, dispatcher, lifecycle).run(ProbeRunConfig(run_id="payload_process_001"))
+        await _runner(tmp_path, dispatcher, lifecycle).run(
+            ProbeRunConfig(run_id="payload_process_001")
+        )
     assert len(lifecycle.cleaned) == len(lifecycle.prepared)
     assert len(dispatcher.calls) == len(lifecycle.prepared) - 1
 

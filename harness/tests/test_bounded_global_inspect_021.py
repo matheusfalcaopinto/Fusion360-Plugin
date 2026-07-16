@@ -24,7 +24,9 @@ class _CountOnlyCollection:
 
     def item(self, _index: int):
         self.item_accesses += 1
-        raise AssertionError("bounded document/count inspection must not enumerate this collection")
+        raise AssertionError(
+            "bounded document/count inspection must not enumerate this collection"
+        )
 
 
 class _ItemCollection:
@@ -125,7 +127,9 @@ def _install_geometry_adsk(monkeypatch: pytest.MonkeyPatch):
     return component_collection
 
 
-def test_default_global_inspect_is_constant_time_on_large_design(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_global_inspect_is_constant_time_on_large_design(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     collections = _install_fake_adsk(monkeypatch)
     namespace: dict[str, object] = {}
     exec(_bounded_inspect_script(), namespace)
@@ -161,7 +165,9 @@ def test_inspection_budget_validation_is_hard_capped() -> None:
         _normalize_inspection_options({"sections": []})
 
 
-def test_response_budget_stops_geometry_traversal_and_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_response_budget_stops_geometry_traversal_and_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     components = _install_geometry_adsk(monkeypatch)
     namespace: dict[str, object] = {}
     exec(
@@ -214,7 +220,9 @@ async def test_global_inspect_uses_non_replayable_trusted_read() -> None:
             return ToolResult.success(message=json.dumps(state))
 
     adapter = Adapter()
-    facade = VendorFusionFacade(adapter, available_tools={"fusion_mcp_read", "fusion_mcp_execute"})
+    facade = VendorFusionFacade(
+        adapter, available_tools={"fusion_mcp_read", "fusion_mcp_execute"}
+    )
     result = await facade.inspect_design()
     assert result["complete"] is True
     assert adapter.options.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY

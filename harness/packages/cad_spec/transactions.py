@@ -24,11 +24,29 @@ def normalize_transactions(spec: CadSpec) -> list[TransactionStep]:
         TransactionStep("inspect_design", "inspect_design", {}),
     ]
     if spec.document_policy.create_checkpoint:
-        steps.append(TransactionStep("checkpoint_policy", "checkpoint_policy", spec.document_policy.model_dump()))
+        steps.append(
+            TransactionStep(
+                "checkpoint_policy",
+                "checkpoint_policy",
+                spec.document_policy.model_dump(),
+            )
+        )
     for parameter in spec.parameters:
-        steps.append(TransactionStep(f"parameter_{parameter.name}", "create_named_parameter", parameter.model_dump()))
+        steps.append(
+            TransactionStep(
+                f"parameter_{parameter.name}",
+                "create_named_parameter",
+                parameter.model_dump(),
+            )
+        )
     for component in spec.components:
-        steps.append(TransactionStep(f"component_{component.name}", "create_component", {"name": component.name}))
+        steps.append(
+            TransactionStep(
+                f"component_{component.name}",
+                "create_component",
+                {"name": component.name},
+            )
+        )
         for feature in component.features:
             steps.append(
                 TransactionStep(

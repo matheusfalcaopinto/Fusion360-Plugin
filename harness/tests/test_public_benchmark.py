@@ -29,7 +29,11 @@ class FakeAdapter:
 
     async def preflight(self, subject, config) -> AdapterPreflight:  # noqa: ANN001
         self.preflight_calls += 1
-        return AdapterPreflight(ready=True, observed_revision=self.revision, environment={"fixture": "disposable"})
+        return AdapterPreflight(
+            ready=True,
+            observed_revision=self.revision,
+            environment={"fixture": "disposable"},
+        )
 
     async def execute(self, subject, task, config) -> AdapterExecution:  # noqa: ANN001
         self.execute_calls += 1
@@ -84,6 +88,25 @@ async def test_missing_adapters_are_not_run_and_not_scoreable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_report_uses_constructor_environment_snapshot_after_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = PublicBenchmarkRunner(
+        environment_snapshot={
+            "GIT_COMMIT": "startup-commit",
+            "FUSION_VERSION": "startup-fusion",
+        }
+    )
+    monkeypatch.setenv("GIT_COMMIT", "drifted-commit")
+    monkeypatch.setenv("FUSION_VERSION", "drifted-fusion")
+
+    report = await runner.run(MANIFEST)
+
+    assert report.environment["git_commit"] == "startup-commit"
+    assert report.environment["fusion_version"] == "startup-fusion"
+
+
+@pytest.mark.asyncio
 async def test_real_adapter_is_not_touched_without_both_confirmations() -> None:
     adapter = FakeAdapter("b44b667e440da070081795cfcbfaf75de2a44251")
     report = await PublicBenchmarkRunner({"faust_fusion360_mcp": adapter}).run(
@@ -105,11 +128,16 @@ async def test_revision_mismatch_fails_closed_before_execution() -> None:
     assert adapter.preflight_calls == 1
     assert adapter.execute_calls == 0
     assert all(item.state == "not_run" for item in report.results)
-    assert all(item.reason and item.reason.startswith("revision_mismatch:") for item in report.results)
+    assert all(
+        item.reason and item.reason.startswith("revision_mismatch:")
+        for item in report.results
+    )
 
 
 @pytest.mark.asyncio
-async def test_pinned_adapter_produces_scoreable_normalized_results(tmp_path: Path) -> None:
+async def test_pinned_comparator_alone_produces_normalized_but_not_scoreable_results(
+    tmp_path: Path,
+) -> None:
     adapter = FakeAdapter("b44b667e440da070081795cfcbfaf75de2a44251")
     runner = PublicBenchmarkRunner({"faust_fusion360_mcp": adapter})
     report = await runner.run(
@@ -118,11 +146,14 @@ async def test_pinned_adapter_produces_scoreable_normalized_results(tmp_path: Pa
     )
     assert report.summary["states"] == {"completed": 14, "failed": 0, "not_run": 0}
     assert report.summary["oracle_pass_rate"] == 1.0
-    assert report.summary["scoreable"] is True
+    assert report.summary["scoreable"] is False
     assert report.results[0].evidence_mode == "mock"
     assert report.results[0].evidence["authorization"]["redacted"] is True
     json_path, markdown_path = runner.write(report, tmp_path)
-    assert json.loads(json_path.read_text(encoding="utf-8"))["summary"]["scoreable"] is True
+    assert (
+        json.loads(json_path.read_text(encoding="utf-8"))["summary"]["scoreable"]
+        is False
+    )
     assert "never count as success" in markdown_path.read_text(encoding="utf-8")
     markdown = markdown_path.read_text(encoding="utf-8")
     assert "Normalized task results" in markdown

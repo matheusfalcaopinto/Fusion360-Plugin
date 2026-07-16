@@ -11,6 +11,11 @@ import zipfile
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+try:
+    from scripts.bundle_integrity import BundleIntegrityError, verify_wheel
+except ModuleNotFoundError:  # Executed as ``python scripts/validate_plugin.py``.
+    from bundle_integrity import BundleIntegrityError, verify_wheel  # type: ignore[no-redef]
+
 
 REQUIRED_TOOLS = {
     "fusion_agent_session_health",
@@ -43,14 +48,30 @@ def main() -> int:
     if mcp_json:
         server = (mcp_json.get("mcpServers") or {}).get("fusion_agent") or {}
         command = str(server.get("command") or "")
-        args = list(server.get("args") or [])
+        raw_args = server.get("args") or []
+        args = list(raw_args) if isinstance(raw_args, list) else []
         environment = server.get("env") or {}
         if not command:
             errors.append(".mcp.json fusion_agent.command is missing")
+        if not isinstance(raw_args, list) or not all(
+            isinstance(argument, str) for argument in raw_args
+        ):
+            errors.append(".mcp.json fusion_agent.args must be an array of strings")
         if not any(_is_launcher_arg(arg) for arg in args):
-            errors.append(".mcp.json must launch scripts/fusion_agent_codex_mcp_launcher.py")
+            errors.append(
+                ".mcp.json must launch scripts/fusion_agent_codex_mcp_launcher.py"
+            )
+        _check_mcp_runtime_paths(root, command, args, errors)
+        if not isinstance(environment, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in environment.items()
+        ):
+            errors.append(".mcp.json fusion_agent.env must map strings to strings")
+            environment = {}
         if environment.get("FUSION_MCP_TRANSPORT_MODE") != "legacy":
-            errors.append("installed .mcp.json must default FUSION_MCP_TRANSPORT_MODE to legacy")
+            errors.append(
+                "installed .mcp.json must default FUSION_MCP_TRANSPORT_MODE to legacy"
+            )
         expected_profile = os.getenv("FUSION_AGENT_EXPECTED_TOOL_PROFILE", "normal")
         if environment.get("FUSION_AGENT_TOOL_PROFILE") != expected_profile:
             errors.append(
@@ -60,11 +81,12 @@ def main() -> int:
         expected_backend = os.getenv("FUSION_AGENT_EXPECTED_BACKEND", "autodesk_http")
         if environment.get("FUSION_AGENT_BACKEND") != expected_backend:
             errors.append(
-                "installed .mcp.json FUSION_AGENT_BACKEND must be "
-                f"{expected_backend}"
+                f"installed .mcp.json FUSION_AGENT_BACKEND must be {expected_backend}"
             )
         if environment.get("FUSION_AGENT_REMOTE_POLICY") != "loopback_only":
-            errors.append("installed .mcp.json must default FUSION_AGENT_REMOTE_POLICY to loopback_only")
+            errors.append(
+                "installed .mcp.json must default FUSION_AGENT_REMOTE_POLICY to loopback_only"
+            )
         if platform.system().lower() == "windows" and command.lower() == "python":
             venv_python = root / ".venv" / "Scripts" / "python.exe"
             warnings.append(
@@ -76,7 +98,9 @@ def main() -> int:
     if not wheels:
         errors.append("missing bundled fusion_agent_harness wheel")
     elif len(wheels) != 1:
-        errors.append(f"expected exactly one bundled harness wheel, found {len(wheels)}")
+        errors.append(
+            f"expected exactly one bundled harness wheel, found {len(wheels)}"
+        )
     else:
         _check_wheel(root, wheels[0], plugin_json, errors)
     _check_tools(root, errors, warnings)
@@ -105,13 +129,17 @@ def _read_json(path: Path, errors: list[str]) -> dict:
 def _check_tools(root: Path, errors: list[str], warnings: list[str]) -> None:
     source_roots = [root / "harness" / "apps", root / "harness" / "packages"]
     if not all(path.exists() for path in source_roots):
-        errors.append("canonical harness source is missing under harness/apps or harness/packages")
+        errors.append(
+            "canonical harness source is missing under harness/apps or harness/packages"
+        )
         return
     sys.path[:0] = [str(path) for path in source_roots]
     try:
         from fusion_agent_mcp.server import list_tool_definitions, tool_specs
     except Exception as exc:  # noqa: BLE001 - installed validator may not include unpacked source
-        warnings.append(f"could not import fusion_agent_mcp.server from working tree: {type(exc).__name__}: {exc}")
+        warnings.append(
+            f"could not import fusion_agent_mcp.server from working tree: {type(exc).__name__}: {exc}"
+        )
         return
     names = {spec.name for spec in tool_specs()}
     missing = sorted(REQUIRED_TOOLS - names)
@@ -133,7 +161,10 @@ def _check_tools(root: Path, errors: list[str], warnings: list[str]) -> None:
             f"expected {EXPECTED_NORMAL_TOOL_COUNT} normal-profile MCP tools, "
             f"found {len(normal_definitions)}"
         )
-    if any("script" in tool.inputSchema.get("properties", {}) for tool in normal_definitions):
+    if any(
+        "script" in tool.inputSchema.get("properties", {})
+        for tool in normal_definitions
+    ):
         errors.append("normal MCP profile must not expose arbitrary script input")
     benchmark_names = {tool.name for tool in benchmark_definitions}
     benchmark_direct_mutators = {
@@ -149,7 +180,9 @@ def _check_tools(root: Path, errors: list[str], warnings: list[str]) -> None:
         )
     if any(tool.outputSchema is None for tool in all_public_definitions):
         errors.append("every public MCP tool must have an output schema")
-    annotations_by_name = {tool.name: tool.annotations for tool in all_public_definitions}
+    annotations_by_name = {
+        tool.name: tool.annotations for tool in all_public_definitions
+    }
     for name in REQUIRED_TOOLS & {
         "fusion_agent_native_read",
         "fusion_agent_targeted_inspect",
@@ -169,10 +202,24 @@ def _check_wheel(root: Path, wheel: Path, plugin_json: dict, errors: list[str]) 
     version = str(project.get("version") or "")
     expected_name = f"fusion_agent_harness-{version}-py3-none-any.whl"
     if wheel.name != expected_name:
-        errors.append(f"wheel name/version mismatch: expected {expected_name}, found {wheel.name}")
+        errors.append(
+            f"wheel name/version mismatch: expected {expected_name}, found {wheel.name}"
+        )
     plugin_version = str(plugin_json.get("version") or "")
     if plugin_version.split("+", 1)[0] != version:
-        errors.append(f"plugin base version {plugin_version!r} does not match harness {version!r}")
+        errors.append(
+            f"plugin base version {plugin_version!r} does not match harness {version!r}"
+        )
+    try:
+        verify_wheel(
+            wheel,
+            plugin_root=root,
+            expected_version=version,
+            require_source_parity=True,
+        )
+    except BundleIntegrityError as exc:
+        errors.append(f"wheel integrity verification failed: {exc}")
+        return
     try:
         with zipfile.ZipFile(wheel) as archive:
             names = set(archive.namelist())
@@ -186,7 +233,9 @@ def _check_wheel(root: Path, wheel: Path, plugin_json: dict, errors: list[str]) 
             }
             missing = sorted(required - names)
             if missing:
-                errors.append(f"wheel missing canonical runtime files: {', '.join(missing)}")
+                errors.append(
+                    f"wheel missing canonical runtime files: {', '.join(missing)}"
+                )
             metadata_name = f"fusion_agent_harness-{version}.dist-info/METADATA"
             if metadata_name not in names:
                 errors.append("wheel is missing package METADATA")
@@ -194,9 +243,17 @@ def _check_wheel(root: Path, wheel: Path, plugin_json: dict, errors: list[str]) 
                 metadata = archive.read(metadata_name).decode("utf-8")
                 if "Provides-Extra: faust" not in metadata:
                     errors.append("wheel METADATA is missing the pinned faust extra")
-                if 'Requires-Dist: fusion360-mcp-server==0.1.0; extra == "faust"' not in metadata:
-                    errors.append("wheel METADATA is missing fusion360-mcp-server==0.1.0 for faust")
-            if any("work_unpacked_wheel" in name or ".dist-info/.dist-info" in name for name in names):
+                if (
+                    'Requires-Dist: fusion360-mcp-server==0.1.0; extra == "faust"'
+                    not in metadata
+                ):
+                    errors.append(
+                        "wheel METADATA is missing fusion360-mcp-server==0.1.0 for faust"
+                    )
+            if any(
+                "work_unpacked_wheel" in name or ".dist-info/.dist-info" in name
+                for name in names
+            ):
                 errors.append("wheel contains diagnostic or nested dist-info content")
     except Exception as exc:  # noqa: BLE001 - validator reports artifact failures
         errors.append(f"cannot inspect wheel {wheel}: {type(exc).__name__}: {exc}")
@@ -229,7 +286,9 @@ def _check_fusion_data(
         "token",
     }
     if sensitive_query_names & {name.lower() for name, _ in parse_qsl(parsed.query)}:
-        errors.append("fusion_data.url must not contain token or secret query parameters")
+        errors.append(
+            "fusion_data.url must not contain token or secret query parameters"
+        )
     if server.get("auth") != "oauth":
         errors.append("fusion_data.auth must be oauth so Codex owns the token flow")
     if not isinstance(server.get("enabled"), bool):
@@ -239,7 +298,9 @@ def _check_fusion_data(
     if server.get("default_tools_approval_mode") != "writes":
         errors.append("fusion_data.default_tools_approval_mode must be writes")
     if "env" in server or "headers" in server or "bearer_token" in server:
-        errors.append("fusion_data credentials must be managed by Codex OAuth, not plugin config")
+        errors.append(
+            "fusion_data credentials must be managed by Codex OAuth, not plugin config"
+        )
     leaked = sorted(
         key
         for key in fusion_agent_environment
@@ -255,6 +316,42 @@ def _check_fusion_data(
 def _is_launcher_arg(value: object) -> bool:
     text = str(value).replace("\\", "/")
     return text.endswith("scripts/fusion_agent_codex_mcp_launcher.py")
+
+
+def _check_mcp_runtime_paths(
+    root: Path,
+    command: str,
+    args: list[object],
+    errors: list[str],
+) -> None:
+    """Require one exact launcher and contain rewritten installed paths."""
+
+    if len(args) != 1:
+        errors.append(".mcp.json fusion_agent.args must contain only the launcher path")
+        return
+    expected_launcher = (
+        root / "scripts" / "fusion_agent_codex_mcp_launcher.py"
+    ).resolve()
+    raw_launcher = Path(str(args[0]))
+    launcher = (
+        raw_launcher.resolve()
+        if raw_launcher.is_absolute()
+        else (root / raw_launcher).resolve()
+    )
+    if launcher != expected_launcher or not launcher.is_file():
+        errors.append(".mcp.json launcher path must resolve to the plugin launcher")
+
+    raw_command = Path(command)
+    if not raw_command.is_absolute():
+        if command not in {"python", "python3"}:
+            errors.append("portable .mcp.json command must be python or python3")
+        return
+    runtime = raw_command.resolve()
+    runtime_root = (root / ".venv").resolve()
+    if not runtime.is_file() or not runtime.is_relative_to(runtime_root):
+        errors.append(
+            "installed .mcp.json Python must be contained by the plugin .venv"
+        )
 
 
 if __name__ == "__main__":

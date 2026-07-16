@@ -13,7 +13,9 @@ from fusion_tool_facade.policy import FacadeMapping
 class FusionFacade:
     """Semantic facade used by executor, verifier, and CLI."""
 
-    def __init__(self, adapter: FusionMcpAdapter, mapping: FacadeMapping | None = None) -> None:
+    def __init__(
+        self, adapter: FusionMcpAdapter, mapping: FacadeMapping | None = None
+    ) -> None:
         self.adapter = adapter
         self.mapping = mapping or FacadeMapping()
 
@@ -22,15 +24,24 @@ class FusionFacade:
 
         return await self._call("inspect_design", {})
 
-    async def create_named_parameter(self, name: str, expression: str, comment: str | None = None) -> dict[str, Any]:
+    async def create_named_parameter(
+        self, name: str, expression: str, comment: str | None = None
+    ) -> dict[str, Any]:
         """Create or update a named user parameter."""
 
-        return await self._call("create_named_parameter", {"name": name, "expression": expression, "comment": comment})
+        return await self._call(
+            "create_named_parameter",
+            {"name": name, "expression": expression, "comment": comment},
+        )
 
-    async def update_named_parameter(self, name: str, expression: str) -> dict[str, Any]:
+    async def update_named_parameter(
+        self, name: str, expression: str
+    ) -> dict[str, Any]:
         """Update a named user parameter."""
 
-        return await self._call("update_named_parameter", {"name": name, "expression": expression})
+        return await self._call(
+            "update_named_parameter", {"name": name, "expression": expression}
+        )
 
     async def create_component(self, name: str) -> dict[str, Any]:
         """Create and activate a component."""
@@ -42,12 +53,19 @@ class FusionFacade:
 
         return await self._call("activate_component", {"name": name})
 
-    async def create_sketch_on_plane(self, component: str, plane: str, name: str) -> dict[str, Any]:
+    async def create_sketch_on_plane(
+        self, component: str, plane: str, name: str
+    ) -> dict[str, Any]:
         """Create a named sketch on a known origin plane."""
 
-        return await self._call("create_sketch_on_plane", {"component": component, "plane": plane, "name": name})
+        return await self._call(
+            "create_sketch_on_plane",
+            {"component": component, "plane": plane, "name": name},
+        )
 
-    async def draw_constrained_rectangle(self, sketch: str, center: list[str], width: str, height: str) -> dict[str, Any]:
+    async def draw_constrained_rectangle(
+        self, sketch: str, center: list[str], width: str, height: str
+    ) -> dict[str, Any]:
         """Draw a constrained rectangle profile."""
 
         return await self._call(
@@ -55,7 +73,9 @@ class FusionFacade:
             {"sketch": sketch, "center": center, "width": width, "height": height},
         )
 
-    async def draw_constrained_circle(self, sketch: str, center: list[str], diameter: str) -> dict[str, Any]:
+    async def draw_constrained_circle(
+        self, sketch: str, center: list[str], diameter: str
+    ) -> dict[str, Any]:
         """Draw a constrained circle profile."""
 
         return await self._call(
@@ -115,10 +135,15 @@ class FusionFacade:
             },
         )
 
-    async def apply_fillet(self, edge_selector: str, radius: str, name: str) -> dict[str, Any]:
+    async def apply_fillet(
+        self, edge_selector: str, radius: str, name: str
+    ) -> dict[str, Any]:
         """Apply a named fillet."""
 
-        return await self._call("apply_fillet", {"edge_selector": edge_selector, "radius": radius, "name": name})
+        return await self._call(
+            "apply_fillet",
+            {"edge_selector": edge_selector, "radius": radius, "name": name},
+        )
 
     async def create_nema17_stepper(
         self,
@@ -508,12 +533,16 @@ class FusionFacade:
             },
         )
 
-    async def set_component_metadata(self, metadata: list[dict[str, Any]]) -> dict[str, Any]:
+    async def set_component_metadata(
+        self, metadata: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """Set engineering metadata on components."""
 
         return await self._call("set_component_metadata", {"metadata": metadata})
 
-    async def create_assembly_joints(self, joints: list[dict[str, Any]]) -> dict[str, Any]:
+    async def create_assembly_joints(
+        self, joints: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """Create or update assembly joints."""
 
         return await self._call("create_assembly_joints", {"joints": joints})
@@ -547,10 +576,14 @@ class FusionFacade:
 
         return await self._call("analyze_interference", {"target": target})
 
-    async def measure_physical_properties(self, targets: list[str] | None = None) -> dict[str, Any]:
+    async def measure_physical_properties(
+        self, targets: list[str] | None = None
+    ) -> dict[str, Any]:
         """Measure component physical properties."""
 
-        return await self._call("measure_physical_properties", {"targets": targets or []})
+        return await self._call(
+            "measure_physical_properties", {"targets": targets or []}
+        )
 
     async def measure_bounding_box(self, target: str | None = None) -> list[float]:
         """Measure a body or design bounding box in millimeters."""
@@ -566,16 +599,26 @@ class FusionFacade:
     async def export_step(self, target: str, path: Path | str) -> dict[str, Any]:
         """Export a STEP file after verification."""
 
-        return await self._call("export_step", {"target": target, "path": str(path), "format": "step"})
+        return await self._call(
+            "export_step", {"target": target, "path": str(path), "format": "step"}
+        )
 
     async def export_stl(self, target: str, path: Path | str) -> dict[str, Any]:
         """Export an STL file after verification."""
 
-        return await self._call("export_stl", {"target": target, "path": str(path), "format": "stl"})
+        return await self._call(
+            "export_stl", {"target": target, "path": str(path), "format": "stl"}
+        )
 
-    async def _call(self, facade_operation: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _call(
+        self, facade_operation: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
         native = self.mapping.native(facade_operation)
-        result: ToolResult = await self.adapter.call(native, {"_facade_tool": facade_operation, **args})
+        result: ToolResult = await self.adapter.call(
+            native, {"_facade_tool": facade_operation, **args}
+        )
         if not result.ok:
-            raise RuntimeError(f"{facade_operation} failed: {result.error_code}: {result.error_message}")
+            raise RuntimeError(
+                f"{facade_operation} failed: {result.error_code}: {result.error_message}"
+            )
         return result.data

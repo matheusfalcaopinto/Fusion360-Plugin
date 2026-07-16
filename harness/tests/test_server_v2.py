@@ -5,6 +5,7 @@ import json
 import pytest
 from jsonschema import Draft202012Validator
 
+from agent_core.request_context import RequestContext
 from fusion_agent_mcp.runtime import FusionAgentRuntime
 from fusion_agent_mcp import server
 from fusion_mcp_adapter.real_client import RealMcpClient
@@ -26,6 +27,21 @@ def run(_context: str):
 """
 
 
+def _security_context(
+    *, fast_path: str = "read_only", execution_path: str = "auto"
+) -> RequestContext:
+    return RequestContext(
+        request_id="test-request-parent",
+        profile="all",
+        mode="mock",
+        backend="mock",
+        capabilities=(
+            f"fast_path:{fast_path}",
+            f"execution_path:{execution_path}",
+        ),
+    )
+
+
 def test_all_profile_has_35_safe_structured_tools() -> None:
     tools = server.list_tool_definitions("all")
     names = {tool.name for tool in tools}
@@ -43,7 +59,8 @@ def test_all_profile_has_35_safe_structured_tools() -> None:
     new_specs = {
         spec.name: spec
         for spec in server.tool_specs()
-        if spec.name in {
+        if spec.name
+        in {
             "fusion_agent_native_read",
             "fusion_agent_targeted_inspect",
             "fusion_agent_fast_execute",
@@ -63,7 +80,9 @@ def test_server_advertises_harness_version() -> None:
 
 def test_read_only_fast_execute_schema_allows_queries_without_assertions() -> None:
     schema = next(
-        spec.input_schema for spec in server.tool_specs() if spec.name == "fusion_agent_fast_execute"
+        spec.input_schema
+        for spec in server.tool_specs()
+        if spec.name == "fusion_agent_fast_execute"
     )
     Draft202012Validator.check_schema(schema)
     errors = list(
@@ -82,8 +101,12 @@ def test_read_only_fast_execute_schema_allows_queries_without_assertions() -> No
 
 
 @pytest.mark.asyncio
-async def test_mock_screenshot_is_real_image_content_without_structured_base64(tmp_path) -> None:
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+async def test_mock_screenshot_is_real_image_content_without_structured_base64(
+    tmp_path,
+) -> None:
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
     response = await server.execute_tool_response(
         "fusion_agent_native_read",
         {"mode": "mock", "query_type": "screenshot", "width": 32, "height": 24},
@@ -100,10 +123,13 @@ async def test_mock_screenshot_is_real_image_content_without_structured_base64(t
 
 
 @pytest.mark.asyncio
-async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FUSION_AGENT_FAST_PATH_MODE", "read_only")
+async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "FAST_PATH_OUTPUT_ROOT", tmp_path / "fast_path")
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
     request = {
         "mode": "mock",
         "intent": "Read the active document version without changing it",
@@ -139,6 +165,7 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
         "fusion_agent_fast_execute",
         request,
         runtime=runtime,
+        request_context=_security_context(),
     )
 
     assert response.payload["status"] == "applied_verified"
@@ -157,11 +184,14 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
 
 
 @pytest.mark.asyncio
-async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audit(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FUSION_AGENT_FAST_PATH_MODE", "enabled")
+async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audit(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES", "1")
     monkeypatch.setattr(server, "FAST_PATH_OUTPUT_ROOT", tmp_path / "fast_path")
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
 
     response = await server.execute_tool_response(
         "fusion_agent_fast_execute",
@@ -176,18 +206,32 @@ async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audi
                     {
                         "id": "body",
                         "entity_type": "body",
-                        "selector": {"component_path": "root", "name": "PayloadGateBody"},
+                        "selector": {
+                            "component_path": "root",
+                            "name": "PayloadGateBody",
+                        },
                     }
                 ],
                 "assertions": [
-                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "id": "body_exists",
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
                 "requirements": [
-                    {"id": "payload_gate_body_created", "assertion_ids": ["body_exists"], "required": True}
+                    {
+                        "id": "payload_gate_body_created",
+                        "assertion_ids": ["body_exists"],
+                        "required": True,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=_security_context(fast_path="enabled"),
     )
 
     assert response.payload["status"] == "blocked_before_apply"
@@ -197,41 +241,51 @@ async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audi
     assert guard["protected_payload_bytes"] > guard["limit_bytes"] == 1
     assert len(guard["protected_payload_sha256"]) == 64
 
-    audit_path = tmp_path / "fast_path" / response.payload["operation_id"] / "audit.json"
+    audit_path = (
+        tmp_path / "fast_path" / response.payload["operation_id"] / "audit.json"
+    )
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     audited_guard = audit["response"]["executor_guard"]
     assert audited_guard["protected_payload_bytes"] == guard["protected_payload_bytes"]
-    assert audited_guard["protected_payload_sha256"] == guard["protected_payload_sha256"]
+    assert (
+        audited_guard["protected_payload_sha256"] == guard["protected_payload_sha256"]
+    )
     assert audit["response"]["transport_mutating_dispatch_count"] == 0
     await runtime.close()
 
 
 @pytest.mark.asyncio
 async def test_flags_and_route_lock_fail_closed(monkeypatch, tmp_path) -> None:
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
-    monkeypatch.setenv("FUSION_AGENT_FAST_PATH_MODE", "read_only")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
     blocked = await server.execute_tool_response(
         "fusion_agent_fast_execute",
         {"mode": "mock", "change_class": "additive"},
         runtime=runtime,
+        request_context=_security_context(),
     )
     assert blocked.payload["reason"] == "fast_path_read_only"
 
-    monkeypatch.setenv("FUSION_AGENT_EXECUTION_PATH", "safe_harness")
     blocked_read = await server.execute_tool_response(
         "fusion_agent_native_read",
         {"mode": "mock", "query_type": "active_command"},
         runtime=runtime,
+        request_context=_security_context(execution_path="safe_harness"),
     )
     assert blocked_read.payload["reason"] == "route_lock_safe_harness"
     await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FUSION_AGENT_FAST_PATH_MODE", "enabled")
+async def test_recovery_is_explicit_latest_operation_and_state_verified(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "FAST_PATH_OUTPUT_ROOT", tmp_path / "fast_path")
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
+    request_context = _security_context(fast_path="enabled")
     query = {
         "id": "body",
         "entity_type": "body",
@@ -248,14 +302,25 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "id": "body_exists",
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
                 "requirements": [
-                    {"id": "recovery_body_created", "assertion_ids": ["body_exists"], "required": True}
+                    {
+                        "id": "recovery_body_created",
+                        "assertion_ids": ["body_exists"],
+                        "required": True,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=request_context,
     )
     assert applied.payload["status"] == "applied_verified"
 
@@ -269,11 +334,17 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": False}
+                    {
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": False,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=request_context,
     )
 
     assert recovered.payload["status"] == "recovered_verified"
@@ -287,11 +358,17 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=request_context,
     )
     assert redone.payload["status"] == "recovered_verified"
     second_redo = await server.execute_tool_response(
@@ -304,6 +381,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
             "verification": {"queries": [query], "assertions": []},
         },
         runtime=runtime,
+        request_context=request_context,
     )
     assert second_redo.payload["reason"] == "recovery_action_not_available"
     assert second_redo.payload["expected_action"] == "undo"
@@ -311,10 +389,14 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_recovery_blocks_same_count_drift_outside_target_queries(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FUSION_AGENT_FAST_PATH_MODE", "enabled")
+async def test_recovery_blocks_same_count_drift_outside_target_queries(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "FAST_PATH_OUTPUT_ROOT", tmp_path / "fast_path")
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
+    request_context = _security_context(fast_path="enabled")
     runtime._mock_backend.entities[("parameter", "Unrelated")] = {
         "entity_type": "parameter",
         "name": "Unrelated",
@@ -340,14 +422,25 @@ async def test_recovery_blocks_same_count_drift_outside_target_queries(monkeypat
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"id": "body_exists", "query_id": "body", "field": "exists", "operator": "eq", "expected": True}
+                    {
+                        "id": "body_exists",
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": True,
+                    }
                 ],
                 "requirements": [
-                    {"id": "drift_body_created", "assertion_ids": ["body_exists"], "required": True}
+                    {
+                        "id": "drift_body_created",
+                        "assertion_ids": ["body_exists"],
+                        "required": True,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=request_context,
     )
     assert applied.payload["status"] == "applied_verified"
     runtime._mock_backend.entities[("parameter", "Unrelated")]["expression"] = "11 mm"
@@ -362,11 +455,17 @@ async def test_recovery_blocks_same_count_drift_outside_target_queries(monkeypat
             "verification": {
                 "queries": [query],
                 "assertions": [
-                    {"query_id": "body", "field": "exists", "operator": "eq", "expected": False}
+                    {
+                        "query_id": "body",
+                        "field": "exists",
+                        "operator": "eq",
+                        "expected": False,
+                    }
                 ],
             },
         },
         runtime=runtime,
+        request_context=request_context,
     )
 
     assert recovered.payload["status"] == "blocked_before_apply"
@@ -394,7 +493,10 @@ def test_execute_read_downgrade_requires_internal_marker() -> None:
 async def test_legacy_planner_routes_unknown_and_destructive_requests() -> None:
     unknown = await server.execute_tool(
         "fusion_agent_plan_spec",
-        {"prompt": "Design an ergonomic turbine blade from measured geometry", "project": "routing"},
+        {
+            "prompt": "Design an ergonomic turbine blade from measured geometry",
+            "project": "routing",
+        },
     )
     destructive = await server.execute_tool(
         "fusion_agent_plan_spec",
@@ -406,9 +508,13 @@ async def test_legacy_planner_routes_unknown_and_destructive_requests() -> None:
 
 
 @pytest.mark.asyncio
-async def test_server_runs_and_pages_strict_mock_benchmark(monkeypatch, tmp_path) -> None:
+async def test_server_runs_and_pages_strict_mock_benchmark(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(server, "OUTPUTS_ROOT", tmp_path / "outputs")
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs")
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "outputs"
+    )
     result = await server.execute_tool(
         "fusion_agent_run_benchmark",
         {

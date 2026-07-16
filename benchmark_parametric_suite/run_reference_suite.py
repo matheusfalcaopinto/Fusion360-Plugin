@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -34,6 +35,8 @@ DEFAULT_CASES = [
 ]
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 REQUIRED_IMAGE_DIRECTIONS = {"isometric", "front", "top", "right"}
+GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+NIGHTLY_RUN_IDENTITY_PATTERN = re.compile(r"^[1-9][0-9]*-[1-9][0-9]*$")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -49,9 +52,15 @@ def _load_case(
     oracle_script = (case_root / "oracle_script.py").read_text(encoding="utf-8")
     eco_script_path = case_root / "eco_script.py"
     eco_oracle_path = case_root / "eco_oracle_script.py"
-    eco_script = eco_script_path.read_text(encoding="utf-8") if eco_script_path.exists() else None
+    eco_script = (
+        eco_script_path.read_text(encoding="utf-8")
+        if eco_script_path.exists()
+        else None
+    )
     eco_oracle_script = (
-        eco_oracle_path.read_text(encoding="utf-8") if eco_oracle_path.exists() else None
+        eco_oracle_path.read_text(encoding="utf-8")
+        if eco_oracle_path.exists()
+        else None
     )
     if definition.get("case_id") != case_id:
         raise RuntimeError(f"definition/case mismatch for {case_id}")
@@ -155,10 +164,16 @@ def _with_contract_requirement(
     return normalized
 
 
-def _trial_context(case_id: str, definition: dict[str, Any], run_id: str) -> TrialContext:
+def _trial_context(
+    case_id: str, definition: dict[str, Any], run_id: str
+) -> TrialContext:
     trial_id = f"{case_id}_{uuid.uuid4().hex[:12]}"
     prompt_path = CASES_ROOT / case_id / "prompt.txt"
-    prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else definition["title"]
+    prompt = (
+        prompt_path.read_text(encoding="utf-8")
+        if prompt_path.exists()
+        else definition["title"]
+    )
     case = BenchmarkCase(
         id=case_id,
         prompt=prompt,
@@ -296,7 +311,9 @@ async def _capture_images(
             if isinstance(block, dict) and block.get("type") == "image"
         ]
         if response.is_error or len(image_blocks) != 1:
-            raise RuntimeError(f"{case_id} screenshot {direction} failed: {response.payload}")
+            raise RuntimeError(
+                f"{case_id} screenshot {direction} failed: {response.payload}"
+            )
         raw = base64.b64decode(image_blocks[0]["data"], validate=True)
         if not raw.startswith(PNG_SIGNATURE):
             raise RuntimeError(f"{case_id} screenshot {direction} is not PNG")
@@ -320,8 +337,12 @@ async def _safe_cleanup(
     session: Any,
     baseline_open_ids: list[str],
 ) -> dict[str, Any]:
-    closed = await asyncio.shield(lifecycle.close_fixture_without_save(context, session))
-    restored = await asyncio.shield(lifecycle.restore_original_document(context, session))
+    closed = await asyncio.shield(
+        lifecycle.close_fixture_without_save(context, session)
+    )
+    restored = await asyncio.shield(
+        lifecycle.restore_original_document(context, session)
+    )
     active_id = await lifecycle.read_active_document_id()
     open_ids = await lifecycle.list_open_document_ids()
     cleanup = {
@@ -349,7 +370,9 @@ async def _run_case(
     case_id: str,
     run_id: str,
 ) -> dict[str, Any]:
-    definition, build_script, oracle_script, eco_script, eco_oracle_script = _load_case(case_id)
+    definition, build_script, oracle_script, eco_script, eco_oracle_script = _load_case(
+        case_id
+    )
     request = _build_request(definition, build_script)
     lint = lint_fusion_script(
         build_script,
@@ -385,13 +408,19 @@ async def _run_case(
         "trial_id": context.trial_id,
         "fixture_marker": context.fixture_marker,
         "definition_sha256": _sha256_bytes(
-            json.dumps(definition, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(definition, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
         ),
         "build_script_sha256": _sha256_bytes(build_script.encode("utf-8")),
         "oracle_script_sha256": _sha256_bytes(oracle_script.encode("utf-8")),
         "linter": lint.as_dict(),
     }
-    if eco_script is not None and eco_oracle_script is not None and eco_lint is not None:
+    if (
+        eco_script is not None
+        and eco_oracle_script is not None
+        and eco_lint is not None
+    ):
         result["eco_script_sha256"] = _sha256_bytes(eco_script.encode("utf-8"))
         result["eco_oracle_script_sha256"] = _sha256_bytes(
             eco_oracle_script.encode("utf-8")
@@ -471,7 +500,9 @@ async def _run_case(
                 )
                 result["cleanup"] = cleanup
             except BaseException as cleanup_error:
-                result["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                result["cleanup_error"] = (
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
                 failure = cleanup_error
         result["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         result_path = case_root / "reference_result.json"
@@ -482,11 +513,18 @@ async def _run_case(
     if failure is not None:
         raise failure
     if result.get("fast_path", {}).get("status") != "applied_verified":
-        raise RuntimeError(f"{case_id} Fast Path did not verify: {result.get('fast_path', {}).get('status')}")
+        raise RuntimeError(
+            f"{case_id} Fast Path did not verify: {result.get('fast_path', {}).get('status')}"
+        )
     if result.get("oracle", {}).get("passed") is not True:
-        raise RuntimeError(f"{case_id} independent oracle failed: {result.get('oracle', {}).get('failed_checks')}")
+        raise RuntimeError(
+            f"{case_id} independent oracle failed: {result.get('oracle', {}).get('failed_checks')}"
+        )
     if eco_request is not None:
-        if result.get("eco", {}).get("fast_path", {}).get("status") != "applied_verified":
+        if (
+            result.get("eco", {}).get("fast_path", {}).get("status")
+            != "applied_verified"
+        ):
             raise RuntimeError(
                 f"{case_id} ECO Fast Path did not verify: "
                 f"{result.get('eco', {}).get('fast_path', {}).get('status')}"
@@ -506,9 +544,7 @@ def _phase_passed(
 ) -> bool:
     coverage = oracle.get("coverage") or {}
     image_directions = {
-        artifact.get("direction")
-        for artifact in images
-        if isinstance(artifact, dict)
+        artifact.get("direction") for artifact in images if isinstance(artifact, dict)
     }
     image_hashes = {
         artifact.get("sha256")
@@ -574,10 +610,7 @@ def _summarize_case_result(
     return {
         "case_id": case_id,
         "passed": bool(
-            initial_passed
-            and phase_contract_passed
-            and cleanup_passed
-            and not error
+            initial_passed and phase_contract_passed and cleanup_passed and not error
         ),
         "initial_passed": initial_passed,
         "fast_path_status": fast_path.get("status"),
@@ -611,16 +644,17 @@ async def _capture_suite_restoration(
     original_open_ids = suite_result.get("original_open_document_ids")
     if original_id is None or not isinstance(original_open_ids, list):
         suite_result["restored"] = False
-        suite_result["restoration_error"] = "original document inventory was not captured"
+        suite_result["restoration_error"] = (
+            "original document inventory was not captured"
+        )
         return False
     try:
         final_id = await lifecycle.read_active_document_id()
         final_open_ids = await lifecycle.list_open_document_ids()
         if not isinstance(final_open_ids, list):
             raise TypeError("final open document inventory is not a list")
-        restored = (
-            final_id == original_id
-            and sorted(final_open_ids) == sorted(original_open_ids)
+        restored = final_id == original_id and sorted(final_open_ids) == sorted(
+            original_open_ids
         )
     except BaseException as exc:
         suite_result["restored"] = False
@@ -632,7 +666,22 @@ async def _capture_suite_restoration(
     return bool(suite_result["restored"])
 
 
-async def _main(case_ids: list[str]) -> None:
+async def _main(
+    case_ids: list[str],
+    *,
+    git_commit: str | None = None,
+    nightly_run_identity: str | None = None,
+) -> None:
+    if (git_commit is None) != (nightly_run_identity is None):
+        raise ValueError(
+            "git_commit and nightly_run_identity must be provided together"
+        )
+    if git_commit is not None and not GIT_SHA_PATTERN.fullmatch(git_commit):
+        raise ValueError("git_commit must be a full lowercase Git SHA")
+    if nightly_run_identity is not None and not NIGHTLY_RUN_IDENTITY_PATTERN.fullmatch(
+        nightly_run_identity
+    ):
+        raise ValueError("nightly_run_identity must be '<run_id>-<run_attempt>'")
     requested_case_ids = list(case_ids)
     run_id = "ref_" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     runtime = FusionAgentRuntime(manifest_root="manifests", outputs_root="outputs")
@@ -644,10 +693,17 @@ async def _main(case_ids: list[str]) -> None:
         "status": "running",
         "cases": [],
     }
+    if git_commit is not None and nightly_run_identity is not None:
+        suite_result["tested_commit"] = git_commit
+        suite_result["nightly_run_identity"] = nightly_run_identity
     try:
         try:
-            suite_result["original_document_id"] = await lifecycle.read_active_document_id()
-            suite_result["original_open_document_ids"] = await lifecycle.list_open_document_ids()
+            suite_result[
+                "original_document_id"
+            ] = await lifecycle.read_active_document_id()
+            suite_result[
+                "original_open_document_ids"
+            ] = await lifecycle.list_open_document_ids()
             for case_id in requested_case_ids:
                 has_eco: bool | None = None
                 try:
@@ -681,9 +737,7 @@ async def _main(case_ids: list[str]) -> None:
                             "eco_required": effective_has_eco,
                             "eco_passed": False if effective_has_eco else None,
                             "eco_fast_path_status": None,
-                            "eco_oracle_passed": (
-                                False if effective_has_eco else None
-                            ),
+                            "eco_oracle_passed": (False if effective_has_eco else None),
                             "cleanup_passed": False,
                             "elapsed_ms": None,
                             "error": f"{type(case_error).__name__}: {case_error}",
@@ -710,16 +764,17 @@ async def _main(case_ids: list[str]) -> None:
                 suite_result["cases"].append(summary)
                 if not summary["passed"]:
                     suite_result["failed_case_id"] = case_id
-                    raise RuntimeError(f"{case_id} failed the aggregate reference gates")
+                    raise RuntimeError(
+                        f"{case_id} failed the aggregate reference gates"
+                    )
         except BaseException as exc:
             suite_result["status"] = "failed"
             suite_result["error"] = f"{type(exc).__name__}: {exc}"
             raise
     finally:
         await _capture_suite_restoration(lifecycle, suite_result)
-        completed = (
-            len(suite_result["cases"]) == len(requested_case_ids)
-            and all(item.get("passed") is True for item in suite_result["cases"])
+        completed = len(suite_result["cases"]) == len(requested_case_ids) and all(
+            item.get("passed") is True for item in suite_result["cases"]
         )
         if suite_result["status"] == "running":
             if completed and suite_result.get("restored") is True:
@@ -732,7 +787,9 @@ async def _main(case_ids: list[str]) -> None:
         except BaseException as close_error:
             suite_result["status"] = "failed"
             suite_result["close_error"] = f"{type(close_error).__name__}: {close_error}"
-        suite_result["completed_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        suite_result["completed_at_utc"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        )
         result_name = (
             "reference_suite_result.json"
             if requested_case_ids == DEFAULT_CASES
@@ -751,11 +808,19 @@ async def _main(case_ids: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("cases", nargs="*", default=DEFAULT_CASES)
+    parser.add_argument("--git-commit")
+    parser.add_argument("--nightly-run-identity")
     args = parser.parse_args()
     unknown = [case_id for case_id in args.cases if not (CASES_ROOT / case_id).is_dir()]
     if unknown:
         raise SystemExit(f"unknown cases: {', '.join(unknown)}")
-    asyncio.run(_main(args.cases))
+    asyncio.run(
+        _main(
+            args.cases,
+            git_commit=args.git_commit,
+            nightly_run_identity=args.nightly_run_identity,
+        )
+    )
     return 0
 
 

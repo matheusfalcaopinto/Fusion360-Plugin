@@ -114,7 +114,9 @@ def test_example_suite_is_strict_hash_frozen_and_records_explicit_models() -> No
     assert suite.cases[0].planner_isolated.runner_id == "common_fusion_runner_v1"
 
 
-@pytest.mark.parametrize("mutation", ["unknown_property", "hash_mismatch", "planner_schema"])
+@pytest.mark.parametrize(
+    "mutation", ["unknown_property", "hash_mismatch", "planner_schema"]
+)
 def test_invalid_suite_or_artifact_fails_closed(tmp_path: Path, mutation: str) -> None:
     suite_path = _copy_example(tmp_path)
     payload = json.loads(suite_path.read_text(encoding="utf-8"))
@@ -123,13 +125,17 @@ def test_invalid_suite_or_artifact_fails_closed(tmp_path: Path, mutation: str) -
         suite_path.write_text(json.dumps(payload), encoding="utf-8")
     elif mutation == "hash_mismatch":
         artifact = suite_path.parent / "causal_artifacts" / "shared_reference_script.py"
-        artifact.write_text(artifact.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+        artifact.write_text(
+            artifact.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8"
+        )
     else:
         plan = suite_path.parent / "causal_artifacts" / "arm_a_plan.json"
         plan_payload = json.loads(plan.read_text(encoding="utf-8"))
         plan_payload["unexpected"] = True
         plan.write_text(json.dumps(plan_payload), encoding="utf-8")
-        payload["cases"][0]["planner_isolated"]["artifacts"][0]["plan"]["sha256"] = _sha(plan)
+        payload["cases"][0]["planner_isolated"]["artifacts"][0]["plan"]["sha256"] = (
+            _sha(plan)
+        )
         suite_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(CausalSuiteError):
         load_causal_suite(suite_path)
@@ -140,7 +146,9 @@ def test_artifact_reference_must_remain_relative_even_when_absolute_path_is_insi
 ) -> None:
     suite_path = _copy_example(tmp_path)
     payload = json.loads(suite_path.read_text(encoding="utf-8"))
-    artifact = (suite_path.parent / "causal_artifacts" / "shared_reference_script.py").resolve()
+    artifact = (
+        suite_path.parent / "causal_artifacts" / "shared_reference_script.py"
+    ).resolve()
     payload["cases"][0]["transport_replay"]["script"]["path"] = str(artifact)
     suite_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(CausalSuiteError, match="must be relative"):
@@ -165,11 +173,7 @@ async def test_three_layers_are_counterbalanced_reproducible_and_use_fresh_trial
     assert first.report.summary["measured_trial_count"] == 12
     assert first.report.summary["warmup_trial_count"] == 6
     measured = [trial for trial in first.report.trials if not trial.warmup]
-    measured_first_arms = [
-        trial.arm_id
-        for trial in measured
-        if trial.order_index == 0
-    ]
+    measured_first_arms = [trial.arm_id for trial in measured if trial.order_index == 0]
     assert measured_first_arms.count("claude") == 3
     assert measured_first_arms.count("codex") == 3
 
@@ -185,6 +189,7 @@ async def test_three_layers_are_counterbalanced_reproducible_and_use_fresh_trial
             )
             for item in contexts
         ]
+
     assert signature(first_executor.contexts) == signature(second_executor.contexts)
     first_ids = {trial.trial_id for trial in first.report.trials}
     second_ids = {trial.trial_id for trial in second.report.trials}
@@ -207,7 +212,9 @@ async def test_three_layers_are_counterbalanced_reproducible_and_use_fresh_trial
 
 
 @pytest.mark.asyncio
-async def test_layer_contracts_share_replay_and_runner_but_lock_native_routes(tmp_path: Path) -> None:
+async def test_layer_contracts_share_replay_and_runner_but_lock_native_routes(
+    tmp_path: Path,
+) -> None:
     runner, executor, _ = _runner(tmp_path)
     prior = os.environ.get(ROUTE_LOCK_ENV)
     await runner.run_suite(
@@ -266,7 +273,9 @@ async def test_native_route_mismatch_aborts_without_retry_and_restores_environme
     assert os.environ.get(ROUTE_LOCK_ENV) is None
     assert len([item for item in executor.contexts if item.layer == "native_e2e"]) == 1
     report = json.loads(
-        (tmp_path / "causal_routemismatch01" / "report.json").read_text(encoding="utf-8")
+        (tmp_path / "causal_routemismatch01" / "report.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert report["status"] == "aborted"
     assert len(report["trials"]) == 4
@@ -274,7 +283,9 @@ async def test_native_route_mismatch_aborts_without_retry_and_restores_environme
 
 
 @pytest.mark.asyncio
-async def test_missing_oracle_fails_before_any_dispatch_and_writes_aborted_report(tmp_path: Path) -> None:
+async def test_missing_oracle_fails_before_any_dispatch_and_writes_aborted_report(
+    tmp_path: Path,
+) -> None:
     executor = RecordingExecutor()
     runner = CausalBenchmarkRunner(
         output_dir=tmp_path,
@@ -285,14 +296,18 @@ async def test_missing_oracle_fails_before_any_dispatch_and_writes_aborted_repor
         await runner.run_suite(EXAMPLE, run_id="causal_missingoracle01")
     assert executor.contexts == []
     report = json.loads(
-        (tmp_path / "causal_missingoracle01" / "report.json").read_text(encoding="utf-8")
+        (tmp_path / "causal_missingoracle01" / "report.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert report["status"] == "aborted"
     assert report["trials"] == []
 
 
 @pytest.mark.asyncio
-async def test_execution_traces_are_recursively_redacted_before_persistence(tmp_path: Path) -> None:
+async def test_execution_traces_are_recursively_redacted_before_persistence(
+    tmp_path: Path,
+) -> None:
     executor = SensitiveTraceExecutor()
     runner, _, _ = _runner(tmp_path, executor)
     result = await runner.run_suite(
@@ -311,7 +326,9 @@ async def test_execution_traces_are_recursively_redacted_before_persistence(tmp_
     assert trace["binary"]["redacted"] is True
 
 
-def test_structured_submission_freezes_plan_and_script_without_execution(tmp_path: Path) -> None:
+def test_structured_submission_freezes_plan_and_script_without_execution(
+    tmp_path: Path,
+) -> None:
     submission = {
         "schema_version": "fusion_planner_submission.v1",
         "arm_id": "codex",

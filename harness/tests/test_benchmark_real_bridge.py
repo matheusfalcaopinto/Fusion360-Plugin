@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from benchmark.models import BenchmarkRunConfig, ExecutionObservation
-from benchmark.runner import BenchmarkExecutionError, BenchmarkRunner, IndependentEvidence
+from benchmark.runner import (
+    BenchmarkExecutionError,
+    BenchmarkRunner,
+    IndependentEvidence,
+)
 from fusion_agent_mcp import server
 from fusion_agent_mcp.benchmark_bridge import (
     CANONICAL_ALL_CAPABILITY,
@@ -68,9 +72,11 @@ class FakeRealBackend:
         self.leave_fixture_open = False
 
     def capabilities(self) -> set[str]:
-        return set(COMMON_CAPABILITIES) | set(ROUTE_CAPABILITIES.values()) | {
-            CANONICAL_ALL_CAPABILITY
-        }
+        return (
+            set(COMMON_CAPABILITIES)
+            | set(ROUTE_CAPABILITIES.values())
+            | {CANONICAL_ALL_CAPABILITY}
+        )
 
     async def prepare_fixture(self, context) -> FixtureSession:
         self.calls.append(f"prepare:{context.execution_path}")
@@ -178,7 +184,9 @@ def _real_runner(tmp_path: Path, backend: FakeRealBackend) -> BenchmarkRunner:
 
 
 @pytest.mark.asyncio
-async def test_real_bridge_runs_both_routes_and_uses_independent_oracle(tmp_path: Path) -> None:
+async def test_real_bridge_runs_both_routes_and_uses_independent_oracle(
+    tmp_path: Path,
+) -> None:
     backend = FakeRealBackend()
     runner = _real_runner(tmp_path, backend)
 
@@ -191,7 +199,10 @@ async def test_real_bridge_runs_both_routes_and_uses_independent_oracle(tmp_path
         ),
     )
 
-    assert {trial.execution_path for trial in run.report.trials} == {"safe_harness", "native_fast"}
+    assert {trial.execution_path for trial in run.report.trials} == {
+        "safe_harness",
+        "native_fast",
+    }
     assert all(trial.oracle.passed for trial in run.report.trials)
     assert backend.calls.count("execute:safe_harness") == 1
     assert backend.calls.count("execute:native_fast") == 1
@@ -208,18 +219,29 @@ async def test_real_bridge_runs_both_routes_and_uses_independent_oracle(tmp_path
         assert 0 <= trial.metrics["restoration_ms"] <= trial.metrics["teardown_ms"]
         accounted = sum(
             trial.metrics[name]
-            for name in ("queue_wait_ms", "setup_ms", "execution_ms", "verification_ms", "teardown_ms")
+            for name in (
+                "queue_wait_ms",
+                "setup_ms",
+                "execution_ms",
+                "verification_ms",
+                "teardown_ms",
+            )
         )
         assert trial.metrics["duration_ms"] >= accounted
 
 
 @pytest.mark.asyncio
-async def test_marker_mismatch_blocks_route_but_still_closes_and_restores(tmp_path: Path) -> None:
+async def test_marker_mismatch_blocks_route_but_still_closes_and_restores(
+    tmp_path: Path,
+) -> None:
     backend = FakeRealBackend()
     backend.identity_marker_override = "wrong-marker"
     runner = _real_runner(tmp_path, backend)
 
-    with pytest.raises(BenchmarkExecutionError, match="blocked before route dispatch.*fixture marker mismatch"):
+    with pytest.raises(
+        BenchmarkExecutionError,
+        match="blocked before route dispatch.*fixture marker mismatch",
+    ):
         await runner.run_suite(
             _suite(tmp_path / "suite.json"),
             config=BenchmarkRunConfig(mode="real", execution_paths=["safe_harness"]),
@@ -227,7 +249,13 @@ async def test_marker_mismatch_blocks_route_but_still_closes_and_restores(tmp_pa
 
     assert not any(call.startswith("execute:") for call in backend.calls)
     assert "observe" not in backend.calls
-    assert backend.calls[-5:] == ["close", "restore", "restore_readback", "list_open", "audit"]
+    assert backend.calls[-5:] == [
+        "close",
+        "restore",
+        "restore_readback",
+        "list_open",
+        "audit",
+    ]
 
 
 @pytest.mark.asyncio
@@ -260,7 +288,9 @@ async def test_close_or_restore_failure_aborts_suite(
 
 
 @pytest.mark.asyncio
-async def test_close_boolean_is_rejected_when_fixture_remains_in_list_open(tmp_path: Path) -> None:
+async def test_close_boolean_is_rejected_when_fixture_remains_in_list_open(
+    tmp_path: Path,
+) -> None:
     backend = FakeRealBackend()
     backend.leave_fixture_open = True
     runner = _real_runner(tmp_path, backend)
@@ -275,8 +305,12 @@ async def test_close_boolean_is_rejected_when_fixture_remains_in_list_open(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_stock_runtime_fails_capability_preflight_before_dispatch(tmp_path: Path) -> None:
-    runtime = FusionAgentRuntime(manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "runtime")
+async def test_stock_runtime_fails_capability_preflight_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests", outputs_root=tmp_path / "runtime"
+    )
     bridge = FusionRuntimeBenchmarkBridge(runtime)
     runner = BenchmarkRunner(
         output_dir=tmp_path / "outputs",
@@ -374,7 +408,9 @@ class FakeLifecycleRuntime:
 
 
 @pytest.mark.asyncio
-async def test_stock_lifecycle_backend_uses_exact_runtime_identity_and_close_without_save() -> None:
+async def test_stock_lifecycle_backend_uses_exact_runtime_identity_and_close_without_save() -> (
+    None
+):
     marker = "fusion_agent_trial_bench_stock_lifecycle_001"
     runtime = FakeLifecycleRuntime(marker)
     backend = FusionRuntimeLifecycleBackend(runtime)
@@ -401,9 +437,17 @@ async def test_stock_lifecycle_backend_uses_exact_runtime_identity_and_close_wit
     mutation_scripts = [
         script for _, semantics, script in runtime.calls if semantics == "mutating"
     ]
-    assert any("attributes.add" in script and "_stable_document_key(created)" in script for script in mutation_scripts)
-    assert any("finally:" in script and "created.close(False)" in script for script in mutation_scripts)
-    assert any('"found": False, "closed": False' in script for script in mutation_scripts)
+    assert any(
+        "attributes.add" in script and "_stable_document_key(created)" in script
+        for script in mutation_scripts
+    )
+    assert any(
+        "finally:" in script and "created.close(False)" in script
+        for script in mutation_scripts
+    )
+    assert any(
+        '"found": False, "closed": False' in script for script in mutation_scripts
+    )
     assert any("fixture_fingerprint" in script for script in mutation_scripts)
     assert all("str(id(" not in script for _, _, script in runtime.calls)
     assert any("target.close(False)" in script for script in mutation_scripts)
@@ -411,7 +455,9 @@ async def test_stock_lifecycle_backend_uses_exact_runtime_identity_and_close_wit
 
 
 @pytest.mark.asyncio
-async def test_stock_lifecycle_blocks_unidentified_unsaved_original_before_creation() -> None:
+async def test_stock_lifecycle_blocks_unidentified_unsaved_original_before_creation() -> (
+    None
+):
     marker = "fusion_agent_trial_unstable_original"
     runtime = FakeLifecycleRuntime(marker)
     runtime.active_id = None
@@ -426,7 +472,9 @@ async def test_stock_lifecycle_blocks_unidentified_unsaved_original_before_creat
     with pytest.raises(BenchmarkExecutionError, match="no stable data identity"):
         await backend.prepare_fixture(context)
 
-    assert not any(operation_id.endswith(":prepare") for operation_id, _, _ in runtime.calls)
+    assert not any(
+        operation_id.endswith(":prepare") for operation_id, _, _ in runtime.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -436,12 +484,16 @@ async def test_stock_lifecycle_rejects_stale_marker_identity_as_original() -> No
     runtime.active_id = f"marker:{marker}"
     backend = FusionRuntimeLifecycleBackend(runtime)
 
-    with pytest.raises(BenchmarkExecutionError, match="not backed by a saved Fusion data file"):
+    with pytest.raises(
+        BenchmarkExecutionError, match="not backed by a saved Fusion data file"
+    ):
         await backend.read_active_document_id()
 
 
 @pytest.mark.asyncio
-async def test_server_injects_shared_runtime_real_bridge(monkeypatch, tmp_path: Path) -> None:
+async def test_server_injects_shared_runtime_real_bridge(
+    monkeypatch, tmp_path: Path
+) -> None:
     suite = _suite(tmp_path / "suite.json")
     monkeypatch.setattr(server, "_default_benchmark_suite", lambda: suite)
     monkeypatch.setattr(server, "OUTPUTS_ROOT", tmp_path / "outputs")

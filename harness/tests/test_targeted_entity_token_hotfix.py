@@ -28,7 +28,9 @@ class _Collection:
         return self._items[index]
 
     def itemByName(self, name: str) -> object | None:  # noqa: N802 - Autodesk API spelling
-        return next((item for item in self._items if getattr(item, "name", None) == name), None)
+        return next(
+            (item for item in self._items if getattr(item, "name", None) == name), None
+        )
 
 
 class _Attributes:
@@ -67,7 +69,9 @@ TokenResult = object | Callable[[_Body], object]
 
 
 class _Design:
-    def __init__(self, root: _RootComponent, body: _Body, token_result: TokenResult) -> None:
+    def __init__(
+        self, root: _RootComponent, body: _Body, token_result: TokenResult
+    ) -> None:
         self.rootComponent = root  # noqa: N815 - Autodesk API spelling
         self.allComponents = _Collection([root])  # noqa: N815 - Autodesk API spelling
         self.allParameters = _Collection()  # noqa: N815 - Autodesk API spelling
@@ -77,7 +81,11 @@ class _Design:
 
     def findEntityByToken(self, token: str) -> object:  # noqa: N802 - Autodesk API spelling
         self.find_calls.append(token)
-        result = self._token_result(self._body) if callable(self._token_result) else self._token_result
+        result = (
+            self._token_result(self._body)
+            if callable(self._token_result)
+            else self._token_result
+        )
         if isinstance(result, BaseException):
             raise result
         return result
@@ -160,14 +168,22 @@ class _SlowEmptyCollection:
         raise AssertionError("empty collection must not access an item")
 
 
-def _install_fake_adsk(monkeypatch: pytest.MonkeyPatch, fixture: _FusionFixture) -> None:
-    application = types.SimpleNamespace(activeDocument=fixture.document, activeProduct=fixture.design)
+def _install_fake_adsk(
+    monkeypatch: pytest.MonkeyPatch, fixture: _FusionFixture
+) -> None:
+    application = types.SimpleNamespace(
+        activeDocument=fixture.document, activeProduct=fixture.design
+    )
     adsk = types.ModuleType("adsk")
     adsk.__path__ = []  # type: ignore[attr-defined]
     core = types.ModuleType("adsk.core")
     fusion = types.ModuleType("adsk.fusion")
-    core.Application = type("Application", (), {"get": staticmethod(lambda: application)})
-    fusion.Design = type("FusionDesign", (), {"cast": staticmethod(lambda value: value)})
+    core.Application = type(
+        "Application", (), {"get": staticmethod(lambda: application)}
+    )
+    fusion.Design = type(
+        "FusionDesign", (), {"cast": staticmethod(lambda value: value)}
+    )
     adsk.core = core  # type: ignore[attr-defined]
     adsk.fusion = fusion  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "adsk", adsk)
@@ -210,7 +226,10 @@ def _assert_token_failure_is_sanitized(
     assert result["match_count_exact"] is False
     assert result["truncated"] is True
     assert payload["warnings"]
-    assert all(str(warning.get("code", "")).startswith("ENTITY_TOKEN_") for warning in payload["warnings"])
+    assert all(
+        str(warning.get("code", "")).startswith("ENTITY_TOKEN_")
+        for warning in payload["warnings"]
+    )
     encoded_warnings = json.dumps(payload["warnings"], ensure_ascii=False)
     for secret in secrets:
         assert secret not in encoded_warnings
@@ -238,7 +257,9 @@ def test_entity_token_normalizes_python_sequence_results(
     assert result["matches"][0]["entity_token"] == "body-token-1"
 
 
-def test_entity_token_normalizes_autodesk_count_item_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_normalizes_autodesk_count_item_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(lambda body: _Collection([body]))
     _install_fake_adsk(monkeypatch, fixture)
 
@@ -251,7 +272,9 @@ def test_entity_token_normalizes_autodesk_count_item_collection(monkeypatch: pyt
     assert result["matches"][0]["name"] == "Body1"
 
 
-def test_entity_token_normalizes_fusion_iterable_result(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_normalizes_fusion_iterable_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(lambda body: _IterableResult([body]))
     _install_fake_adsk(monkeypatch, fixture)
 
@@ -264,12 +287,16 @@ def test_entity_token_normalizes_fusion_iterable_result(monkeypatch: pytest.Monk
     assert result["matches"][0]["entity_token"] == "body-token-1"
 
 
-def test_entity_token_iterable_failure_is_inexact_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_iterable_failure_is_inexact_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(_FailingIterable())
     _install_fake_adsk(monkeypatch, fixture)
 
     payload = _execute(_token_query())
-    result = _assert_token_failure_is_sanitized(payload, secrets=("iterator-sensitive-detail",))
+    result = _assert_token_failure_is_sanitized(
+        payload, secrets=("iterator-sensitive-detail",)
+    )
 
     assert result["matches"] == []
     assert payload["warnings"] == [
@@ -281,7 +308,9 @@ def test_entity_token_iterable_failure_is_inexact_and_fails_closed(monkeypatch: 
     ]
 
 
-def test_entity_token_collection_stop_iteration_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_collection_stop_iteration_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(_PrematureStopCollection())
     _install_fake_adsk(monkeypatch, fixture)
 
@@ -334,7 +363,9 @@ def test_entity_token_non_autodesk_item_fails_closed(
     _install_fake_adsk(monkeypatch, fixture)
 
     payload = _execute(_token_query())
-    result = _assert_token_failure_is_sanitized(payload, secrets=("not-an-autodesk-base",))
+    result = _assert_token_failure_is_sanitized(
+        payload, secrets=("not-an-autodesk-base",)
+    )
 
     assert result["matches"] == []
     assert payload["warnings"] == [
@@ -345,7 +376,9 @@ def test_entity_token_non_autodesk_item_fails_closed(
     ]
 
 
-def test_entity_token_empty_result_is_an_exact_zero_match(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_empty_result_is_an_exact_zero_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture([])
     _install_fake_adsk(monkeypatch, fixture)
 
@@ -361,7 +394,9 @@ def test_entity_token_empty_result_is_an_exact_zero_match(monkeypatch: pytest.Mo
     assert result["truncated"] is False
 
 
-def test_entity_token_lookup_exception_is_inexact_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_lookup_exception_is_inexact_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(RuntimeError("token database unavailable"))
     _install_fake_adsk(monkeypatch, fixture)
 
@@ -383,7 +418,9 @@ def test_entity_token_lookup_exception_is_inexact_and_fails_closed(monkeypatch: 
     assert "token database unavailable" not in json.dumps(payload)
 
 
-def test_entity_token_none_result_is_invalid_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_none_result_is_invalid_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "none-selector-sensitive-token"
     fixture = _FusionFixture(None)
     _install_fake_adsk(monkeypatch, fixture)
@@ -394,7 +431,9 @@ def test_entity_token_none_result_is_invalid_and_fails_closed(monkeypatch: pytes
     assert result["matches"] == []
 
 
-def test_entity_token_scalar_result_is_an_invalid_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_scalar_result_is_an_invalid_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "scalar-selector-sensitive-token"
     fixture = _FusionFixture(lambda body: body)
     _install_fake_adsk(monkeypatch, fixture)
@@ -405,7 +444,9 @@ def test_entity_token_scalar_result_is_an_invalid_shape(monkeypatch: pytest.Monk
     assert result["matches"] == []
 
 
-def test_entity_token_collection_item_failure_is_inexact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_collection_item_failure_is_inexact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "collection-selector-sensitive-token"
     fixture = _FusionFixture(_FailingItemCollection())
     _install_fake_adsk(monkeypatch, fixture)
@@ -419,7 +460,9 @@ def test_entity_token_collection_item_failure_is_inexact(monkeypatch: pytest.Mon
     assert result["matches"] == []
 
 
-def test_entity_token_false_status_tuple_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_false_status_tuple_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "false-status-sensitive-token"
     fixture = _FusionFixture(lambda body: ([body], False))
     _install_fake_adsk(monkeypatch, fixture)
@@ -430,7 +473,9 @@ def test_entity_token_false_status_tuple_fails_closed(monkeypatch: pytest.Monkey
     assert result["matches"] == []
 
 
-def test_entity_token_results_above_limit_are_capped_and_inexact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_results_above_limit_are_capped_and_inexact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "limit-selector-sensitive-token"
     fixture = _FusionFixture(lambda body: [body] * 8)
     _install_fake_adsk(monkeypatch, fixture)
@@ -452,7 +497,9 @@ def test_entity_token_results_above_limit_are_capped_and_inexact(monkeypatch: py
     assert selector_token not in json.dumps(payload)
 
 
-def test_entity_token_iteration_respects_entity_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_iteration_respects_entity_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "budget-selector-sensitive-token"
     fixture = _FusionFixture(lambda body: [body] * 20)
     _install_fake_adsk(monkeypatch, fixture)
@@ -473,7 +520,9 @@ def test_entity_token_iteration_respects_entity_budget(monkeypatch: pytest.Monke
     assert selector_token not in json.dumps(payload)
 
 
-def test_entity_token_lookup_rechecks_deadline_after_api_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entity_token_lookup_rechecks_deadline_after_api_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     selector_token = "deadline-selector-sensitive-token"
 
     def delayed_lookup(body: _Body) -> list[_Body]:
@@ -498,7 +547,9 @@ def test_entity_token_lookup_rechecks_deadline_after_api_call(monkeypatch: pytes
     assert selector_token not in json.dumps(payload)
 
 
-def test_path_to_token_to_token_round_trip_uses_the_returned_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_path_to_token_to_token_round_trip_uses_the_returned_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = _FusionFixture(lambda body: [body])
     _install_fake_adsk(monkeypatch, fixture)
 

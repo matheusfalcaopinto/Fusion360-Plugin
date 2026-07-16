@@ -10,8 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from agent_core.fusion_scripts import compact_snapshot_script, safe_delete_apply_script, safe_visibility_apply_script
-from agent_core.guardrails import bind_safe_change_targets, canonical_snapshot_fingerprint, compact_mock_snapshot
+from agent_core.fusion_scripts import (
+    compact_snapshot_script,
+    safe_delete_apply_script,
+    safe_visibility_apply_script,
+)
+from agent_core.guardrails import (
+    bind_safe_change_targets,
+    canonical_snapshot_fingerprint,
+    classify_safe_change,
+    compact_mock_snapshot,
+)
 from agent_core.session_controller import (
     SessionController,
     SessionOptions,
@@ -19,7 +28,10 @@ from agent_core.session_controller import (
     _safe_change_verification,
     _snapshot_is_complete,
 )
-from agent_core.targeted_inspection import build_targeted_inspection_script, validate_inspection_payload
+from agent_core.targeted_inspection import (
+    build_targeted_inspection_script,
+    validate_inspection_payload,
+)
 
 
 def _query_payload(**overrides):
@@ -44,7 +56,9 @@ def test_targeted_inspection_budget_defaults_and_limits() -> None:
     assert normalized["max_response_bytes"] == 1024 * 1024
 
     bounded = validate_inspection_payload(
-        _query_payload(max_entities_visited=5000, deadline_ms=5000, max_response_bytes=4096)
+        _query_payload(
+            max_entities_visited=5000, deadline_ms=5000, max_response_bytes=4096
+        )
     )
     assert bounded["max_entities_visited"] == 5000
     assert bounded["deadline_ms"] == 5000
@@ -64,8 +78,16 @@ def test_targeted_script_is_budgeted_and_uses_shared_precedence_paths() -> None:
         {
             "queries": [
                 {"id": "doc", "entity_type": "document"},
-                {"id": "token", "entity_type": "body", "selector": {"entity_token": "abc"}},
-                {"id": "path", "entity_type": "body", "selector": {"path": "Arm:1/Body1"}},
+                {
+                    "id": "token",
+                    "entity_type": "body",
+                    "selector": {"entity_token": "abc"},
+                },
+                {
+                    "id": "path",
+                    "entity_type": "body",
+                    "selector": {"path": "Arm:1/Body1"},
+                },
                 {"id": "name-a", "entity_type": "body", "selector": {"name": "Body1"}},
                 {"id": "name-b", "entity_type": "body", "selector": {"name": "Body2"}},
             ]
@@ -86,7 +108,9 @@ def test_targeted_script_is_budgeted_and_uses_shared_precedence_paths() -> None:
     assert "physicalProperties" not in script
 
 
-def test_response_trimming_marks_payload_incomplete_and_invalidates_fingerprint(monkeypatch) -> None:
+def test_response_trimming_marks_payload_incomplete_and_invalidates_fingerprint(
+    monkeypatch,
+) -> None:
     class EmptyCollection:
         count = 0
 
@@ -142,8 +166,12 @@ def test_response_trimming_marks_payload_incomplete_and_invalidates_fingerprint(
     adsk.__path__ = []  # type: ignore[attr-defined]
     core = types.ModuleType("adsk.core")
     fusion = types.ModuleType("adsk.fusion")
-    core.Application = type("Application", (), {"get": staticmethod(lambda: ApplicationInstance())})
-    fusion.Design = type("FusionDesign", (), {"cast": staticmethod(lambda value: value)})
+    core.Application = type(
+        "Application", (), {"get": staticmethod(lambda: ApplicationInstance())}
+    )
+    fusion.Design = type(
+        "FusionDesign", (), {"cast": staticmethod(lambda value: value)}
+    )
     adsk.core = core
     adsk.fusion = fusion
     monkeypatch.setitem(sys.modules, "adsk", adsk)
@@ -179,7 +207,11 @@ def test_response_trimming_marks_payload_incomplete_and_invalidates_fingerprint(
 
 def test_compact_snapshot_v2_preserves_v1_keys_and_hard_budgets() -> None:
     script = compact_snapshot_script(
-        {"max_entities_visited": 1000, "deadline_ms": 1500, "max_response_bytes": 1024 * 1024}
+        {
+            "max_entities_visited": 1000,
+            "deadline_ms": 1500,
+            "max_response_bytes": 1024 * 1024,
+        }
     )
     compile(script, "<compact-snapshot-v2>", "exec")
     assert '"schema_version": "compact_snapshot.v2"' in script
@@ -210,7 +242,9 @@ def test_compact_snapshot_v2_preserves_v1_keys_and_hard_budgets() -> None:
 def test_mock_snapshot_stops_at_entity_budget_and_is_not_a_safe_baseline() -> None:
     state = {
         "state": {
-            "components": {f"Component{i}": {"name": f"Component{i}"} for i in range(20)},
+            "components": {
+                f"Component{i}": {"name": f"Component{i}"} for i in range(20)
+            },
             "bodies": {f"Body{i}": {"component": "root"} for i in range(20)},
         }
     }
@@ -243,7 +277,11 @@ def test_safe_change_preview_blocks_an_incomplete_baseline(tmp_path: Path) -> No
     snapshot_path.write_text(json.dumps({"snapshot": snapshot}), encoding="utf-8")
 
     async def incomplete_snapshot(**_kwargs):
-        return {"snapshot_id": "before_test", "snapshot_path": str(snapshot_path), "snapshot": snapshot}
+        return {
+            "snapshot_id": "before_test",
+            "snapshot_path": str(snapshot_path),
+            "snapshot": snapshot,
+        }
 
     controller.compact_snapshot = incomplete_snapshot  # type: ignore[method-assign]
     options = SessionOptions(mode="mock", project="bounded", output_dir=tmp_path)
@@ -297,23 +335,23 @@ def test_safe_change_incomplete_readback_is_applied_unverified(tmp_path: Path) -
     assert not errors
     (preview_dir / f"{preview_id}.json").write_text(
         json.dumps(
-                {
-                    "schema_version": "safe_change_preview.v2",
-                    "preview_id": preview_id,
-                    "preview_status": "ready",
+            {
+                "schema_version": "safe_change_preview.v2",
+                "preview_id": preview_id,
+                "preview_status": "ready",
                 "project": "bounded",
                 "mode": "mock",
                 "operation": "visibility",
-                    "targets": targets,
-                    "policy": {},
-                    "classification": {"blocked": False},
-                    "before_snapshot_path": str(before_path),
-                    "document_identity": {"kind": "mock_session", "stable_id": "mock:test"},
-                    "state_fingerprint": canonical_snapshot_fingerprint(before_snapshot),
-                    "bound_targets": bindings,
-                    "inspection_budget": {},
-                    "requirements": [],
-                }
+                "targets": targets,
+                "policy": {},
+                "classification": {"blocked": False},
+                "before_snapshot_path": str(before_path),
+                "document_identity": {"kind": "mock_session", "stable_id": "mock:test"},
+                "state_fingerprint": canonical_snapshot_fingerprint(before_snapshot),
+                "bound_targets": bindings,
+                "inspection_budget": {},
+                "requirements": [],
+            }
         ),
         encoding="utf-8",
     )
@@ -332,7 +370,11 @@ def test_safe_change_incomplete_readback_is_applied_unverified(tmp_path: Path) -
         nonlocal calls
         calls += 1
         snapshot = before_snapshot if calls == 1 else incomplete_after
-        return {"snapshot_id": f"snapshot_{calls}", "snapshot_path": str(after_path), "snapshot": snapshot}
+        return {
+            "snapshot_id": f"snapshot_{calls}",
+            "snapshot_path": str(after_path),
+            "snapshot": snapshot,
+        }
 
     controller.compact_snapshot = incomplete_readback  # type: ignore[method-assign]
     result = asyncio.run(
@@ -379,21 +421,29 @@ def _complete_safe_snapshot(*, visible: bool = True) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_safe_change_preview_v2_binds_identity_state_and_targets(tmp_path: Path) -> None:
+async def test_safe_change_preview_v2_binds_identity_state_and_targets(
+    tmp_path: Path,
+) -> None:
     controller = SessionController(real_client=object())
     snapshot = _complete_safe_snapshot()
     snapshot_path = tmp_path / "baseline.json"
     snapshot_path.write_text(json.dumps({"snapshot": snapshot}), encoding="utf-8")
 
     async def baseline(**_kwargs):
-        return {"snapshot_id": "before", "snapshot_path": str(snapshot_path), "snapshot": snapshot}
+        return {
+            "snapshot_id": "before",
+            "snapshot_path": str(snapshot_path),
+            "snapshot": snapshot,
+        }
 
     controller.compact_snapshot = baseline  # type: ignore[method-assign]
     result = await controller.safe_change_preview(
         project="safe",
         mode="mock",
         operation="visibility",
-        targets=[{"kind": "body", "component": "root", "name": "Body1", "visible": False}],
+        targets=[
+            {"kind": "body", "component": "root", "name": "Body1", "visible": False}
+        ],
         options=SessionOptions(mode="mock", project="safe", output_dir=tmp_path),
     )
 
@@ -405,27 +455,44 @@ async def test_safe_change_preview_v2_binds_identity_state_and_targets(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_safe_change_apply_marks_preview_stale_before_dispatch_on_drift(tmp_path: Path) -> None:
+async def test_safe_change_apply_marks_preview_stale_before_dispatch_on_drift(
+    tmp_path: Path,
+) -> None:
     controller = SessionController(real_client=object())
     baseline_snapshot = _complete_safe_snapshot()
     baseline_path = tmp_path / "baseline.json"
-    baseline_path.write_text(json.dumps({"snapshot": baseline_snapshot}), encoding="utf-8")
+    baseline_path.write_text(
+        json.dumps({"snapshot": baseline_snapshot}), encoding="utf-8"
+    )
 
     async def baseline(**_kwargs):
-        return {"snapshot_id": "before", "snapshot_path": str(baseline_path), "snapshot": baseline_snapshot}
+        return {
+            "snapshot_id": "before",
+            "snapshot_path": str(baseline_path),
+            "snapshot": baseline_snapshot,
+        }
 
     controller.compact_snapshot = baseline  # type: ignore[method-assign]
     preview = await controller.safe_change_preview(
         project="safe",
         mode="mock",
         operation="visibility",
-        targets=[{"kind": "body", "component": "root", "name": "Body1", "visible": False}],
+        targets=[
+            {"kind": "body", "component": "root", "name": "Body1", "visible": False}
+        ],
         options=SessionOptions(mode="mock", project="safe", output_dir=tmp_path),
     )
-    drifted = {**baseline_snapshot, "counts": {**baseline_snapshot["counts"], "features": 1}}
+    drifted = {
+        **baseline_snapshot,
+        "counts": {**baseline_snapshot["counts"], "features": 1},
+    }
 
     async def preapply(**_kwargs):
-        return {"snapshot_id": "preapply", "snapshot_path": str(tmp_path / "preapply.json"), "snapshot": drifted}
+        return {
+            "snapshot_id": "preapply",
+            "snapshot_path": str(tmp_path / "preapply.json"),
+            "snapshot": drifted,
+        }
 
     controller.compact_snapshot = preapply  # type: ignore[method-assign]
     result = await controller.safe_change_apply(
@@ -441,11 +508,15 @@ async def test_safe_change_apply_marks_preview_stale_before_dispatch_on_drift(tm
     assert result["abort_reason"] == "preview_state_drift"
     assert result["preview_status"] == "stale"
     assert result["dispatched"] is False
-    assert not (tmp_path / "safe_change_previews" / f"{preview['preview_id']}.claim").exists()
+    assert not (
+        tmp_path / "safe_change_previews" / f"{preview['preview_id']}.claim"
+    ).exists()
 
 
 @pytest.mark.asyncio
-async def test_safe_change_preview_is_consumed_once_under_concurrent_apply(tmp_path: Path) -> None:
+async def test_safe_change_preview_is_consumed_once_under_concurrent_apply(
+    tmp_path: Path,
+) -> None:
     controller = SessionController(real_client=object())
     snapshot = _complete_safe_snapshot()
     snapshot_path = tmp_path / "snapshot.json"
@@ -463,7 +534,9 @@ async def test_safe_change_preview_is_consumed_once_under_concurrent_apply(tmp_p
         project="safe",
         mode="mock",
         operation="visibility",
-        targets=[{"kind": "body", "component": "root", "name": "Body1", "visible": False}],
+        targets=[
+            {"kind": "body", "component": "root", "name": "Body1", "visible": False}
+        ],
         options=SessionOptions(mode="mock", project="safe", output_dir=tmp_path),
     )
 
@@ -524,7 +597,9 @@ def test_safe_change_transport_requires_correlated_dispatch_event() -> None:
     assert current["post_dispatch_replay_suppressed"] is True
 
 
-def test_safe_change_mixed_requirements_cannot_self_satisfy_independent_oracle() -> None:
+def test_safe_change_mixed_requirements_cannot_self_satisfy_independent_oracle() -> (
+    None
+):
     preview = {
         "requirements": [
             {
@@ -559,7 +634,9 @@ def test_safe_change_mixed_requirements_cannot_self_satisfy_independent_oracle()
 
 
 @pytest.mark.asyncio
-async def test_safe_change_applying_preview_requires_readback_without_replay(tmp_path: Path) -> None:
+async def test_safe_change_applying_preview_requires_readback_without_replay(
+    tmp_path: Path,
+) -> None:
     preview_dir = tmp_path / "safe_change_previews"
     preview_dir.mkdir()
     preview_id = "preview_interrupted"
@@ -636,8 +713,54 @@ async def test_safe_change_claimed_crash_is_known_predispatch_and_staled(
 
 
 def test_safe_change_scripts_preflight_all_targets_before_first_mutation() -> None:
-    visibility = safe_visibility_apply_script({"targets": [{"kind": "body", "name": "B"}]})
-    delete = safe_delete_apply_script({"targets": [{"kind": "body", "name": "B", "component": "root"}]})
+    visibility = safe_visibility_apply_script(
+        {"targets": [{"kind": "body", "name": "B"}]}
+    )
+    delete = safe_delete_apply_script(
+        {"targets": [{"kind": "body", "name": "B", "component": "root"}]}
+    )
 
-    assert visibility.index("if preflight_errors:") < visibility.index("body.isLightBulbOn = desired_visible")
+    assert visibility.index("if preflight_errors:") < visibility.index(
+        "body.isLightBulbOn = desired_visible"
+    )
     assert delete.index("if skipped:") < delete.index("entity.deleteMe()")
+
+
+def test_delete_classification_uses_bound_snapshot_facts_not_caller_labels() -> None:
+    snapshot = {
+        "bodies": [
+            {
+                "key": "part/Body#1",
+                "name": "Body",
+                "component": "part",
+                "entity_token": "opaque-token",
+                "visible": False,
+                "is_root": False,
+                "is_referenced": False,
+                "is_imported": False,
+                "shared_definition": False,
+                "binding_fingerprint": "snapshot-proof",
+            }
+        ],
+        "occurrences": [],
+        "duplicate_body_names": {},
+    }
+    caller_target = {"kind": "body", "entity_token": "opaque-token"}
+    bindings, errors = bind_safe_change_targets([caller_target], snapshot)
+    assert errors == []
+    classification = classify_safe_change(
+        "delete", bindings, {"allow_delete": True}, snapshot
+    )
+    assert classification["blocked"] is True
+    assert classification["allow_apply"] is False
+
+
+def test_delete_fails_closed_when_bound_safety_facts_are_missing() -> None:
+    classification = classify_safe_change(
+        "delete",
+        [{"kind": "body", "identifier": "body-token", "visible": True}],
+        {"allow_delete": True},
+        {},
+    )
+    assert classification["blocked"] is True
+    assert "facts" in " ".join(classification["reasons"]).lower()

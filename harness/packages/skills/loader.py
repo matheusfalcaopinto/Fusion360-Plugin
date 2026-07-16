@@ -30,8 +30,11 @@ class SkillLoader:
                     content=content,
                     purpose=_extract_section(content, "Purpose"),
                     status=status,
-                    failure_modes=_extract_bullets(content, "Common failure modes") or _extract_bullets(content, "Failure modes"),
-                    facade_operations=_extract_bullets(content, "Tool facade operations"),
+                    failure_modes=_extract_bullets(content, "Common failure modes")
+                    or _extract_bullets(content, "Failure modes"),
+                    facade_operations=_extract_bullets(
+                        content, "Tool facade operations"
+                    ),
                 )
             )
         return SkillRegistry(skills)
@@ -53,10 +56,9 @@ def _default_skill_root() -> Path:
 
 
 def _looks_like_harness_skill_root(path: Path) -> bool:
-    return (
-        (path / "fusion_mechanical_pro" / "SKILL.md").is_file()
-        or (path / "create_parametric_plate" / "SKILL.md").is_file()
-    )
+    return (path / "fusion_mechanical_pro" / "SKILL.md").is_file() or (
+        path / "create_parametric_plate" / "SKILL.md"
+    ).is_file()
 
 
 def _extract_name(content: str) -> str | None:
@@ -101,4 +103,8 @@ def _extract_section(content: str, heading: str) -> str:
 
 def _extract_bullets(content: str, heading: str) -> list[str]:
     section = _extract_section(content, heading)
-    return [line.lstrip("- ").strip() for line in section.splitlines() if line.strip().startswith("-")]
+    return [
+        line.lstrip("- ").strip()
+        for line in section.splitlines()
+        if line.strip().startswith("-")
+    ]

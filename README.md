@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/matheusfalcaopinto/Fusion360-Plugin"><img alt="Repository" src="https://img.shields.io/badge/GitHub-Fusion360--Plugin-181717?logo=github"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.4.0-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.1-2563eb">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
   <img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-plugin-111827">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-fusion__agent-0f766e">
@@ -85,7 +85,7 @@ Path com lint, baseline e readback programatico.
 | Setup Linux/macOS | `scripts/setup.sh` | Fluxo equivalente para shells POSIX. |
 | Validator | `scripts/validate_plugin.py` | Confere manifest, MCP, wheel e ferramentas publicas esperadas. |
 | Fonte canônica | `harness/` | Fonte rastreada usada para testes e build reproduzivel. |
-| Runtime Python | `wheels/fusion_agent_harness-0.4.0-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
+| Runtime Python | `wheels/fusion_agent_harness-0.4.1-py3-none-any.whl` | Pacote do harness embutido na distribuicao. |
 
 ## Arquitetura Visual
 
@@ -376,7 +376,8 @@ Checklist de uso:
   `fusion_agent_targeted_inspect` e declare assertions no
   `fusion_agent_fast_execute`;
 - para criacao CAD conhecida, prefira CadSpec v2 estrito; CadSpec v1 continua
-  aceito em 0.x com warning e sem verificacao contratual completa;
+  aceito somente durante a 0.4.1, depreciado, fail-closed e sem host I/O fora
+  de uma root aprovada; sua remocao esta programada para a 0.5.0;
 - para auditoria, inventario de hub, reorg, cleanup ou delete, nao use o
   planner; use `fusion_agent_compact_snapshot`,
   `fusion_agent_safe_change_preview`; inventario cloud pertence ao MCP opcional
@@ -435,8 +436,9 @@ revalidado antes das chamadas para bloquear rebinding.
 | Variavel | Obrigatoria? | Uso |
 | --- | --- | --- |
 | `FUSION_AGENT_CODEX` | Nao | Definida como `1` pelo plugin para indicar execucao via Codex. |
-| `FUSION_AGENT_PYTHON` | Opcional | Caminho explicito para o Python que hospeda o MCP server. |
+| `FUSION_AGENT_PYTHON` | Opcional | Python bootstrap preexistente usado para verificar o bundle e criar `.venv`; o MCP instalado sempre usa o Python contido na `.venv` do plugin. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
+| `FUSION_AGENT_AUTHORITY_POLICY_PATH` | Host I/O real | JSON imutavel de startup com roots de import/export, formatos, overwrite e TTL. Sem policy valida, host I/O real e negado. |
 | `FUSION_AGENT_TOOL_PROFILE` | Opcional | `normal` (padrao), `advanced`, `diagnostic`, `benchmark` ou `all`. |
 | `FUSION_AGENT_BACKEND` | Opcional | `autodesk_http` (padrao) ou `faust_stdio`; nunca ha fallback automatico. |
 | `FUSION_MCP_ENDPOINT` | Real Fusion Autodesk | Endpoint do backend local Autodesk; loopback-only por padrao. |
@@ -458,11 +460,48 @@ revalidado antes das chamadas para bloquear rebinding.
 | `FUSION_AGENT_FAST_PATH_MODE` | Opcional | `off`, `read_only` ou `enabled`; mutacao apenas em `advanced/all` e nunca no Faust. |
 | `FUSION_AGENT_EXPERIMENTAL_MANUFACTURING` | Experimental | `1` habilita APIs sheet metal/CAM somente em `advanced/all`. |
 | `FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES` | Opcional | Limite fail-closed do script final transmitido pelo Fast Execute, depois dos guards; padrao `28672` (28 KiB). |
-| `FUSION_AGENT_EXECUTION_PATH` | Teste/benchmark | `auto` (padrao), `native_fast` ou `safe_harness`; valores fixos travam a rota. |
+| `FUSION_AGENT_EXECUTION_PATH` | Startup opcional | `auto` (padrao), `native_fast` ou `safe_harness` como default imutavel do runtime. Trials de benchmark recebem rota, identidade e autorizacao pelo `RequestContext`, nunca por variavel de ambiente. |
 | `FUSION_AGENT_TELEMETRY` | Opcional | Quando `1`, grava telemetria local redigida; nenhum conteudo e enviado externamente. |
 | `FUSION_AGENT_REQUIRE_REAL` | Opcional | Forca modo real e bloqueia mock quando definido como `1`. |
 | `FUSION_AGENT_ALLOW_DRY_RUN` | Opcional | Quando `0`, bloqueia dry-run no ambiente instalado real-first. |
 | `PYTHONPATH` | Automatico | Ajustado pelo launcher quando `FUSION_AGENT_HARNESS_ROOT` esta definido. |
+
+### Authority policy para host I/O
+
+A 0.4.1 nao trata um path fornecido pelo caller como autorizacao. Import/export
+real exige uma policy local carregada no startup. Exemplo minimo:
+
+```json
+{
+  "schema_version": "fusion_agent.authority_policy.v1",
+  "capability_ttl_seconds": 1800,
+  "allow_overwrite": false,
+  "import_roots": [
+    {"id": "incoming", "path": "C:/FusionAgent/incoming", "formats": ["step", "stp", "f3d"], "default": true}
+  ],
+  "export_roots": [
+    {"id": "outgoing", "path": "C:/FusionAgent/outgoing", "formats": ["step", "stp", "stl", "png"], "default": true}
+  ]
+}
+```
+
+Specs v2 novas devem preferir `HostFileRef` (`root_id` + `relative_path`). O
+campo legado `path` continua aceito na 0.4.1 somente quando resolve, sem
+ambiguidade, dentro de uma root configurada. Roots completas nunca aparecem em
+readiness; somente IDs e o digest da policy sao publicos. Overwrite exige tanto
+pedido explicito no spec quanto `allow_overwrite: true` no nivel superior da
+policy. O campo `default` identifica a unica root que pode resolver um `path`
+legado relativo; ele nao amplia os formatos nem o acesso da root.
+Exports e captures PNG do CadSpec v1 continuam aceitando nomes relativos por
+um ciclo de compatibilidade, mas somente quando `output_dir` esta contido em
+uma export root aprovada. Eles recebem capability single-use, revalidacao no
+sink e a mesma regra de overwrite; sem policy valida, apenas host I/O real e
+bloqueado, enquanto mock e dry-run continuam confinados ao output local.
+
+Capabilities sao vinculadas a sessao, documento, operacao, spec digest, path
+canonico ou entidade CAD e sao consumidas uma unica vez. Mismatch, expiry,
+replay, escape por symlink/junction ou outcome desconhecido bloqueiam novo
+dispatch.
 
 `legacy` abre uma sessao one-shot por operacao e usa readiness/manifest em
 cache. `persistent_post_only` mantem uma sessao usando POST e o SSE retornado
@@ -493,7 +532,9 @@ Resultados limitados informam `complete`, `truncated`, `visited_entities`,
 `fusion_agent_inspect` retorna identidade do documento e contagens baratas;
 geometria, parametros, assembly, propriedades fisicas e metricas legadas devem
 ser solicitados explicitamente. Um baseline incompleto nunca autoriza uma
-mudanca Safe Harness.
+mutacao: verificacoes retornam `passed`, `failed` ou `incomplete`, e o campo
+legado `passed` so e verdadeiro para `status=passed`. Tipos de assertion
+desconhecidos, `NaN`, infinitos e tolerancias negativas falham fechado.
 
 ## Ferramentas MCP
 
@@ -669,7 +710,7 @@ capture viewport.
 |   |-- packages/
 |   `-- tests/
 |-- wheels/
-|   `-- fusion_agent_harness-0.4.0-py3-none-any.whl
+|   `-- fusion_agent_harness-0.4.1-py3-none-any.whl
 |-- .editorconfig
 |-- .gitattributes
 |-- .gitignore
@@ -682,6 +723,34 @@ capture viewport.
 ```
 
 ## Troubleshooting
+
+### Migracao para 0.4.1
+
+- Converta import/export CadSpec v2 para `HostFileRef` com `root_id` e
+  `relative_path`; mantenha paths legados apenas durante a migracao e somente
+  quando resolvem sem ambiguidade dentro de uma root aprovada.
+- Trate verificacao como `passed`, `failed` ou `incomplete`. O campo legado
+  `VerificationResult.passed` e apenas uma projecao e vale `true` somente para
+  `status=passed`; `incomplete` nunca autoriza reparo ou nova mutacao.
+- CadSpec v1 e Faust permanecem depreciados e fail-closed na 0.4.1. O adapter
+  Faust anuncia somente `parameter.set` com valor numerico literal, unidade e
+  prova lossless; formulas, referencias, geometria, joints, analises e host I/O
+  nao sao anunciados nem executados. A remocao desses caminhos legados pode
+  ocorrer a partir da 0.5.0.
+- Antes de instalar, `preinstall_verify.py` valida a bijecao ZIP/`RECORD`,
+  hashes, tamanhos, metadata, versao e paridade fonte-wheel. Uma falha ocorre
+  antes da criacao ou alteracao da venv.
+
+<details>
+<summary>Host I/O retorna <code>AUTHORITY_DENIED</code></summary>
+
+Confirme que `FUSION_AGENT_AUTHORITY_POLICY_PATH` apontava para uma policy
+valida quando o runtime iniciou, que o `root_id`, formato e path relativo estao
+na mesma root aprovada e que overwrite foi autorizado tanto na policy quanto na
+operacao. A policy e imutavel por processo: depois de corrigi-la, reinicie o
+runtime/Codex Desktop em vez de alterar ambiente durante uma sessao.
+
+</details>
 
 <details>
 <summary><code>python</code> nao encontrado</summary>
@@ -717,7 +786,7 @@ Confirme se o arquivo existe em `wheels/`. Este repositorio deve publicar o
 wheel porque ele faz parte da distribuicao do plugin.
 
 ```text
-wheels/fusion_agent_harness-0.4.0-py3-none-any.whl
+wheels/fusion_agent_harness-0.4.1-py3-none-any.whl
 ```
 
 </details>
@@ -732,6 +801,10 @@ Confira:
 - o setup foi executado com sucesso;
 - o Codex foi recarregado depois da instalacao;
 - o caminho configurado aponta para a raiz do repositorio, nao para `scripts/`.
+
+Depois de reinstalar ou aplicar o cachebuster, encerre completamente o Codex
+Desktop e abra uma task nova. O host Desktop mantem processos MCP em memoria e
+uma task existente pode continuar exibindo a superficie da versao anterior.
 
 </details>
 
@@ -808,29 +881,65 @@ variavel vazia para usar o wheel embutido.
 
 ## Publicacao
 
-Versao atual: `0.4.0`.
+Versao atual: `0.4.1`.
 
 Checklist de release:
 
 1. Rode a suite completa contra `harness/`.
 2. Rode `python scripts/build-distribution.py` duas vezes e confirme SHA-256
    identico.
+   Compare evidencia de desempenho no mesmo workload com
+   `check-performance-gate.py`; o gate rejeita p95 no-I/O somente quando a
+    regressao ultrapassa simultaneamente 10% e 25 ms, e rejeita crescimento de
+    RSS acima de 10% sem justificativa explicitamente aprovada. CI e release
+    extraem o baseline revisado `a148a741bbe7fc89cd1db62df3414db84aff41bd`
+    com `git archive`, medem baseline e candidato em processos separados e
+    vinculam a evidencia ao SHA candidato.
 3. Gere
    `fusion_agent_harness-<versao>-py3-none-any.whl`.
 4. Mantenha exatamente um wheel intencional em `wheels/`.
 5. Rode `python scripts/validate_plugin.py`, o launcher com `--check` e a suite
    `python -m pytest -q`.
-6. Aplique o cachebuster `0.4.0+codex.<timestamp-UTC>` exclusivamente com o
-   helper `update_plugin_cachebuster.py` do `plugin-creator`, somente depois desses
-   gates.
-7. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
+   O job de qualidade cria seu ambiente com `uv sync --frozen` e executa os
+   gates com `uv run --frozen`; `uv lock --check`, dependency check e
+   `pip-audit` falham a release se o lock ou o ambiente divergir.
+   `setup.ps1`/`setup.sh` exigem exatamente um wheel e executam
+   `preinstall_verify.py` antes de criar venv ou chamar pip; membro extra,
+   inclusive quando registrado no `RECORD`, ou qualquer divergencia entre a
+   allowlist do source manifest, wheel e `RECORD` interrompe a instalacao.
+6. Congele o SHA candidato, publique a branch e confirme que os SHAs local e
+   remoto sao identicos. Qualquer alteracao posterior cria outro candidato e
+   reinicia cobertura, performance, CI, Fusion real e a contagem de nightlies.
+7. Aplique o cachebuster `0.4.1+codex.<timestamp-UTC>` exclusivamente com o
+   helper `update_plugin_cachebuster.py` do `plugin-creator`, somente depois
+   desses gates e sem editar a marketplace manualmente.
+8. Atualize uma fonte pessoal limpa, rode `setup.ps1` ou `setup.sh` e reinstale
    `fusion-agent-codex@personal`.
-8. Em uma task nova, confirme a versao exata, o perfil `normal` com 12
+   Antes de importar o servidor do cache, execute
+   `verify_installation_parity.py` com a fonte pessoal, a raiz exata do cache e
+   o Python do runtime Codex. O gate executa a verificacao instalada nesse
+   interpretador exato e compara source manifest, wheel, arquivos instalados,
+   fonte copiada, skills e a semantica completa do `.mcp.json`; somente os
+   paths aprovados de `command`/launcher podem ser reescritos.
+9. Encerre completamente o Codex Desktop e, em uma task nova, confirme a
+   versao exata, o perfil `normal` com 12
    ferramentas, output schemas e somente nomes `fusion_agent_*`; `all` deve
    manter 35 durante a serie 0.x.
-9. Atualize `README.md` e `CHANGELOG.md` e crie a tag correspondente, por
-   exemplo `v0.4.0`. O workflow da tag recompila duas vezes, compara o wheel
-   rastreado e publica plugin, wheel, notas e `SHA256SUMS`.
+   O smoke chama somente readiness e deve provar zero chamadas ao Fusion;
+   tasks e processos Desktop existentes podem manter a superficie MCP antiga
+   em memoria.
+10. Em etapa separada, valide I/O permitida/negada, overwrite, CadSpec v2,
+    adapters v1/Faust, Safe Delete, recovery e concorrencia somente em
+    documentos e roots descartaveis.
+11. Exija tres nightlies agendadas consecutivas, completas e no mesmo SHA. O
+    run apaga provas rastreadas anteriores e vincula a nova prova ao SHA,
+    `run_id` e `run_attempt`. O gate baixa somente `nightly-public/`, autentica
+    `SHA256SUMS`, exige os dois checks publicos como `passed` e rejeita
+    `not_run`, prova stale, falha ou SHA diferente.
+12. Nao publique RC. Crie a tag imutavel `v0.4.1` somente depois desses gates.
+    O workflow da tag recompila duas vezes, compara o wheel rastreado e publica
+    exatamente o wheel/ZIP validado, notas e `SHA256SUMS`. A tag nunca e movida;
+    qualquer correcao posterior sera `0.4.2`.
 
 ## Licenca
 

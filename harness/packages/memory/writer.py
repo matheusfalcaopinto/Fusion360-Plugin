@@ -7,7 +7,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from memory.schemas import MemoryRecord, MemoryScope, MemorySource, MemoryType, TrustLevel
+from memory.schemas import (
+    MemoryRecord,
+    MemoryScope,
+    MemorySource,
+    MemoryType,
+    TrustLevel,
+)
 from memory.store import MemoryStore
 from memory.taint import inspect_memory_content
 from verifier.result_models import VerificationResult
@@ -36,7 +42,9 @@ class MemoryWriter:
                 {
                     "redacted": True,
                     "reason": "tainted_verification_payload",
-                    "sha256": hashlib.sha256(verification_json.encode("utf-8")).hexdigest(),
+                    "sha256": hashlib.sha256(
+                        verification_json.encode("utf-8")
+                    ).hexdigest(),
                     "passed": verification.passed,
                 },
                 indent=2,
@@ -50,7 +58,10 @@ class MemoryWriter:
             "## Verification",
             verification_json,
         ]
-        path = self.store.project_root(project) / f"sessions/{session_id}/memory_summary.md"
+        path = (
+            self.store.project_root(project)
+            / f"sessions/{session_id}/memory_summary.md"
+        )
         record = MemoryRecord(
             id=f"project:{project}:session:{session_id}",
             scope=MemoryScope.PROJECT,
@@ -70,7 +81,9 @@ class MemoryWriter:
             issue = verification.issues[0]
             failure_path = self.store.project_root(project) / "KNOWN_FAILURES.md"
             issue_message = _safe_tool_text(issue.message)
-            issue_details = _safe_tool_text(json.dumps(issue.details, sort_keys=True, default=str))
+            issue_details = _safe_tool_text(
+                json.dumps(issue.details, sort_keys=True, default=str)
+            )
             entry = (
                 f"\n\n## Failure: {issue.code}\n\n"
                 f"Last seen: {datetime.now(timezone.utc).date().isoformat()}\n\n"
@@ -78,7 +91,11 @@ class MemoryWriter:
                 f"Symptom: {issue_message}\n\n"
                 f"Details: `{issue_details}`\n"
             )
-            existing = failure_path.read_text(encoding="utf-8") if failure_path.exists() else "# Known Failures\n"
+            existing = (
+                failure_path.read_text(encoding="utf-8")
+                if failure_path.exists()
+                else "# Known Failures\n"
+            )
             failure_record = MemoryRecord(
                 id=f"project:{project}:known-failures",
                 scope=MemoryScope.PROJECT,

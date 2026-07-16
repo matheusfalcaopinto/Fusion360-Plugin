@@ -47,4 +47,6 @@ class FacadeMapping:
         try:
             return self.mapping[facade_operation]
         except KeyError as exc:
-            raise KeyError(f"facade operation is not mapped: {facade_operation}") from exc
+            raise KeyError(
+                f"facade operation is not mapped: {facade_operation}"
+            ) from exc

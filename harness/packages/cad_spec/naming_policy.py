@@ -23,8 +23,13 @@ def validate_name(value: str, field_name: str = "name") -> str:
     if not is_snake_case_name(value):
         raise ValueError(f"{field_name} must be snake_case: {value!r}")
     lowered = value.lower()
-    if any(lowered.startswith(prefix) and lowered[len(prefix) :].isdigit() for prefix in DEFAULT_NAME_PREFIXES):
-        raise ValueError(f"{field_name} must not be a default Fusion-style name: {value!r}")
+    if any(
+        lowered.startswith(prefix) and lowered[len(prefix) :].isdigit()
+        for prefix in DEFAULT_NAME_PREFIXES
+    ):
+        raise ValueError(
+            f"{field_name} must not be a default Fusion-style name: {value!r}"
+        )
     return value
 
 
@@ -32,4 +37,7 @@ def has_default_name(value: str) -> bool:
     """Return true when a name looks like a default generated Fusion name."""
 
     lowered = value.lower()
-    return any(lowered.startswith(prefix) and lowered[len(prefix) :].isdigit() for prefix in DEFAULT_NAME_PREFIXES)
+    return any(
+        lowered.startswith(prefix) and lowered[len(prefix) :].isdigit()
+        for prefix in DEFAULT_NAME_PREFIXES
+    )

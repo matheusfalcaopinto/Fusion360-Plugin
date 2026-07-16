@@ -129,7 +129,9 @@ class PinnedPublicBenchmarkAdapter:
 
         observed = await self._driver.preflight(self.definition.context(), config)
         if not isinstance(observed, AdapterPreflight):
-            raise TypeError("trusted benchmark driver preflight must return AdapterPreflight")
+            raise TypeError(
+                "trusted benchmark driver preflight must return AdapterPreflight"
+            )
         if not observed.ready:
             return observed
         revision_error = self._observed_revision_error(observed.observed_revision)
@@ -137,6 +139,7 @@ class PinnedPublicBenchmarkAdapter:
             return AdapterPreflight(
                 ready=False,
                 observed_revision=observed.observed_revision,
+                revision_identity=observed.revision_identity,
                 environment=observed.environment,
                 reason=revision_error,
             )
@@ -153,6 +156,7 @@ class PinnedPublicBenchmarkAdapter:
         return AdapterPreflight(
             ready=True,
             observed_revision=observed.observed_revision,
+            revision_identity=observed.revision_identity,
             environment=environment,
         )
 
@@ -169,12 +173,18 @@ class PinnedPublicBenchmarkAdapter:
         if policy_error:
             return AdapterExecution(state="not_run", reason=policy_error)
         if self._driver is None:
-            return AdapterExecution(state="not_run", reason="trusted_driver_not_injected")
+            return AdapterExecution(
+                state="not_run", reason="trusted_driver_not_injected"
+            )
         if self._authorization_key(subject, config) not in self._authorized:
-            return AdapterExecution(state="not_run", reason="adapter_preflight_not_authorized")
+            return AdapterExecution(
+                state="not_run", reason="adapter_preflight_not_authorized"
+            )
         execution = await self._driver.execute(self.definition.context(), task, config)
         if not isinstance(execution, AdapterExecution):
-            raise TypeError("trusted benchmark driver execute must return AdapterExecution")
+            raise TypeError(
+                "trusted benchmark driver execute must return AdapterExecution"
+            )
         return execution
 
     def _policy_error(self, subject: PublicBenchmarkSubject) -> str | None:
@@ -224,7 +234,10 @@ class PinnedPublicBenchmarkAdapter:
         if not observed_revision:
             return "observed_revision_missing"
         definition = self.definition
-        if definition.pin_kind in {"git", "pypi"} and observed_revision != definition.pin_value:
+        if (
+            definition.pin_kind in {"git", "pypi"}
+            and observed_revision != definition.pin_value
+        ):
             return f"revision_mismatch:expected={definition.pin_value}:observed={observed_revision}"
         return None
 
@@ -256,7 +269,7 @@ class FusionAgentCodexAdapter(PinnedPublicBenchmarkAdapter):
         license_id="MIT",
         redistributable=True,
         pin_kind="workspace",
-        pin_value="runtime-git-commit",
+        pin_value="source-manifest-v1",
     )
 
 
@@ -312,17 +325,19 @@ class NdooAdapter(PinnedPublicBenchmarkAdapter):
     )
 
 
-PUBLIC_ADAPTER_TYPES: Mapping[str, type[PinnedPublicBenchmarkAdapter]] = MappingProxyType(
-    {
-        adapter_type.definition.adapter_id: adapter_type
-        for adapter_type in (
-            FusionAgentCodexAdapter,
-            AutodeskOfficialAdapter,
-            FaustAdapter,
-            FrankSMcpAdapter,
-            NdooAdapter,
-        )
-    }
+PUBLIC_ADAPTER_TYPES: Mapping[str, type[PinnedPublicBenchmarkAdapter]] = (
+    MappingProxyType(
+        {
+            adapter_type.definition.adapter_id: adapter_type
+            for adapter_type in (
+                FusionAgentCodexAdapter,
+                AutodeskOfficialAdapter,
+                FaustAdapter,
+                FrankSMcpAdapter,
+                NdooAdapter,
+            )
+        }
+    )
 )
 
 
@@ -343,7 +358,9 @@ def build_public_adapter_registry(
     known = set(PUBLIC_ADAPTER_TYPES)
     unknown = (set(injected_drivers) | set(injected_prerequisites)) - known
     if unknown:
-        raise ValueError(f"unknown public benchmark adapter injection: {sorted(unknown)}")
+        raise ValueError(
+            f"unknown public benchmark adapter injection: {sorted(unknown)}"
+        )
     return {
         adapter_id: adapter_type(
             driver=injected_drivers.get(adapter_id),

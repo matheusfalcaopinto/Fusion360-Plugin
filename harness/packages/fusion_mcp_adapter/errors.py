@@ -24,6 +24,7 @@ class ErrorCode(StrEnum):
     MUTATION_OUTCOME_UNKNOWN = "MUTATION_OUTCOME_UNKNOWN"
     SCRIPT_SIZE_LIMIT_EXCEEDED = "SCRIPT_SIZE_LIMIT_EXCEEDED"
     MANIFEST_DRIFT = "MANIFEST_DRIFT"
+    AUTHORITY_DENIED = "AUTHORITY_DENIED"
     CLIENT_CLOSED = "CLIENT_CLOSED"
     UNKNOWN = "UNKNOWN"
 
@@ -40,7 +41,9 @@ class ToolNotAllowed(FusionHarnessError):
     """Raised when a native tool is blocked by policy."""
 
     def __init__(self, tool_name: str) -> None:
-        super().__init__(f"tool is not allowlisted: {tool_name}", ErrorCode.TOOL_NOT_ALLOWED)
+        super().__init__(
+            f"tool is not allowlisted: {tool_name}", ErrorCode.TOOL_NOT_ALLOWED
+        )
         self.tool_name = tool_name
 
 

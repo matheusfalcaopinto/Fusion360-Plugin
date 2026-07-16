@@ -41,6 +41,32 @@ def test_configure_sets_profile_and_backend(tmp_path: Path) -> None:
     assert "--mode socket" in env["FUSION_FAUST_COMMAND"]
 
 
+def test_installed_config_requires_python_inside_plugin_venv(tmp_path: Path) -> None:
+    plugin, external_python = _plugin(tmp_path)
+    module = _module()
+
+    with pytest.raises(ValueError, match="contained"):
+        module.configure(
+            plugin,
+            external_python,
+            require_contained_runtime=True,
+        )
+
+    contained_python = plugin / ".venv" / "Scripts" / "python.exe"
+    contained_python.parent.mkdir(parents=True)
+    contained_python.write_text("", encoding="utf-8")
+    module.configure(
+        plugin,
+        contained_python,
+        require_contained_runtime=True,
+    )
+    payload = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))
+    assert (
+        Path(payload["mcpServers"]["fusion_agent"]["command"])
+        == contained_python.resolve()
+    )
+
+
 def test_fusion_data_is_optional_oauth_and_write_prompted(tmp_path: Path) -> None:
     plugin, python = _plugin(tmp_path)
     module = _module()
@@ -50,7 +76,9 @@ def test_fusion_data_is_optional_oauth_and_write_prompted(tmp_path: Path) -> Non
         fusion_data_url="https://fusion-data.example.test/mcp",
         enable_fusion_data=True,
     )
-    servers = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    servers = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]
     assert set(servers) == {"fusion_agent", "fusion_data"}
     server = servers["fusion_data"]
     assert server["auth"] == "oauth"

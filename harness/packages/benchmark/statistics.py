@@ -74,23 +74,44 @@ def aggregate_trials(
             "trial_count": len(path_trials),
             "oracle_pass_rate": _rate(trial.oracle.passed for trial in path_trials),
             "final_success_rate": _rate(trial.final_success for trial in path_trials),
-            "duration_ms": {"p50": percentile(durations, 0.5), "p90": percentile(durations, 0.9)},
-            "call_count": {"p50": percentile(calls, 0.5), "p90": percentile(calls, 0.9)},
+            "duration_ms": {
+                "p50": percentile(durations, 0.5),
+                "p90": percentile(durations, 0.9),
+            },
+            "call_count": {
+                "p50": percentile(calls, 0.5),
+                "p90": percentile(calls, 0.9),
+            },
             "safety": {
-                "unexpected_diffs": sum(int(_metric(trial, "unexpected_diff_count")) for trial in path_trials),
-                "duplicates": sum(int(_metric(trial, "duplicate_count")) for trial in path_trials),
-                "saves": sum(int(_metric(trial, "save_count")) for trial in path_trials),
-                "restoration_rate": _rate(bool(trial.metrics.get("restored", True)) for trial in path_trials),
+                "unexpected_diffs": sum(
+                    int(_metric(trial, "unexpected_diff_count"))
+                    for trial in path_trials
+                ),
+                "duplicates": sum(
+                    int(_metric(trial, "duplicate_count")) for trial in path_trials
+                ),
+                "saves": sum(
+                    int(_metric(trial, "save_count")) for trial in path_trials
+                ),
+                "restoration_rate": _rate(
+                    bool(trial.metrics.get("restored", True)) for trial in path_trials
+                ),
             },
         }
 
     paired = _paired_statistics(measured, seed=seed)
     segments = {
-        "read": _route_segment([trial for trial in measured if trial.risk == "read_only"]),
-        "write": _route_segment([trial for trial in measured if trial.risk in {"additive", "scoped_update"}]),
+        "read": _route_segment(
+            [trial for trial in measured if trial.risk == "read_only"]
+        ),
+        "write": _route_segment(
+            [trial for trial in measured if trial.risk in {"additive", "scoped_update"}]
+        ),
     }
     if allow_current_safe_baseline and safe_harness_baseline_p90_ms is None:
-        current_safe_p90 = route_summary.get("safe_harness", {}).get("duration_ms", {}).get("p90")
+        current_safe_p90 = (
+            route_summary.get("safe_harness", {}).get("duration_ms", {}).get("p90")
+        )
         if isinstance(current_safe_p90, (int, float)) and current_safe_p90 > 0:
             safe_harness_baseline_p90_ms = float(current_safe_p90)
     gates, gate_details = _evaluate_gates(
@@ -199,13 +220,18 @@ def _evaluate_gates(
     duration_delta = paired.get("duration_delta_percent", {}).get("p50")
     calls_delta = paired.get("call_count_delta", {}).get("p50")
     final_success_95 = all(
-        route.get("final_success_rate") is not None and float(route["final_success_rate"]) >= 0.95
+        route.get("final_success_rate") is not None
+        and float(route["final_success_rate"]) >= 0.95
         for route in routes.values()
     )
     single_initialize = _one_initialize_per_session_generation(session_trials)
     mutation_never_replayed = all(_mutation_dispatch_is_safe(trial) for trial in trials)
-    expectations_met = bool(trials) and all(bool(trial.metrics.get("expectations_met")) for trial in trials)
-    independent_codex_metrics = all(_codex_critical_metrics_are_independent(trial) for trial in trials)
+    expectations_met = bool(trials) and all(
+        bool(trial.metrics.get("expectations_met")) for trial in trials
+    )
+    independent_codex_metrics = all(
+        _codex_critical_metrics_are_independent(trial) for trial in trials
+    )
     destructive_blocked = all(
         bool(trial.metrics.get("blocked_destructive"))
         for trial in trials
@@ -214,7 +240,9 @@ def _evaluate_gates(
     read_reductions = _route_reductions(segments.get("read", {}))
     write_reductions = _route_reductions(segments.get("write", {}))
     safe_trials = [trial for trial in trials if trial.execution_path == "safe_harness"]
-    safe_correct = bool(safe_trials) and all(trial.oracle.passed for trial in safe_trials)
+    safe_correct = bool(safe_trials) and all(
+        trial.oracle.passed for trial in safe_trials
+    )
     current_safe_p90 = routes.get("safe_harness", {}).get("duration_ms", {}).get("p90")
     safe_p90_regression = None
     if (
@@ -222,7 +250,9 @@ def _evaluate_gates(
         and isinstance(safe_harness_baseline_p90_ms, (int, float))
         and safe_harness_baseline_p90_ms > 0
     ):
-        safe_p90_regression = (float(current_safe_p90) - safe_harness_baseline_p90_ms) / safe_harness_baseline_p90_ms
+        safe_p90_regression = (
+            float(current_safe_p90) - safe_harness_baseline_p90_ms
+        ) / safe_harness_baseline_p90_ms
     gates = {
         "oracle_100_percent": all_oracles,
         "final_success_at_least_95_percent": final_success_95,
@@ -233,16 +263,22 @@ def _evaluate_gates(
         "expectations_met": expectations_met,
         "codex_critical_metrics_independently_observed": independent_codex_metrics,
         "destructive_requests_blocked": destructive_blocked,
-        "fast_read_p50_reduction_at_least_50_percent": read_reductions["duration_p50"] >= 0.50,
-        "fast_read_p90_reduction_at_least_30_percent": read_reductions["duration_p90"] >= 0.30,
-        "fast_write_p50_reduction_at_least_30_percent": write_reductions["duration_p50"] >= 0.30,
-        "fast_write_p90_reduction_at_least_20_percent": write_reductions["duration_p90"] >= 0.20,
-        "fast_write_call_reduction_at_least_50_percent": write_reductions["call_p50"] >= 0.50,
+        "fast_read_p50_reduction_at_least_50_percent": read_reductions["duration_p50"]
+        >= 0.50,
+        "fast_read_p90_reduction_at_least_30_percent": read_reductions["duration_p90"]
+        >= 0.30,
+        "fast_write_p50_reduction_at_least_30_percent": write_reductions["duration_p50"]
+        >= 0.30,
+        "fast_write_p90_reduction_at_least_20_percent": write_reductions["duration_p90"]
+        >= 0.20,
+        "fast_write_call_reduction_at_least_50_percent": write_reductions["call_p50"]
+        >= 0.50,
         "safe_harness_no_correctness_loss": safe_correct,
         "safe_harness_p90_regression_at_most_10_percent": (
             safe_p90_regression is not None and safe_p90_regression <= 0.10
         ),
-        "paired_fast_duration_improved": duration_delta is not None and duration_delta < 0,
+        "paired_fast_duration_improved": duration_delta is not None
+        and duration_delta < 0,
         "paired_fast_calls_reduced": calls_delta is not None and calls_delta < 0,
     }
     gates["all_required"] = all(gates.values())
@@ -250,7 +286,9 @@ def _evaluate_gates(
         "read_reductions": read_reductions,
         "write_reductions": write_reductions,
         "safe_harness_p90_regression": {
-            "status": "measured" if safe_p90_regression is not None else "baseline_required",
+            "status": "measured"
+            if safe_p90_regression is not None
+            else "baseline_required",
             "threshold": 0.10,
             "baseline_kind": baseline_kind,
             "baseline_p90_ms": safe_harness_baseline_p90_ms,
@@ -276,8 +314,14 @@ def _route_segment(trials: list[BenchmarkTrial]) -> dict[str, Any]:
         calls = [_metric(trial, "call_count") for trial in path_trials]
         summary[path] = {
             "trial_count": len(path_trials),
-            "duration_ms": {"p50": percentile(durations, 0.5), "p90": percentile(durations, 0.9)},
-            "call_count": {"p50": percentile(calls, 0.5), "p90": percentile(calls, 0.9)},
+            "duration_ms": {
+                "p50": percentile(durations, 0.5),
+                "p90": percentile(durations, 0.9),
+            },
+            "call_count": {
+                "p50": percentile(calls, 0.5),
+                "p90": percentile(calls, 0.9),
+            },
         }
     return summary
 
@@ -287,10 +331,12 @@ def _route_reductions(segment: dict[str, Any]) -> dict[str, float]:
     fast = segment.get("native_fast", {})
     return {
         "duration_p50": _reduction(
-            safe.get("duration_ms", {}).get("p50"), fast.get("duration_ms", {}).get("p50")
+            safe.get("duration_ms", {}).get("p50"),
+            fast.get("duration_ms", {}).get("p50"),
         ),
         "duration_p90": _reduction(
-            safe.get("duration_ms", {}).get("p90"), fast.get("duration_ms", {}).get("p90")
+            safe.get("duration_ms", {}).get("p90"),
+            fast.get("duration_ms", {}).get("p90"),
         ),
         "call_p50": _reduction(
             safe.get("call_count", {}).get("p50"), fast.get("call_count", {}).get("p50")
@@ -299,20 +345,30 @@ def _route_reductions(segment: dict[str, Any]) -> dict[str, float]:
 
 
 def _reduction(baseline: Any, candidate: Any) -> float:
-    if not isinstance(baseline, (int, float)) or not isinstance(candidate, (int, float)) or baseline <= 0:
+    if (
+        not isinstance(baseline, (int, float))
+        or not isinstance(candidate, (int, float))
+        or baseline <= 0
+    ):
         return 0.0
     return (float(baseline) - float(candidate)) / float(baseline)
 
 
-def _rollout_status(trials: list[BenchmarkTrial], gates: dict[str, bool]) -> dict[str, Any]:
+def _rollout_status(
+    trials: list[BenchmarkTrial], gates: dict[str, bool]
+) -> dict[str, Any]:
     fast = [
         trial
         for trial in trials
         if trial.execution_path == "native_fast" and _is_verified_real_trial(trial)
     ]
     read_count = sum(1 for trial in fast if trial.risk == "read_only")
-    additive_count = sum(1 for trial in fast if trial.risk == "additive" and trial.oracle.passed)
-    scoped_count = sum(1 for trial in fast if trial.risk == "scoped_update" and trial.oracle.passed)
+    additive_count = sum(
+        1 for trial in fast if trial.risk == "additive" and trial.oracle.passed
+    )
+    scoped_count = sum(
+        1 for trial in fast if trial.risk == "scoped_update" and trial.oracle.passed
+    )
     common_promotion_gates = bool(
         gates.get("zero_safety_regressions", False)
         and gates.get("expectations_met", False)
@@ -342,7 +398,13 @@ def _rollout_status(trials: list[BenchmarkTrial], gates: dict[str, bool]) -> dic
             "required_mutations": 20,
             "eligible": scoped_count >= 20 and mutation_promotion_gates,
         },
-        "always_safe_harness": ["destructive", "bulk", "hidden_shared", "reorganization", "ambiguous"],
+        "always_safe_harness": [
+            "destructive",
+            "bulk",
+            "hidden_shared",
+            "reorganization",
+            "ambiguous",
+        ],
     }
 
 
@@ -351,7 +413,11 @@ def _one_initialize_per_session_generation(trials: list[BenchmarkTrial]) -> bool
     for trial in trials:
         session_key = trial.metrics.get("transport_session_key")
         generation = trial.metrics.get("connection_generation")
-        if not isinstance(session_key, str) or not session_key or not isinstance(generation, int):
+        if (
+            not isinstance(session_key, str)
+            or not session_key
+            or not isinstance(generation, int)
+        ):
             return False
         groups[(session_key, generation)] += int(_metric(trial, "initialize_count"))
     return bool(groups) and all(count == 1 for count in groups.values())
@@ -363,7 +429,10 @@ def _mutation_dispatch_is_safe(trial: BenchmarkTrial) -> bool:
     dispatches = int(_metric(trial, "mutation_dispatch_count"))
     if trial.risk == "destructive":
         return dispatches == 0
-    if trial.risk in {"additive", "scoped_update"} and trial.execution_path == "native_fast":
+    if (
+        trial.risk in {"additive", "scoped_update"}
+        and trial.execution_path == "native_fast"
+    ):
         return dispatches == 1
     if bool(trial.metrics.get("outcome_unknown")):
         return dispatches == 1

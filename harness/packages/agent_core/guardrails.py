@@ -97,7 +97,14 @@ class PlannerUnsupportedError(ValueError):
         )
         safe_only = bool(
             set(categories)
-            & {"reorg", "cleanup", "delete", "hidden_cleanup", "shared_definition", "hub_inventory"}
+            & {
+                "reorg",
+                "cleanup",
+                "delete",
+                "hidden_cleanup",
+                "shared_definition",
+                "hub_inventory",
+            }
         )
         return {
             "supported": False,
@@ -105,7 +112,9 @@ class PlannerUnsupportedError(ValueError):
             "reason": self.reason,
             "matched_terms": self.matched_terms,
             "categories": categories,
-            "recommended_path": "safe_harness" if safe_only else "native_read_then_targeted_inspect",
+            "recommended_path": "safe_harness"
+            if safe_only
+            else "native_read_then_targeted_inspect",
             "recommended_tools": (
                 [
                     "fusion_agent_compact_snapshot",
@@ -186,20 +195,50 @@ def compact_mock_snapshot(
         visited_entities += 1
         if index >= max_occurrences:
             break
-        component_name = component.get("name", name) if isinstance(component, dict) else name
+        component_name = (
+            component.get("name", name) if isinstance(component, dict) else name
+        )
         component_keys.add(component_name)
         occurrences.append(
-            {
-                "path": component_name,
-                "name": component_name,
-                "component": component_name,
-                "entity_token": (
-                    component.get("entity_token") or component.get("token") or f"mock:occurrence:{component_name}"
-                    if isinstance(component, dict)
-                    else f"mock:occurrence:{component_name}"
-                ),
-                "visible": True,
-            }
+            _with_binding_fingerprint(
+                {
+                    "path": component_name,
+                    "name": component_name,
+                    "component": component_name,
+                    "entity_token": (
+                        component.get("entity_token")
+                        or component.get("token")
+                        or f"mock:occurrence:{component_name}"
+                        if isinstance(component, dict)
+                        else f"mock:occurrence:{component_name}"
+                    ),
+                    "visible": bool(
+                        component.get("visible", True)
+                        if isinstance(component, dict)
+                        else True
+                    ),
+                    "is_root": bool(
+                        component.get("is_root", False)
+                        if isinstance(component, dict)
+                        else False
+                    ),
+                    "is_referenced": bool(
+                        component.get("is_referenced", False)
+                        if isinstance(component, dict)
+                        else False
+                    ),
+                    "is_imported": bool(
+                        component.get("is_imported", False)
+                        if isinstance(component, dict)
+                        else False
+                    ),
+                    "shared_definition": bool(
+                        component.get("shared_definition", False)
+                        if isinstance(component, dict)
+                        else False
+                    ),
+                }
+            )
         )
 
     body_payloads: list[dict[str, Any]] = []
@@ -217,25 +256,55 @@ def compact_mock_snapshot(
         body_name_counts[name] += 1
         visible_body_keys.append(key)
         body_payloads.append(
-            {
-                "key": key,
-                "name": name,
-                "component": component_name,
-                "entity_token": (
-                    body.get("entity_token") or body.get("token") or f"mock:body:{key}"
+            _with_binding_fingerprint(
+                {
+                    "key": key,
+                    "name": name,
+                    "component": component_name,
+                    "entity_token": (
+                        body.get("entity_token")
+                        or body.get("token")
+                        or f"mock:body:{key}"
+                        if isinstance(body, dict)
+                        else f"mock:body:{key}"
+                    ),
+                    "visible": bool(
+                        body.get("visible", True) if isinstance(body, dict) else True
+                    ),
+                    "is_root": bool(
+                        body.get("is_root", False) if isinstance(body, dict) else False
+                    ),
+                    "is_referenced": bool(
+                        body.get("is_referenced", False)
+                        if isinstance(body, dict)
+                        else False
+                    ),
+                    "is_imported": bool(
+                        body.get("is_imported", False)
+                        if isinstance(body, dict)
+                        else False
+                    ),
+                    "shared_definition": bool(
+                        body.get("shared_definition", False)
+                        if isinstance(body, dict)
+                        else False
+                    ),
+                    "bbox_mm": body.get("bounding_box_mm", [])
                     if isinstance(body, dict)
-                    else f"mock:body:{key}"
-                ),
-                "visible": True,
-                "bbox_mm": body.get("bounding_box_mm", []) if isinstance(body, dict) else [],
-            }
+                    else [],
+                }
+            )
         )
     if stop_reason is None and len(components) > max_occurrences:
         stop_reason = "max_occurrences"
     if stop_reason is None and len(bodies) > max_bodies:
         stop_reason = "max_bodies"
-    duplicate_names = {name: count for name, count in body_name_counts.items() if count > 1}
-    visible_occurrence_paths = [item["path"] for item in occurrences if item.get("visible")]
+    duplicate_names = {
+        name: count for name, count in body_name_counts.items() if count > 1
+    }
+    visible_occurrence_paths = [
+        item["path"] for item in occurrences if item.get("visible")
+    ]
     visible_component_keys = sorted(component_keys)
     snapshot = {
         "schema_version": "compact_snapshot.v2",
@@ -245,7 +314,9 @@ def compact_mock_snapshot(
             "identity_kind": "mock_session",
             "stable_id": "mock:active-design",
         },
-        "payload_capped": stop_reason is not None or len(components) > max_occurrences or len(bodies) > max_bodies,
+        "payload_capped": stop_reason is not None
+        or len(components) > max_occurrences
+        or len(bodies) > max_bodies,
         "counts": {
             "components_total": len(components),
             "occurrences_total": len(components),
@@ -263,7 +334,9 @@ def compact_mock_snapshot(
         "duplicate_body_names": duplicate_names,
         "duplicate_name_warnings": _duplicate_name_warnings(duplicate_names),
         "complete": stop_reason is None,
-        "truncated": stop_reason is not None or len(components) > max_occurrences or len(bodies) > max_bodies,
+        "truncated": stop_reason is not None
+        or len(components) > max_occurrences
+        or len(bodies) > max_bodies,
         "visited_entities": visited_entities,
         "elapsed_ms": 0,
         "response_bytes": 0,
@@ -277,7 +350,9 @@ def compact_mock_snapshot(
             }
         ),
     }
-    snapshot["response_bytes"] = len(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    snapshot["response_bytes"] = len(
+        json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     if snapshot["response_bytes"] > max_response_bytes:
         snapshot["complete"] = False
         snapshot["truncated"] = True
@@ -299,7 +374,11 @@ def compact_mock_snapshot(
                 snapshot["duplicate_name_warnings"].pop()
             else:
                 break
-            snapshot["response_bytes"] = len(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            snapshot["response_bytes"] = len(
+                json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
     return snapshot
 
 
@@ -343,6 +422,11 @@ def canonical_snapshot_fingerprint(snapshot: dict[str, Any]) -> str | None:
             "visible": value.get("visible"),
             "bbox_mm": value.get("bbox_mm"),
             "transform": value.get("transform"),
+            "is_root": value.get("is_root"),
+            "is_referenced": value.get("is_referenced"),
+            "is_imported": value.get("is_imported"),
+            "shared_definition": value.get("shared_definition"),
+            "binding_fingerprint": value.get("binding_fingerprint"),
         }
 
     def body(item: Any) -> dict[str, Any]:
@@ -355,6 +439,11 @@ def canonical_snapshot_fingerprint(snapshot: dict[str, Any]) -> str | None:
             "entity_token": value.get("entity_token") or value.get("token"),
             "visible": value.get("visible"),
             "bbox_mm": value.get("bbox_mm"),
+            "is_root": value.get("is_root"),
+            "is_referenced": value.get("is_referenced"),
+            "is_imported": value.get("is_imported"),
+            "shared_definition": value.get("shared_definition"),
+            "binding_fingerprint": value.get("binding_fingerprint"),
         }
 
     payload = {
@@ -362,14 +451,22 @@ def canonical_snapshot_fingerprint(snapshot: dict[str, Any]) -> str | None:
         "counts": snapshot.get("counts") or {},
         "occurrences": sorted(
             (occurrence(item) for item in snapshot.get("occurrences") or []),
-            key=lambda item: (str(item.get("path") or ""), str(item.get("entity_token") or "")),
+            key=lambda item: (
+                str(item.get("path") or ""),
+                str(item.get("entity_token") or ""),
+            ),
         ),
         "bodies": sorted(
             (body(item) for item in snapshot.get("bodies") or []),
-            key=lambda item: (str(item.get("key") or ""), str(item.get("entity_token") or "")),
+            key=lambda item: (
+                str(item.get("key") or ""),
+                str(item.get("entity_token") or ""),
+            ),
         ),
         "duplicate_body_names": snapshot.get("duplicate_body_names") or {},
-        "visible_occurrence_paths": sorted(snapshot.get("visible_occurrence_paths") or []),
+        "visible_occurrence_paths": sorted(
+            snapshot.get("visible_occurrence_paths") or []
+        ),
         "visible_body_keys": sorted(snapshot.get("visible_body_keys") or []),
         "visible_component_keys": sorted(snapshot.get("visible_component_keys") or []),
         "visible_body_bbox_mm": snapshot.get("visible_body_bbox_mm"),
@@ -387,7 +484,9 @@ def bind_safe_change_targets(
     """Resolve every target to one stable snapshot entity before mutation."""
 
     bodies = [item for item in snapshot.get("bodies") or [] if isinstance(item, dict)]
-    occurrences = [item for item in snapshot.get("occurrences") or [] if isinstance(item, dict)]
+    occurrences = [
+        item for item in snapshot.get("occurrences") or [] if isinstance(item, dict)
+    ]
     bindings: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     seen_entities: set[tuple[str, str]] = set()
@@ -397,14 +496,19 @@ def bind_safe_change_targets(
         if kind in {"body", "brepbody"}:
             target_token = str(target.get("entity_token") or target.get("token") or "")
             target_key = str(target.get("body_key") or target.get("key") or "")
-            target_name = str(target.get("name") or target.get("body") or target.get("target") or "")
-            target_component = str(target.get("component") or target.get("component_path") or "")
+            target_name = str(
+                target.get("name") or target.get("body") or target.get("target") or ""
+            )
+            target_component = str(
+                target.get("component") or target.get("component_path") or ""
+            )
             matches = [
                 item
                 for item in bodies
                 if (
                     target_token
-                    and target_token == str(item.get("entity_token") or item.get("token") or "")
+                    and target_token
+                    == str(item.get("entity_token") or item.get("token") or "")
                 )
                 or (target_key and target_key == str(item.get("key") or ""))
                 or (
@@ -412,12 +516,20 @@ def bind_safe_change_targets(
                     and not target_key
                     and target_name
                     and target_name == str(item.get("name") or "")
-                    and (not target_component or target_component == str(item.get("component") or ""))
+                    and (
+                        not target_component
+                        or target_component == str(item.get("component") or "")
+                    )
                 )
             ]
             normalized_kind = "body"
             identifier = (
-                str(matches[0].get("entity_token") or matches[0].get("token") or matches[0].get("key") or "")
+                str(
+                    matches[0].get("entity_token")
+                    or matches[0].get("token")
+                    or matches[0].get("key")
+                    or ""
+                )
                 if len(matches) == 1
                 else target_token or target_key or f"{target_component}/{target_name}"
             )
@@ -429,13 +541,19 @@ def bind_safe_change_targets(
                 for item in occurrences
                 if (
                     target_token
-                    and target_token == str(item.get("entity_token") or item.get("token") or "")
+                    and target_token
+                    == str(item.get("entity_token") or item.get("token") or "")
                 )
                 or (target_path and target_path == str(item.get("path") or ""))
             ]
             normalized_kind = "occurrence"
             identifier = (
-                str(matches[0].get("entity_token") or matches[0].get("token") or matches[0].get("path") or "")
+                str(
+                    matches[0].get("entity_token")
+                    or matches[0].get("token")
+                    or matches[0].get("path")
+                    or ""
+                )
                 if len(matches) == 1
                 else target_token or target_path
             )
@@ -477,6 +595,12 @@ def bind_safe_change_targets(
                 "key": match.get("key"),
                 "component": match.get("component"),
                 "name": match.get("name"),
+                "visible": match.get("visible"),
+                "is_root": match.get("is_root"),
+                "is_referenced": match.get("is_referenced"),
+                "is_imported": match.get("is_imported"),
+                "shared_definition": match.get("shared_definition"),
+                "binding_fingerprint": match.get("binding_fingerprint"),
             }
         )
     return bindings, errors
@@ -493,7 +617,11 @@ def classify_safe_change(
     policy = policy or {}
     operation = operation.lower()
     duplicate_warnings = ambiguous_target_warnings(targets, snapshot or {})
-    has_shared_or_hidden = any(_target_is_shared_or_hidden(target) for target in targets)
+    delete_risks = [_bound_delete_risk(target) for target in targets]
+    missing_delete_facts = [
+        risk for risk in delete_risks if risk["facts_complete"] is False
+    ]
+    has_shared_or_hidden = any(bool(risk["dangerous"]) for risk in delete_risks)
     result: dict[str, Any] = {
         "operation": operation,
         "target_count": len(targets),
@@ -517,7 +645,9 @@ def classify_safe_change(
         result["blocked"] = True
         result["classification"] = "ambiguous_targets"
         result["risk_level"] = "high"
-        result["reasons"].append("Duplicate or unscoped target names are ambiguous; provide component-scoped paths.")
+        result["reasons"].append(
+            "Duplicate or unscoped target names are ambiguous; provide component-scoped paths."
+        )
         return result
     if operation == "move":
         result.update(
@@ -526,7 +656,9 @@ def classify_safe_change(
                 "blocked": False,
                 "risk_level": "medium",
                 "classification": "reversible_move",
-                "reasons": ["Move operations are reversible but still require post-change snapshot verification."],
+                "reasons": [
+                    "Move operations are reversible but still require post-change snapshot verification."
+                ],
             }
         )
         return result
@@ -537,7 +669,9 @@ def classify_safe_change(
                 "blocked": False,
                 "risk_level": "low",
                 "classification": "reversible_visibility",
-                "reasons": ["Visibility changes are reversible and can be checked with visible-path diffs."],
+                "reasons": [
+                    "Visibility changes are reversible and can be checked with visible-path diffs."
+                ],
             }
         )
         return result
@@ -548,7 +682,9 @@ def classify_safe_change(
                 "blocked": True,
                 "risk_level": "high",
                 "classification": "destructive/shared-definition risk",
-                "reasons": ["Componentization can alter shared definitions and must be implemented as a specialized workflow."],
+                "reasons": [
+                    "Componentization can alter shared definitions and must be implemented as a specialized workflow."
+                ],
             }
         )
         return result
@@ -559,14 +695,26 @@ def classify_safe_change(
         if not policy.get("allow_delete", False):
             result["blocked"] = True
             result["blocked_by_default"] = True
-            result["reasons"].append("Deletes are blocked by default; set policy.allow_delete=true after preview review.")
+            result["reasons"].append(
+                "Deletes are blocked by default; set policy.allow_delete=true after preview review."
+            )
+        if missing_delete_facts:
+            result["blocked"] = True
+            result["blocked_by_default"] = True
+            result["reasons"].append(
+                "Delete target binding facts are incomplete; bind exact visibility, root, reference, import, shared-definition, and fingerprint facts."
+            )
         if has_shared_or_hidden:
             result["blocked"] = True
             result["blocked_by_default"] = True
-            result["reasons"].append("Hidden/imported/shared-definition targets are blocked by default.")
+            result["reasons"].append(
+                "Hidden/imported/shared-definition targets are blocked by default."
+            )
         if not result["blocked"]:
             result["allow_apply"] = True
-            result["reasons"].append("Delete preview is high risk and requires confirm_destructive=true with batch_size<=5.")
+            result["reasons"].append(
+                "Delete preview is high risk and requires confirm_destructive=true with batch_size<=5."
+            )
         return result
     result["blocked"] = True
     result["classification"] = "unsupported_operation"
@@ -580,9 +728,15 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
 
     before_view = _snapshot_view(before)
     after_view = _snapshot_view(after)
-    missing_occurrences = sorted(before_view["visible_occurrence_paths"] - after_view["visible_occurrence_paths"])
-    missing_bodies = sorted(before_view["visible_body_keys"] - after_view["visible_body_keys"])
-    missing_components = sorted(before_view["visible_component_keys"] - after_view["visible_component_keys"])
+    missing_occurrences = sorted(
+        before_view["visible_occurrence_paths"] - after_view["visible_occurrence_paths"]
+    )
+    missing_bodies = sorted(
+        before_view["visible_body_keys"] - after_view["visible_body_keys"]
+    )
+    missing_components = sorted(
+        before_view["visible_component_keys"] - after_view["visible_component_keys"]
+    )
     before_counts = before_view["counts"]
     after_counts = after_view["counts"]
     count_regressions = {
@@ -590,9 +744,19 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
         for key in ("visible_occurrences", "visible_bodies", "visible_components")
         if int(after_counts.get(key, 0)) < int(before_counts.get(key, 0))
     }
-    bbox_shrank = _bbox_shrank(before_view.get("visible_body_bbox_mm"), after_view.get("visible_body_bbox_mm"))
-    negative_impact = bool(missing_occurrences or missing_bodies or missing_components or count_regressions or bbox_shrank)
-    globally_complete = _complete_global_snapshot(before) and _complete_global_snapshot(after)
+    bbox_shrank = _bbox_shrank(
+        before_view.get("visible_body_bbox_mm"), after_view.get("visible_body_bbox_mm")
+    )
+    negative_impact = bool(
+        missing_occurrences
+        or missing_bodies
+        or missing_components
+        or count_regressions
+        or bbox_shrank
+    )
+    globally_complete = _complete_global_snapshot(before) and _complete_global_snapshot(
+        after
+    )
     drift_conclusion = (
         "drift_detected"
         if negative_impact
@@ -624,18 +788,39 @@ def _complete_global_snapshot(snapshot: dict[str, Any]) -> bool:
     )
 
 
-def ambiguous_target_warnings(targets: list[dict[str, Any]], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+def ambiguous_target_warnings(
+    targets: list[dict[str, Any]], snapshot: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Return warnings for duplicate body names used without component scoping."""
 
-    duplicates = snapshot.get("duplicate_body_names") if isinstance(snapshot, dict) else {}
+    duplicates = (
+        snapshot.get("duplicate_body_names") if isinstance(snapshot, dict) else {}
+    )
     if not isinstance(duplicates, dict) or not duplicates:
         return []
     warnings: list[dict[str, Any]] = []
     for target in targets:
-        name = str(target.get("name") or target.get("body") or target.get("target") or "")
-        scoped = any(target.get(key) for key in ("path", "component", "component_path", "occurrence_path", "body_key"))
+        name = str(
+            target.get("name") or target.get("body") or target.get("target") or ""
+        )
+        scoped = any(
+            target.get(key)
+            for key in (
+                "path",
+                "component",
+                "component_path",
+                "occurrence_path",
+                "body_key",
+            )
+        )
         if name and name in duplicates and not scoped:
-            warnings.append({"target": name, "duplicate_count": duplicates[name], "reason": "target name is not component-scoped"})
+            warnings.append(
+                {
+                    "target": name,
+                    "duplicate_count": duplicates[name],
+                    "reason": "target name is not component-scoped",
+                }
+            )
     return warnings
 
 
@@ -659,7 +844,10 @@ def _snapshot_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         }
     if not visible_body_keys:
         visible_body_keys = {
-            str(item.get("key") or f"{item.get('component', '')}/{item.get('name', '')}".strip("/"))
+            str(
+                item.get("key")
+                or f"{item.get('component', '')}/{item.get('name', '')}".strip("/")
+            )
             for item in snapshot.get("bodies", [])
             if isinstance(item, dict) and item.get("visible", True)
         }
@@ -687,14 +875,64 @@ def _bbox_shrank(before: Any, after: Any) -> bool:
         return False
     before_size = before.get("size_mm")
     after_size = after.get("size_mm")
-    if not isinstance(before_size, list) or not isinstance(after_size, list) or len(before_size) != len(after_size):
+    if (
+        not isinstance(before_size, list)
+        or not isinstance(after_size, list)
+        or len(before_size) != len(after_size)
+    ):
         return False
-    return any(float(after_value) + 0.01 < float(before_value) for before_value, after_value in zip(before_size, after_size, strict=False))
+    return any(
+        float(after_value) + 0.01 < float(before_value)
+        for before_value, after_value in zip(before_size, after_size, strict=False)
+    )
 
 
-def _target_is_shared_or_hidden(target: dict[str, Any]) -> bool:
-    text = " ".join(str(value).lower() for value in target.values())
-    return any(token in text for token in ("hidden", "oculto", "oculta", "import", "shared", "definition", "root"))
+def _bound_delete_risk(target: dict[str, Any]) -> dict[str, Any]:
+    facts = (
+        target.get("visible"),
+        target.get("is_root"),
+        target.get("is_referenced"),
+        target.get("is_imported"),
+        target.get("shared_definition"),
+    )
+    facts_complete = bool(
+        target.get("identifier")
+        and target.get("binding_fingerprint")
+        and all(isinstance(value, bool) for value in facts)
+    )
+    dangerous = bool(
+        facts_complete
+        and (
+            target.get("visible") is False
+            or target.get("is_root") is True
+            or target.get("is_referenced") is True
+            or target.get("is_imported") is True
+            or target.get("shared_definition") is True
+        )
+    )
+    return {"facts_complete": facts_complete, "dangerous": dangerous}
+
+
+def _with_binding_fingerprint(item: dict[str, Any]) -> dict[str, Any]:
+    binding_payload = {
+        key: item.get(key)
+        for key in (
+            "key",
+            "path",
+            "component",
+            "name",
+            "entity_token",
+            "visible",
+            "is_root",
+            "is_referenced",
+            "is_imported",
+            "shared_definition",
+        )
+    }
+    return {
+        **item,
+        "binding_fingerprint": snapshot_hash(binding_payload),
+    }
 
 
 def _union_body_bbox(bodies: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -712,17 +950,33 @@ def _union_body_bbox(bodies: list[dict[str, Any]]) -> dict[str, Any] | None:
             continue
         if not isinstance(body_min, list) or not isinstance(body_max, list):
             continue
-        min_point = [min(a, float(b)) for a, b in zip(min_point or body_min, body_min, strict=False)]
-        max_point = [max(a, float(b)) for a, b in zip(max_point or body_max, body_max, strict=False)]
+        min_point = [
+            min(a, float(b))
+            for a, b in zip(min_point or body_min, body_min, strict=False)
+        ]
+        max_point = [
+            max(a, float(b))
+            for a, b in zip(max_point or body_max, body_max, strict=False)
+        ]
     if min_point is None or max_point is None:
         return None
     size = [round(abs(a - b), 6) for a, b in zip(max_point, min_point, strict=False)]
-    center = [round((a + b) / 2.0, 6) for a, b in zip(max_point, min_point, strict=False)]
-    return {"min_mm": min_point, "max_mm": max_point, "size_mm": size, "center_mm": center}
+    center = [
+        round((a + b) / 2.0, 6) for a, b in zip(max_point, min_point, strict=False)
+    ]
+    return {
+        "min_mm": min_point,
+        "max_mm": max_point,
+        "size_mm": size,
+        "center_mm": center,
+    }
 
 
 def _duplicate_name_warnings(duplicate_names: dict[str, int]) -> list[str]:
-    return [f"Body name '{name}' appears {count} times; target by component/body key." for name, count in sorted(duplicate_names.items())]
+    return [
+        f"Body name '{name}' appears {count} times; target by component/body key."
+        for name, count in sorted(duplicate_names.items())
+    ]
 
 
 def _sorted_jsonish(value: Any) -> Any:
@@ -740,7 +994,11 @@ def normalize_operation(value: str) -> str:
 
     value = value.strip().lower()
     if not re.fullmatch(r"[a-z_]+", value):
-        raise ValueError("operation must be one of move, delete, visibility, componentize")
+        raise ValueError(
+            "operation must be one of move, delete, visibility, componentize"
+        )
     if value not in {"move", "delete", "visibility", "componentize"}:
-        raise ValueError("operation must be one of move, delete, visibility, componentize")
+        raise ValueError(
+            "operation must be one of move, delete, visibility, componentize"
+        )
     return value

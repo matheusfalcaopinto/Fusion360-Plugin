@@ -9,7 +9,7 @@
       "source_url": "https://github.com/matheusfalcaopinto/Fusion360-Plugin",
       "license": "MIT",
       "redistributable": true,
-      "pin": {"kind": "workspace", "value": "runtime-git-commit"},
+      "pin": {"kind": "workspace", "value": "source-manifest-v1"},
       "entitlement": "Autodesk Fusion and the configured local CAD backend are required for real trials.",
       "adapter_id": "fusion_agent_codex"
     },

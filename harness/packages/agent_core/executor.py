@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import os
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any, Awaitable, Callable, cast
 
 from pydantic import BaseModel, Field
 
+from agent_core.authority import (
+    AuthorityBroker,
+    AuthorityDeniedError,
+    AuthorityPolicy,
+    BoundOperation,
+    LegacyOutputOperation,
+)
 from cad_spec.models import CadSpec, FeatureSpec
 from fusion_tool_facade.facade import FusionFacade
 
@@ -18,6 +29,7 @@ class ExecutionContext(BaseModel):
     project: str = "default"
     output_dir: Path = Path("outputs")
     dry_run: bool = False
+    session_id: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -32,13 +44,65 @@ class ExecutionResult(BaseModel):
     transactions: list[dict[str, Any]] = Field(default_factory=list)
 
 
+@dataclass(slots=True)
+class _PreparedLegacyAuthority:
+    broker: AuthorityBroker
+    by_id: dict[str, BoundOperation]
+    finalized: set[str] = field(default_factory=set)
+
+    def claim_path(
+        self, operation_id: str, expected_path: Path
+    ) -> tuple[BoundOperation, Path]:
+        try:
+            bound = self.by_id[operation_id]
+        except KeyError as exc:
+            raise AuthorityDeniedError("legacy output has no bound capability") from exc
+        host_path = bound.host_path
+        if host_path is None or host_path.canonical_path != str(expected_path):
+            self.broker.revoke(bound)
+            self.finalized.add(operation_id)
+            raise AuthorityDeniedError("legacy output path does not match its binding")
+        try:
+            self.broker.claim(bound)
+        except BaseException:
+            self.finalized.add(operation_id)
+            raise
+        return bound, Path(host_path.canonical_path)
+
+    def complete(self, operation_id: str, bound: BoundOperation) -> None:
+        self.broker.complete(bound, outcome="consumed")
+        self.finalized.add(operation_id)
+
+    def fail(self, operation_id: str, bound: BoundOperation) -> None:
+        self.broker.fail(bound, outcome_unknown=True)
+        self.finalized.add(operation_id)
+
+    def revoke_unused(self) -> None:
+        for operation_id, bound in self.by_id.items():
+            if operation_id not in self.finalized:
+                self.broker.revoke(bound)
+                self.finalized.add(operation_id)
+
+
 class Executor:
     """Execute a validated CadSpec through the safe Fusion facade."""
 
-    def __init__(self, facade: FusionFacade | None = None) -> None:
+    def __init__(
+        self,
+        facade: FusionFacade | None = None,
+        *,
+        authority_broker: AuthorityBroker | None = None,
+        authority_provider: str = "legacy-facade",
+    ) -> None:
         self.facade = facade
+        self.authority_broker = authority_broker or AuthorityBroker(
+            AuthorityPolicy.deny_all()
+        )
+        self.authority_provider = authority_provider
 
-    async def execute(self, spec: CadSpec, context: ExecutionContext) -> ExecutionResult:
+    async def execute(
+        self, spec: CadSpec, context: ExecutionContext
+    ) -> ExecutionResult:
         """Run the spec as small facade transactions."""
 
         result = ExecutionResult(success=True)
@@ -46,10 +110,22 @@ class Executor:
             result.transactions.append({"operation": "dry_run", "status": "ok"})
             for parameter in spec.parameters:
                 result.modified_objects.append(parameter.name)
-                result.transactions.append({"operation": "create_named_parameter", "name": parameter.name, "status": "simulated"})
+                result.transactions.append(
+                    {
+                        "operation": "create_named_parameter",
+                        "name": parameter.name,
+                        "status": "simulated",
+                    }
+                )
             for component in spec.components:
                 result.created_objects.append(component.name)
-                result.transactions.append({"operation": "create_component", "name": component.name, "status": "simulated"})
+                result.transactions.append(
+                    {
+                        "operation": "create_component",
+                        "name": component.name,
+                        "status": "simulated",
+                    }
+                )
                 for feature in component.features:
                     await self._simulate_feature(feature, result, context)
             self._simulate_professional_contracts(spec, result, context)
@@ -58,22 +134,51 @@ class Executor:
         if not self.facade:
             raise RuntimeError("executor requires a facade when dry_run is false")
 
-        await self.facade.inspect_design()
-        result.transactions.append({"operation": "inspect_design", "status": "ok"})
+        authority = self._prepare_legacy_authority(spec, context)
 
-        for parameter in spec.parameters:
-            await self.facade.create_named_parameter(parameter.name, parameter.expression, parameter.comment)
-            result.modified_objects.append(parameter.name)
-            result.transactions.append({"operation": "create_named_parameter", "name": parameter.name, "status": "ok"})
+        try:
+            await self.facade.inspect_design()
+            result.transactions.append({"operation": "inspect_design", "status": "ok"})
 
-        for component in spec.components:
-            await self.facade.create_component(component.name)
-            result.created_objects.append(component.name)
-            result.transactions.append({"operation": "create_component", "name": component.name, "status": "ok"})
-            await self._execute_component_features(component.name, component.features, context, result)
+            for parameter in spec.parameters:
+                await self.facade.create_named_parameter(
+                    parameter.name, parameter.expression, parameter.comment
+                )
+                result.modified_objects.append(parameter.name)
+                result.transactions.append(
+                    {
+                        "operation": "create_named_parameter",
+                        "name": parameter.name,
+                        "status": "ok",
+                    }
+                )
 
-        await self._execute_professional_contracts(spec, context, result)
-        return result
+            for component_index, component in enumerate(spec.components):
+                await self.facade.create_component(component.name)
+                result.created_objects.append(component.name)
+                result.transactions.append(
+                    {
+                        "operation": "create_component",
+                        "name": component.name,
+                        "status": "ok",
+                    }
+                )
+                await self._execute_component_features(
+                    component.name,
+                    component.features,
+                    context,
+                    result,
+                    component_index=component_index,
+                    authority=authority,
+                )
+
+            await self._execute_professional_contracts(
+                spec, context, result, authority=authority
+            )
+            return result
+        finally:
+            if authority is not None:
+                authority.revoke_unused()
 
     async def replay_features(self, spec: CadSpec, context: ExecutionContext) -> bool:
         """Replay feature execution only, without parameter/component recreation."""
@@ -82,25 +187,54 @@ class Executor:
             return False
         if not spec.components:
             return False
-        for component in spec.components:
-            await self.activate_component(component.name)
-            await self._execute_component_features(component.name, component.features, context, ExecutionResult(success=True))
-        return True
+        authority = self._prepare_legacy_authority(spec, context)
+        try:
+            for component_index, component in enumerate(spec.components):
+                await self.activate_component(component.name)
+                await self._execute_component_features(
+                    component.name,
+                    component.features,
+                    context,
+                    ExecutionResult(success=True),
+                    component_index=component_index,
+                    authority=authority,
+                )
+            return True
+        finally:
+            if authority is not None:
+                authority.revoke_unused()
 
     async def replay_exports(self, spec: CadSpec, context: ExecutionContext) -> bool:
         """Replay only export features."""
 
         if context.dry_run or not self.facade:
             return False
+        authority = self._prepare_legacy_authority(
+            spec, context, included_kinds={"legacy.export"}
+        )
         replayed = False
-        for component in spec.components:
-            await self.activate_component(component.name)
-            for feature in component.features:
-                if feature.type != "export":
-                    continue
-                await self._execute_feature(component.name, feature, context, ExecutionResult(success=True), replay=True)
-                replayed = True
-        return replayed
+        try:
+            for component_index, component in enumerate(spec.components):
+                await self.activate_component(component.name)
+                for feature_index, feature in enumerate(component.features):
+                    if feature.type != "export":
+                        continue
+                    await self._execute_feature(
+                        component.name,
+                        feature,
+                        context,
+                        ExecutionResult(success=True),
+                        replay=True,
+                        authority=authority,
+                        authority_id=_feature_authority_id(
+                            component_index, feature_index
+                        ),
+                    )
+                    replayed = True
+            return replayed
+        finally:
+            if authority is not None:
+                authority.revoke_unused()
 
     async def activate_component(self, component_name: str) -> bool:
         """Activate a component and return true on success."""
@@ -110,17 +244,180 @@ class Executor:
         await self.facade.activate_component(component_name)
         return True
 
+    async def capture_viewport(
+        self,
+        *,
+        context: ExecutionContext,
+        name: str,
+        path: str | Path,
+        view: str,
+        isolate_prefix: str | None,
+        width: int,
+        height: int,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Dispatch one direct legacy capture through the shared host authority."""
+
+        if not self.facade:
+            raise RuntimeError("executor requires a facade for viewport capture")
+        facade = self.facade
+        canonical_path = _safe_capture_path(context.output_dir, path)
+        authority = self._prepare_operations(
+            (
+                LegacyOutputOperation(
+                    id="direct-capture",
+                    kind="legacy.capture",
+                    path=str(canonical_path),
+                    format="png",
+                    target_identity=name,
+                    overwrite=overwrite,
+                ),
+            ),
+            context,
+        )
+
+        async def dispatch(bound_path: Path) -> dict[str, Any]:
+            return await facade.capture_viewport(
+                name=name,
+                path=bound_path,
+                view=view,
+                isolate_prefix=isolate_prefix,
+                width=width,
+                height=height,
+            )
+
+        try:
+            if authority is None:
+                return await dispatch(canonical_path)
+            return cast(
+                dict[str, Any],
+                await self._dispatch_authorized_output(
+                    authority,
+                    "direct-capture",
+                    canonical_path,
+                    dispatch,
+                ),
+            )
+        finally:
+            if authority is not None:
+                authority.revoke_unused()
+
     async def _execute_component_features(
         self,
         component_name: str,
         features: list[FeatureSpec],
         context: ExecutionContext,
         result: ExecutionResult,
+        *,
+        component_index: int,
+        authority: _PreparedLegacyAuthority | None,
     ) -> None:
-        for feature in features:
+        for feature_index, feature in enumerate(features):
             if self.facade:
                 await self.facade.activate_component(component_name)
-            await self._execute_feature(component_name, feature, context, result)
+            await self._execute_feature(
+                component_name,
+                feature,
+                context,
+                result,
+                authority=authority,
+                authority_id=_feature_authority_id(component_index, feature_index),
+            )
+
+    def _prepare_legacy_authority(
+        self,
+        spec: CadSpec,
+        context: ExecutionContext,
+        *,
+        included_kinds: set[str] | None = None,
+    ) -> _PreparedLegacyAuthority | None:
+        operations: list[LegacyOutputOperation] = []
+        for component_index, component in enumerate(spec.components):
+            for feature_index, feature in enumerate(component.features):
+                inputs = feature.merged_inputs()
+                operation_id = _feature_authority_id(component_index, feature_index)
+                if feature.type == "export":
+                    kind = "legacy.export"
+                    if included_kinds is not None and kind not in included_kinds:
+                        continue
+                    target = str(inputs.get("target", "design"))
+                    format_name = str(inputs.get("format", "step")).lower()
+                    path = _safe_export_path(
+                        context.output_dir,
+                        inputs.get("path") or f"{target}.{format_name}",
+                        format_name,
+                    )
+                    operations.append(
+                        LegacyOutputOperation(
+                            id=operation_id,
+                            kind="legacy.export",
+                            path=str(path),
+                            format=format_name,
+                            target_identity=target,
+                            overwrite=_legacy_overwrite(inputs),
+                        )
+                    )
+                elif feature.type == "capture_viewport":
+                    kind = "legacy.capture"
+                    if included_kinds is not None and kind not in included_kinds:
+                        continue
+                    path = _safe_capture_path(context.output_dir, inputs["path"])
+                    operations.append(
+                        LegacyOutputOperation(
+                            id=operation_id,
+                            kind="legacy.capture",
+                            path=str(path),
+                            format="png",
+                            target_identity=feature.name,
+                            overwrite=_legacy_overwrite(inputs),
+                        )
+                    )
+        if included_kinds is None or "legacy.capture" in included_kinds:
+            for output_index, output in enumerate(spec.outputs):
+                operations.append(
+                    LegacyOutputOperation(
+                        id=_output_authority_id(output_index),
+                        kind="legacy.capture",
+                        path=str(_safe_capture_path(context.output_dir, output.path)),
+                        format="png",
+                        target_identity=output.name,
+                    )
+                )
+        return self._prepare_operations(tuple(operations), context)
+
+    def _prepare_operations(
+        self,
+        operations: tuple[LegacyOutputOperation, ...],
+        context: ExecutionContext,
+    ) -> _PreparedLegacyAuthority | None:
+        if context.mode != "real" or not operations:
+            return None
+        graph = self.authority_broker.prepare_legacy_output_graph(
+            operations,
+            session_id=context.session_id or f"legacy-{uuid.uuid4().hex}",
+            provider=self.authority_provider,
+        )
+        return _PreparedLegacyAuthority(
+            broker=self.authority_broker,
+            by_id={bound.operation.id: bound for bound in graph.operations},
+        )
+
+    async def _dispatch_authorized_output(
+        self,
+        authority: _PreparedLegacyAuthority,
+        operation_id: str,
+        expected_path: Path,
+        dispatch: Callable[[Path], Awaitable[Any]],
+    ) -> Any:
+        bound, canonical_path = authority.claim_path(operation_id, expected_path)
+        try:
+            payload = await dispatch(canonical_path)
+            authority.complete(operation_id, bound)
+        except BaseException:
+            if operation_id not in authority.finalized:
+                authority.fail(operation_id, bound)
+            raise
+        return payload
 
     async def _simulate_feature(
         self,
@@ -133,11 +430,20 @@ class Executor:
         if feature.type == "export":
             target = inputs.get("target", "design")
             fmt = inputs.get("format", "step")
-            path = Path(inputs.get("path") or context.output_dir / f"{target}.{fmt}")
+            path = _safe_export_path(
+                context.output_dir,
+                inputs.get("path") or f"{target}.{fmt}",
+                fmt,
+            )
             result.exports.append(str(path))
         elif feature.type == "update_parameter":
             result.modified_objects.append(inputs["name"])
-        elif feature.type in {"extrude_rectangle", "extrude_cylinder", "l_bracket_body", "box_shell"}:
+        elif feature.type in {
+            "extrude_rectangle",
+            "extrude_cylinder",
+            "l_bracket_body",
+            "box_shell",
+        }:
             body_name = inputs.get("body_name") or f"{feature.name}_body"
             result.created_objects.append(body_name)
             result.modified_objects.append(body_name)
@@ -169,12 +475,14 @@ class Executor:
             result.created_objects.extend(inputs.get("component_names", []))
             result.created_objects.extend(inputs.get("body_names", []))
         elif feature.type == "capture_viewport":
-            path = _safe_output_path(context.output_dir, inputs["path"])
+            path = _safe_capture_path(context.output_dir, inputs["path"])
             result.exports.append(str(path))
         elif feature.type in {"hole_pattern_cut", "center_hole_cut"}:
             if "target_body" in inputs:
                 result.modified_objects.append(inputs["target_body"])
-        result.transactions.append({"operation": feature.type, "name": feature.name, "status": "simulated"})
+        result.transactions.append(
+            {"operation": feature.type, "name": feature.name, "status": "simulated"}
+        )
 
     async def _execute_feature(
         self,
@@ -184,6 +492,8 @@ class Executor:
         result: ExecutionResult,
         *,
         replay: bool = False,
+        authority: _PreparedLegacyAuthority | None = None,
+        authority_id: str | None = None,
     ) -> None:
         if context.dry_run:
             await self._simulate_feature(feature, result, context)
@@ -191,11 +501,14 @@ class Executor:
 
         if not self.facade:
             raise RuntimeError("executor requires a facade for non-dry-run execution")
+        facade = self.facade
 
         inputs = feature.merged_inputs()
         if feature.type == "extrude_rectangle":
             sketch = inputs["sketch_name"]
-            await self.facade.create_sketch_on_plane(component_name, inputs.get("plane", "XY"), sketch)
+            await self.facade.create_sketch_on_plane(
+                component_name, inputs.get("plane", "XY"), sketch
+            )
             profile = await self.facade.draw_constrained_rectangle(
                 sketch,
                 inputs.get("center", ["0 mm", "0 mm"]),
@@ -217,7 +530,9 @@ class Executor:
             result.created_objects.extend([sketch, body_name, feature.name])
         elif feature.type == "extrude_cylinder":
             sketch = inputs["sketch_name"]
-            await self.facade.create_sketch_on_plane(component_name, inputs.get("plane", "XY"), sketch)
+            await self.facade.create_sketch_on_plane(
+                component_name, inputs.get("plane", "XY"), sketch
+            )
             profile = await self.facade.draw_constrained_circle(
                 sketch,
                 inputs.get("center", ["0 mm", "0 mm"]),
@@ -237,7 +552,9 @@ class Executor:
             result.created_objects.extend([sketch, body_name, feature.name])
         elif feature.type in {"hole_pattern_cut", "center_hole_cut"}:
             sketch = inputs["sketch_name"]
-            await self.facade.create_sketch_on_plane(component_name, inputs.get("plane", "XY"), sketch)
+            await self.facade.create_sketch_on_plane(
+                component_name, inputs.get("plane", "XY"), sketch
+            )
             profile = await self.facade.draw_constrained_circle(
                 sketch,
                 inputs.get("center", ["0 mm", "0 mm"]),
@@ -257,7 +574,9 @@ class Executor:
             result.created_objects.extend([sketch, feature.name])
         elif feature.type == "l_bracket_body":
             sketch = inputs["sketch_name"]
-            await self.facade.create_sketch_on_plane(component_name, inputs.get("plane", "XY"), sketch)
+            await self.facade.create_sketch_on_plane(
+                component_name, inputs.get("plane", "XY"), sketch
+            )
             body_name = inputs["body_name"]
             await self.facade.extrude_profile(
                 component=component_name,
@@ -273,7 +592,9 @@ class Executor:
             result.created_objects.extend([sketch, body_name, feature.name])
         elif feature.type == "box_shell":
             sketch = inputs["sketch_name"]
-            await self.facade.create_sketch_on_plane(component_name, inputs.get("plane", "XY"), sketch)
+            await self.facade.create_sketch_on_plane(
+                component_name, inputs.get("plane", "XY"), sketch
+            )
             body_name = inputs["body_name"]
             await self.facade.extrude_profile(
                 component=component_name,
@@ -333,7 +654,9 @@ class Executor:
                 body_names=list(inputs.get("body_names", [])),
             )
             result.modified_objects.append(inputs["target_body"])
-            result.created_objects.extend(list(inputs.get("body_names", [])) + [feature.name])
+            result.created_objects.extend(
+                list(inputs.get("body_names", [])) + [feature.name]
+            )
         elif feature.type == "nema17_external_assembly":
             await self.facade.create_nema17_external_assembly(
                 name=feature.name,
@@ -358,7 +681,9 @@ class Executor:
                 body_names=list(inputs.get("body_names", [])),
             )
             result.created_objects.extend(
-                [feature.name] + list(inputs.get("component_names", [])) + list(inputs.get("body_names", []))
+                [feature.name]
+                + list(inputs.get("component_names", []))
+                + list(inputs.get("body_names", []))
             )
         elif feature.type == "profile2020_aluminum_extrusion":
             await self.facade.create_profile2020_aluminum_extrusion(
@@ -375,7 +700,9 @@ class Executor:
                 corner_radius=inputs["corner_radius"],
                 slot_count=int(inputs.get("slot_count", 4)),
                 web_relief_count=int(inputs.get("web_relief_count", 4)),
-                placement_offset=list(inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])),
+                placement_offset=list(
+                    inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])
+                ),
             )
             result.created_objects.extend([inputs["body_name"], feature.name])
         elif feature.type == "mgn12_linear_rail_assembly":
@@ -399,10 +726,14 @@ class Executor:
                 carriage_mount_thread_diameter=inputs["carriage_mount_thread_diameter"],
                 component_names=list(inputs.get("component_names", [])),
                 body_names=list(inputs.get("body_names", [])),
-                placement_offset=list(inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])),
+                placement_offset=list(
+                    inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])
+                ),
             )
             result.created_objects.extend(
-                [feature.name] + list(inputs.get("component_names", [])) + list(inputs.get("body_names", []))
+                [feature.name]
+                + list(inputs.get("component_names", []))
+                + list(inputs.get("body_names", []))
             )
         elif feature.type == "desktop_cnc_assembly":
             await self.facade.create_desktop_cnc_assembly(
@@ -434,10 +765,14 @@ class Executor:
                 work_area_x=inputs["work_area_x"],
                 work_area_y=inputs["work_area_y"],
                 work_area_z=inputs["work_area_z"],
-                placement_offset=list(inputs.get("placement_offset", ["0 mm", "-150 mm", "0 mm"])),
+                placement_offset=list(
+                    inputs.get("placement_offset", ["0 mm", "-150 mm", "0 mm"])
+                ),
             )
             result.created_objects.extend(
-                [feature.name] + list(inputs.get("component_names", [])) + list(inputs.get("body_names", []))
+                [feature.name]
+                + list(inputs.get("component_names", []))
+                + list(inputs.get("body_names", []))
             )
         elif feature.type == "spacer_plate_assembly":
             await self.facade.create_spacer_plate_assembly(
@@ -455,7 +790,9 @@ class Executor:
                 hole_diameter=inputs["hole_diameter"],
                 hole_pattern_x=inputs["hole_pattern_x"],
                 hole_pattern_y=inputs["hole_pattern_y"],
-                placement_offset=list(inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])),
+                placement_offset=list(
+                    inputs.get("placement_offset", ["0 mm", "0 mm", "0 mm"])
+                ),
             )
             result.created_objects.extend(
                 [feature.name]
@@ -477,91 +814,249 @@ class Executor:
                 knuckle_outer_diameter=inputs["knuckle_outer_diameter"],
                 knuckle_length=inputs["knuckle_length"],
                 leaf_gap=inputs["leaf_gap"],
-                placement_offset=list(inputs.get("placement_offset", ["0 mm", "90 mm", "0 mm"])),
+                placement_offset=list(
+                    inputs.get("placement_offset", ["0 mm", "90 mm", "0 mm"])
+                ),
             )
             result.created_objects.extend(
-                [feature.name] + list(inputs.get("component_names", [])) + list(inputs.get("body_names", []))
+                [feature.name]
+                + list(inputs.get("component_names", []))
+                + list(inputs.get("body_names", []))
             )
         elif feature.type == "update_parameter":
-            await self.facade.update_named_parameter(inputs["name"], inputs["expression"])
+            await self.facade.update_named_parameter(
+                inputs["name"], inputs["expression"]
+            )
             result.modified_objects.append(inputs["name"])
         elif feature.type == "apply_fillet":
-            await self.facade.apply_fillet(inputs["edge_selector"], inputs["radius"], feature.name)
+            await self.facade.apply_fillet(
+                inputs["edge_selector"], inputs["radius"], feature.name
+            )
             result.created_objects.append(feature.name)
         elif feature.type == "export":
             target = inputs.get("target", "design")
-            fmt = inputs.get("format", "step")
-            path = Path(inputs.get("path") or context.output_dir / f"{target}.{fmt}")
-            if fmt == "stl":
+            fmt = str(inputs.get("format", "step")).lower()
+            path = _safe_export_path(
+                context.output_dir,
+                inputs.get("path") or f"{target}.{fmt}",
+                fmt,
+            )
+            if authority is not None:
+                if authority_id is None:
+                    raise AuthorityDeniedError(
+                        "legacy export has no operation identity"
+                    )
+
+                async def dispatch(bound_path: Path) -> Any:
+                    if fmt == "stl":
+                        return await facade.export_stl(target, bound_path)
+                    return await facade.export_step(target, bound_path)
+
+                await self._dispatch_authorized_output(
+                    authority, authority_id, path, dispatch
+                )
+            elif fmt == "stl":
                 await self.facade.export_stl(target, path)
             else:
                 await self.facade.export_step(target, path)
             result.exports.append(str(path))
             result.created_objects.append(feature.name)
         elif feature.type == "capture_viewport":
-            path = _safe_output_path(context.output_dir, inputs["path"])
-            await self.facade.capture_viewport(
-                name=feature.name,
-                path=path,
-                view=inputs.get("view", "isometric"),
-                isolate_prefix=inputs.get("isolate_prefix"),
-                width=int(inputs.get("width", 1600)),
-                height=int(inputs.get("height", 1100)),
-            )
+            path = _safe_capture_path(context.output_dir, inputs["path"])
+
+            async def dispatch(bound_path: Path) -> Any:
+                return await facade.capture_viewport(
+                    name=feature.name,
+                    path=bound_path,
+                    view=inputs.get("view", "isometric"),
+                    isolate_prefix=inputs.get("isolate_prefix"),
+                    width=int(inputs.get("width", 1600)),
+                    height=int(inputs.get("height", 1100)),
+                )
+
+            if authority is not None:
+                if authority_id is None:
+                    raise AuthorityDeniedError(
+                        "legacy capture has no operation identity"
+                    )
+                await self._dispatch_authorized_output(
+                    authority, authority_id, path, dispatch
+                )
+            else:
+                await dispatch(path)
             result.exports.append(str(path))
             result.created_objects.append(feature.name)
         else:
             raise ValueError(f"unsupported feature type: {feature.type}")
-        result.transactions.append({"operation": feature.type, "name": feature.name, "status": "ok", "replayed": replay})
+        result.transactions.append(
+            {
+                "operation": feature.type,
+                "name": feature.name,
+                "status": "ok",
+                "replayed": replay,
+            }
+        )
 
-    def _simulate_professional_contracts(self, spec: CadSpec, result: ExecutionResult, context: ExecutionContext) -> None:
+    def _simulate_professional_contracts(
+        self, spec: CadSpec, result: ExecutionResult, context: ExecutionContext
+    ) -> None:
         if spec.component_metadata:
-            result.modified_objects.extend(item.component for item in spec.component_metadata)
-            result.transactions.append({"operation": "set_component_metadata", "status": "simulated", "count": len(spec.component_metadata)})
+            result.modified_objects.extend(
+                item.component for item in spec.component_metadata
+            )
+            result.transactions.append(
+                {
+                    "operation": "set_component_metadata",
+                    "status": "simulated",
+                    "count": len(spec.component_metadata),
+                }
+            )
         if spec.joints:
             result.created_objects.extend(item.name for item in spec.joints)
-            result.transactions.append({"operation": "create_assembly_joints", "status": "simulated", "count": len(spec.joints)})
+            result.transactions.append(
+                {
+                    "operation": "create_assembly_joints",
+                    "status": "simulated",
+                    "count": len(spec.joints),
+                }
+            )
         for output in spec.outputs:
-            path = _safe_output_path(context.output_dir, output.path)
+            path = _safe_capture_path(context.output_dir, output.path)
             result.exports.append(str(path))
             result.created_objects.append(output.name)
-            result.transactions.append({"operation": "capture_viewport", "name": output.name, "status": "simulated"})
+            result.transactions.append(
+                {
+                    "operation": "capture_viewport",
+                    "name": output.name,
+                    "status": "simulated",
+                }
+            )
 
     async def _execute_professional_contracts(
         self,
         spec: CadSpec,
         context: ExecutionContext,
         result: ExecutionResult,
+        *,
+        authority: _PreparedLegacyAuthority | None,
     ) -> None:
         if not self.facade:
             return
+        facade = self.facade
         if spec.component_metadata:
-            await self.facade.set_component_metadata([item.model_dump(mode="json") for item in spec.component_metadata])
-            result.modified_objects.extend(item.component for item in spec.component_metadata)
-            result.transactions.append({"operation": "set_component_metadata", "status": "ok", "count": len(spec.component_metadata)})
-        if spec.joints:
-            await self.facade.create_assembly_joints([item.model_dump(mode="json") for item in spec.joints])
-            result.created_objects.extend(item.name for item in spec.joints)
-            result.transactions.append({"operation": "create_assembly_joints", "status": "ok", "count": len(spec.joints)})
-        for output in spec.outputs:
-            path = _safe_output_path(context.output_dir, output.path)
-            await self.facade.capture_viewport(
-                name=output.name,
-                path=path,
-                view=output.view,
-                isolate_prefix=output.isolate_prefix,
-                width=output.width,
-                height=output.height,
+            await self.facade.set_component_metadata(
+                [item.model_dump(mode="json") for item in spec.component_metadata]
             )
+            result.modified_objects.extend(
+                item.component for item in spec.component_metadata
+            )
+            result.transactions.append(
+                {
+                    "operation": "set_component_metadata",
+                    "status": "ok",
+                    "count": len(spec.component_metadata),
+                }
+            )
+        if spec.joints:
+            await self.facade.create_assembly_joints(
+                [item.model_dump(mode="json") for item in spec.joints]
+            )
+            result.created_objects.extend(item.name for item in spec.joints)
+            result.transactions.append(
+                {
+                    "operation": "create_assembly_joints",
+                    "status": "ok",
+                    "count": len(spec.joints),
+                }
+            )
+        for output_index, output in enumerate(spec.outputs):
+            path = _safe_capture_path(context.output_dir, output.path)
+
+            async def dispatch(bound_path: Path) -> Any:
+                return await facade.capture_viewport(
+                    name=output.name,
+                    path=bound_path,
+                    view=output.view,
+                    isolate_prefix=output.isolate_prefix,
+                    width=output.width,
+                    height=output.height,
+                )
+
+            if authority is not None:
+                await self._dispatch_authorized_output(
+                    authority,
+                    _output_authority_id(output_index),
+                    path,
+                    dispatch,
+                )
+            else:
+                await dispatch(path)
             result.exports.append(str(path))
             result.created_objects.append(output.name)
-            result.transactions.append({"operation": "capture_viewport", "name": output.name, "status": "ok"})
+            result.transactions.append(
+                {"operation": "capture_viewport", "name": output.name, "status": "ok"}
+            )
 
 
 def _safe_output_path(output_dir: Path, raw_path: str | Path) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
-    if ".." in path.parts:
+    """Resolve a caller artifact name beneath its trusted session output root."""
+
+    raw = str(raw_path)
+    windows = PureWindowsPath(raw)
+    posix = PurePosixPath(raw)
+    if windows.is_absolute() or posix.is_absolute() or windows.drive or windows.root:
+        raise ValueError("output path must be relative to output_dir")
+    parts = {part for part in (*windows.parts, *posix.parts) if part not in {"", "."}}
+    if ".." in parts:
         raise ValueError(f"output path must stay under output_dir: {raw_path}")
-    return output_dir / path
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw):
+        raise ValueError("output path contains control characters")
+    canonical_root = Path(output_dir).resolve(strict=False)
+    canonical_path = (canonical_root / Path(raw)).resolve(strict=False)
+    try:
+        contained = os.path.commonpath(
+            (str(canonical_root), str(canonical_path))
+        ) == str(canonical_root)
+    except ValueError:
+        contained = False
+    if not contained:
+        raise ValueError(f"output path must stay under output_dir: {raw_path}")
+    return canonical_path
+
+
+def _safe_export_path(output_dir: Path, raw_path: str | Path, format_name: str) -> Path:
+    formats = {
+        "step": {".step", ".stp"},
+        "stp": {".step", ".stp"},
+        "stl": {".stl"},
+    }
+    if format_name not in formats:
+        raise ValueError("legacy export format must be step, stp, or stl")
+    path = _safe_output_path(output_dir, raw_path)
+    if path.suffix.lower() not in formats[format_name]:
+        raise ValueError(
+            f"legacy export extension does not match format {format_name!r}"
+        )
+    return path
+
+
+def _safe_capture_path(output_dir: Path, raw_path: str | Path) -> Path:
+    path = _safe_output_path(output_dir, raw_path)
+    if path.suffix.lower() != ".png":
+        raise ValueError("legacy viewport capture path must use the .png extension")
+    return path
+
+
+def _legacy_overwrite(inputs: dict[str, Any]) -> bool:
+    value = inputs.get("overwrite", False)
+    if not isinstance(value, bool):
+        raise ValueError("legacy output overwrite must be boolean")
+    return value
+
+
+def _feature_authority_id(component_index: int, feature_index: int) -> str:
+    return f"legacy-feature-{component_index:04d}-{feature_index:04d}"
+
+
+def _output_authority_id(output_index: int) -> str:
+    return f"legacy-output-{output_index:04d}"

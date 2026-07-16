@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cad_spec.naming_policy import validate_name
-from cad_spec.unit_policy import reject_ambiguous_numeric_dimensions, validate_dimension_expression
+from cad_spec.unit_policy import (
+    reject_ambiguous_numeric_dimensions,
+    validate_dimension_expression,
+)
 
 
 class DocumentPolicy(BaseModel):
@@ -147,6 +151,90 @@ class AcceptanceTestSpec(BaseModel):
     target: Any | None = None
     target_mm: list[float] | None = None
     tolerance_mm: float | None = None
+
+    @field_validator("target_mm", mode="before")
+    @classmethod
+    def _validate_target_mm(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list):
+            raise ValueError("target_mm must be a list of finite numbers")
+        for item in value:
+            if (
+                isinstance(item, bool)
+                or not isinstance(item, int | float)
+                or not math.isfinite(float(item))
+            ):
+                raise ValueError(
+                    "target_mm must contain only finite non-boolean numbers"
+                )
+        return value
+
+    @field_validator("tolerance_mm", mode="before")
+    @classmethod
+    def _validate_tolerance_mm(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("tolerance_mm must be a finite non-boolean number")
+        number = float(value)
+        if not math.isfinite(number) or number < 0:
+            raise ValueError("tolerance_mm must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_numeric_contract(self) -> "AcceptanceTestSpec":
+        if self.type in {"body_count", "component_count", "hole_count"}:
+            if (
+                isinstance(self.target, bool)
+                or not isinstance(self.target, int)
+                or self.target < 0
+            ):
+                raise ValueError(f"{self.type} target must be a non-negative integer")
+        _validate_named_numeric_targets(self.target, path=f"{self.type}.target")
+        if _contains_non_finite_number(self.target):
+            raise ValueError("acceptance target contains a non-finite number")
+        return self
+
+
+def _contains_non_finite_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return not math.isfinite(float(value))
+    if isinstance(value, dict):
+        return any(_contains_non_finite_number(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(_contains_non_finite_number(item) for item in value)
+    return False
+
+
+def _validate_named_numeric_targets(value: Any, *, path: str) -> None:
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        item_path = f"{path}.{key}"
+        if (
+            key == "count"
+            or key.endswith("_count")
+            or key
+            in {
+                "min_lamination_bodies",
+            }
+        ):
+            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+                raise ValueError(f"{item_path} must be a non-negative integer")
+        elif key.endswith("_mm"):
+            items = item if isinstance(item, list | tuple) else (item,)
+            if not items or any(
+                isinstance(child, bool)
+                or not isinstance(child, int | float)
+                or not math.isfinite(float(child))
+                for child in items
+            ):
+                raise ValueError(f"{item_path} must contain finite non-boolean numbers")
+        elif isinstance(item, dict):
+            _validate_named_numeric_targets(item, path=item_path)
 
 
 class CadSpec(BaseModel):

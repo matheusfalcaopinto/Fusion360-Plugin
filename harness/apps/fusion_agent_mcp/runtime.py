@@ -7,17 +7,27 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import time
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_core.authority import (
+    AuthorityBroker,
+    AuthorityDeniedError,
+    AuthorityPolicy,
+    CapabilityLedger,
+)
 from agent_core.capability_executor import CapabilityExecutionResult, CapabilityExecutor
 from agent_core.fast_path import FastPathService
+from agent_core.request_context import current_request_context
 from agent_core.session_controller import SessionController
 from cad_spec.v2 import CadSpecV2, OperationSpec
+from fusion_agent_mcp import __version__
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.backend import create_fusion_client, selected_backend
 from fusion_mcp_adapter.manifest_store import ManifestStore
@@ -84,6 +94,155 @@ _PNG_1X1 = base64.b64encode(
 ).decode("ascii")
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeConfiguration:
+    """Immutable process-start snapshot for transport and execution policy."""
+
+    backend: str
+    endpoint: str | None
+    command: str | None
+    transport_mode: str
+    faust_command: str | None
+    faust_cwd: str | None
+    remote_policy: str
+    remote_allowlist: str
+    bearer_token: str | None
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    mutation_timeout_seconds: float
+    sse_timeout_seconds: float
+    auto_canary_timeout_seconds: float
+    post_dispatch_cooldown_seconds: float
+    telemetry_enabled: bool
+    experimental_manufacturing: bool
+    launcher_python: str = ""
+    default_mode: str = "real"
+    default_mode_explicit: bool = False
+    require_real: bool = False
+    allow_dry_run: bool = True
+    trusted_read_timeout_seconds: float = 10.0
+    inspection_max_entities: int = 1000
+    inspection_deadline_ms: int = 1500
+    inspection_max_response_bytes: int = 1_048_576
+    resource_max_bytes: int = 1_048_576
+    plugin_version: str = "0.4.1"
+    tool_profile: str = "normal"
+    fast_path_mode: str = "read_only"
+    execution_path: str = "auto"
+    protected_script_limit_bytes: int = 28 * 1024
+    git_commit: str | None = None
+    fusion_version: str | None = None
+    wheel_version: str | None = None
+    mcp_manifest_fingerprint: str | None = None
+    expected_git_commit: str | None = None
+    expected_source_manifest_sha256: str | None = None
+    authority_policy_path: str | None = None
+
+    @classmethod
+    def from_environment(cls) -> "RuntimeConfiguration":
+        return cls(
+            backend=selected_backend(),
+            endpoint=_optional_env("FUSION_MCP_ENDPOINT"),
+            command=_optional_env("FUSION_MCP_COMMAND"),
+            transport_mode=os.getenv("FUSION_MCP_TRANSPORT_MODE", "legacy")
+            .strip()
+            .lower(),
+            faust_command=_optional_env("FUSION_FAUST_COMMAND"),
+            faust_cwd=_optional_env("FUSION_FAUST_CWD"),
+            remote_policy=os.getenv("FUSION_AGENT_REMOTE_POLICY", "loopback_only")
+            .strip()
+            .lower(),
+            remote_allowlist=os.getenv("FUSION_AGENT_REMOTE_ALLOWLIST", "").strip(),
+            bearer_token=_optional_env("FUSION_MCP_BEARER_TOKEN"),
+            connect_timeout_seconds=_float_env(
+                "FUSION_MCP_CONNECT_TIMEOUT_SECONDS", 5.0
+            ),
+            read_timeout_seconds=_float_env("FUSION_MCP_READ_TIMEOUT_SECONDS", 120.0),
+            mutation_timeout_seconds=_float_env(
+                "FUSION_MCP_MUTATION_TIMEOUT_SECONDS", 240.0
+            ),
+            sse_timeout_seconds=_float_env("FUSION_MCP_SSE_TIMEOUT_SECONDS", 300.0),
+            auto_canary_timeout_seconds=_float_env(
+                "FUSION_MCP_AUTO_CANARY_TIMEOUT_SECONDS", 2.0
+            ),
+            post_dispatch_cooldown_seconds=_float_env(
+                "FUSION_MCP_POST_DISPATCH_COOLDOWN_SECONDS", 5.0
+            ),
+            telemetry_enabled=_env_bool("FUSION_AGENT_TELEMETRY", False),
+            experimental_manufacturing=_env_bool(
+                "FUSION_AGENT_EXPERIMENTAL_MANUFACTURING", False
+            ),
+            launcher_python=os.getenv("FUSION_AGENT_PYTHON", "").strip(),
+            default_mode=_choice_env(
+                "FUSION_AGENT_DEFAULT_MODE", "real", {"mock", "real"}
+            ),
+            default_mode_explicit=os.getenv("FUSION_AGENT_DEFAULT_MODE") is not None,
+            require_real=_env_bool("FUSION_AGENT_REQUIRE_REAL", False),
+            allow_dry_run=_env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True),
+            trusted_read_timeout_seconds=_float_env(
+                "FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS", 10.0
+            ),
+            inspection_max_entities=_int_env(
+                "FUSION_AGENT_INSPECTION_MAX_ENTITIES",
+                1000,
+                minimum=1,
+                maximum=5000,
+            ),
+            inspection_deadline_ms=_int_env(
+                "FUSION_AGENT_INSPECTION_DEADLINE_MS",
+                1500,
+                minimum=50,
+                maximum=5000,
+            ),
+            inspection_max_response_bytes=_int_env(
+                "FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES",
+                1_048_576,
+                minimum=4096,
+                maximum=1_048_576,
+            ),
+            resource_max_bytes=_int_env(
+                "FUSION_AGENT_RESOURCE_MAX_BYTES",
+                1_048_576,
+                minimum=4096,
+                maximum=64 * 1024 * 1024,
+            ),
+            plugin_version=(
+                os.getenv("FUSION_AGENT_PLUGIN_VERSION", __version__).strip()
+                or __version__
+            ),
+            tool_profile=_choice_env(
+                "FUSION_AGENT_TOOL_PROFILE",
+                "normal",
+                {"normal", "advanced", "diagnostic", "benchmark", "all"},
+            ),
+            fast_path_mode=_choice_env(
+                "FUSION_AGENT_FAST_PATH_MODE",
+                "read_only",
+                {"off", "read_only", "enabled"},
+            ),
+            execution_path=_choice_env(
+                "FUSION_AGENT_EXECUTION_PATH",
+                "auto",
+                {"auto", "native_fast", "safe_harness"},
+            ),
+            protected_script_limit_bytes=_int_env(
+                "FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES",
+                28 * 1024,
+                minimum=0,
+                maximum=16 * 1024 * 1024,
+            ),
+            git_commit=_optional_env("GIT_COMMIT"),
+            fusion_version=_optional_env("FUSION_VERSION"),
+            wheel_version=_optional_env("FUSION_AGENT_WHEEL_VERSION"),
+            mcp_manifest_fingerprint=_optional_env("FUSION_MCP_MANIFEST_FINGERPRINT"),
+            expected_git_commit=_optional_env("FUSION_AGENT_EXPECTED_GIT_COMMIT"),
+            expected_source_manifest_sha256=_optional_env(
+                "FUSION_AGENT_EXPECTED_SOURCE_MANIFEST_SHA256"
+            ),
+            authority_policy_path=_optional_env("FUSION_AGENT_AUTHORITY_POLICY_PATH"),
+        )
+
+
 class FusionAgentRuntime:
     """Own the persistent client, manifest, controller, and fast-path state."""
 
@@ -93,9 +252,30 @@ class FusionAgentRuntime:
         manifest_root: Path | str = "manifests",
         outputs_root: Path | str = "outputs",
         real_benchmark_backend: Any | None = None,
+        configuration: RuntimeConfiguration | None = None,
     ) -> None:
+        self.configuration = configuration or RuntimeConfiguration.from_environment()
         self.manifest_store = ManifestStore(manifest_root)
         self.outputs_root = Path(outputs_root)
+        # Authority is a process/runtime startup snapshot.  Never reconstruct
+        # it from environment inside an operation or after a reconnect.
+        try:
+            self.authority_policy = AuthorityPolicy.from_environment(
+                {
+                    "FUSION_AGENT_AUTHORITY_POLICY_PATH": (
+                        self.configuration.authority_policy_path or ""
+                    )
+                }
+            )
+        except AuthorityDeniedError:
+            # A malformed or unavailable startup policy must fail closed for
+            # host I/O without preventing sessions that never touch the host
+            # filesystem.  The exception text remains private.
+            self.authority_policy = AuthorityPolicy.deny_all()
+        self.authority_broker = AuthorityBroker(
+            self.authority_policy,
+            ledger=CapabilityLedger(self.outputs_root / ".authority" / "capabilities"),
+        )
         # A caller may inject a fully reviewed real benchmark backend.  When it
         # does not, the stock lifecycle-only backend is installed below; it
         # deliberately advertises no canonical route actions or oracles.
@@ -105,12 +285,14 @@ class FusionAgentRuntime:
         self._ready_at = 0.0
         self._ready_generation = -1
         self._ready_fingerprint = ""
-        self._configuration = self._configuration_signature()
         self._adapter: FusionMcpAdapter | None = None
         self.real_client = self._new_real_client()
         self.controller = SessionController(
             real_client=self.real_client,
             manifest_store=self.manifest_store,
+            environment_snapshot=self._session_environment_snapshot(),
+            authority_broker=self.authority_broker,
+            authority_provider=self.configuration.backend,
         )
         self._mock_backend = _MockFastBackend()
         self._real_fast_path = FastPathService(
@@ -125,19 +307,33 @@ class FusionAgentRuntime:
         if self.real_benchmark_backend is None:
             # Local import avoids coupling the persistent runtime core to the
             # optional benchmark package at module import time.
-            from fusion_agent_mcp.benchmark_bridge import FusionRuntimeLifecycleBackend
+            from fusion_agent_mcp.benchmark_bridge import (
+                FusionRuntimeLifecycleBackend,
+            )
 
             self.real_benchmark_backend = FusionRuntimeLifecycleBackend(self)
 
     def _new_real_client(self):
         logger = None
-        if _env_bool("FUSION_AGENT_TELEMETRY", False):
+        config = self.configuration
+        if config.telemetry_enabled:
             logger = JsonlTraceLogger(Path("logs") / "fusion_agent_runtime.jsonl")
         return create_fusion_client(
-            connect_timeout_seconds=_float_env("FUSION_MCP_CONNECT_TIMEOUT_SECONDS", 5.0),
-            read_timeout_seconds=_float_env("FUSION_MCP_READ_TIMEOUT_SECONDS", 120.0),
-            mutation_timeout_seconds=_float_env("FUSION_MCP_MUTATION_TIMEOUT_SECONDS", 240.0),
-            sse_read_timeout_seconds=_float_env("FUSION_MCP_SSE_TIMEOUT_SECONDS", 300.0),
+            backend=config.backend,
+            endpoint=config.endpoint,
+            command=config.command,
+            transport_mode=config.transport_mode,
+            faust_command=config.faust_command,
+            faust_cwd=config.faust_cwd,
+            remote_policy=config.remote_policy,
+            remote_allowlist=config.remote_allowlist,
+            bearer_token=config.bearer_token,
+            connect_timeout_seconds=config.connect_timeout_seconds,
+            read_timeout_seconds=config.read_timeout_seconds,
+            mutation_timeout_seconds=config.mutation_timeout_seconds,
+            sse_read_timeout_seconds=config.sse_timeout_seconds,
+            auto_canary_timeout_seconds=config.auto_canary_timeout_seconds,
+            post_dispatch_cooldown_seconds=config.post_dispatch_cooldown_seconds,
             manifest_store=self.manifest_store,
             trace_logger=logger,
         )
@@ -146,12 +342,6 @@ class FusionAgentRuntime:
         """Connect once, cache readiness, and rebuild policy after reconnect."""
 
         self._ensure_open()
-        signature = self._configuration_signature()
-        if signature != self._configuration:
-            async with self._readiness_lock:
-                if signature != self._configuration:
-                    await self._replace_real_client(signature)
-
         now = time.monotonic()
         diagnostics = self.real_client.diagnostics
         cache_valid = (
@@ -194,7 +384,9 @@ class FusionAgentRuntime:
         self._adapter = None
 
     def manifest_fingerprint(self) -> str:
-        return str(self.real_client.diagnostics.get("fingerprint") or self._ready_fingerprint)
+        return str(
+            self.real_client.diagnostics.get("fingerprint") or self._ready_fingerprint
+        )
 
     def fast_path(self, mode: str) -> FastPathService:
         if mode == "real":
@@ -218,9 +410,16 @@ class FusionAgentRuntime:
         """
 
         if dry_run:
-            return await CapabilityExecutor().execute(spec, dry_run=True)
+            return await CapabilityExecutor(
+                authority_broker=self.authority_broker,
+                experimental_enabled=self.configuration.experimental_manufacturing,
+            ).execute(spec, dry_run=True, session_id=_request_session_id())
         if mode == "mock":
-            return await CapabilityExecutor(_MockCapabilityBackend()).execute(spec)
+            return await CapabilityExecutor(
+                _MockCapabilityBackend(),
+                authority_broker=self.authority_broker,
+                experimental_enabled=self.configuration.experimental_manufacturing,
+            ).execute(spec, session_id=_request_session_id())
         if mode != "real":
             raise ValueError("mode must be 'mock' or 'real'")
 
@@ -228,14 +427,18 @@ class FusionAgentRuntime:
         manifest = self.real_client.current_manifest
         if manifest is None:
             raise RuntimeError("typed capability backend requires a live tool manifest")
-        backend_name = selected_backend()
+        backend_name = self.configuration.backend
         if backend_name == "faust_stdio":
             backend = FaustTypedBackend.from_client(self.real_client, manifest)
         elif backend_name == "autodesk_http":
             backend = AutodeskTypedBackend.from_client(self.real_client, manifest)
         else:  # selected_backend is fail-closed, retain a local safety check.
             raise ValueError(f"unsupported Fusion backend: {backend_name}")
-        return await CapabilityExecutor(backend).execute(spec)
+        return await CapabilityExecutor(
+            backend,
+            authority_broker=self.authority_broker,
+            experimental_enabled=self.configuration.experimental_manufacturing,
+        ).execute(spec, session_id=_request_session_id())
 
     async def _call_native_real(
         self,
@@ -281,48 +484,47 @@ class FusionAgentRuntime:
         await self.ensure_ready()
         adapter = self._adapter
         if adapter is None:
-            return ToolResult.failure("CONNECTION_UNAVAILABLE", "Fusion MCP adapter is not ready")
+            return ToolResult.failure(
+                "CONNECTION_UNAVAILABLE", "Fusion MCP adapter is not ready"
+            )
         semantic = CallSemantics(semantics)
         if trusted_internal_read:
             options = McpCallOptions.for_trusted_internal_read(
-                timeout_seconds=_float_env("FUSION_MCP_READ_TIMEOUT_SECONDS", 120.0),
+                timeout_seconds=self.configuration.read_timeout_seconds,
                 operation_id=operation_id,
             )
         elif semantic == CallSemantics.READ_ONLY:
             options = McpCallOptions.for_read(
-                timeout_seconds=_float_env("FUSION_MCP_READ_TIMEOUT_SECONDS", 120.0),
+                timeout_seconds=self.configuration.read_timeout_seconds,
                 operation_id=operation_id,
             )
         else:
             options = McpCallOptions.for_mutation(
-                timeout_seconds=_float_env("FUSION_MCP_MUTATION_TIMEOUT_SECONDS", 240.0),
+                timeout_seconds=self.configuration.mutation_timeout_seconds,
                 operation_id=operation_id,
             )
         result = await adapter.call(name, arguments, options=options)
         current_generation = self.real_client.connection_generation
-        if (
-            current_generation != self._ready_generation
-            or result.error_code
-            in {
-                "MANIFEST_DRIFT",
-                "TIMEOUT",
-                "READ_TIMEOUT_MAY_STILL_BE_RUNNING",
-                "CALL_CANCELLED",
-                "CONNECTION_LOST",
-                "MUTATION_OUTCOME_UNKNOWN",
-            }
-        ):
+        if current_generation != self._ready_generation or result.error_code in {
+            "MANIFEST_DRIFT",
+            "TIMEOUT",
+            "READ_TIMEOUT_MAY_STILL_BE_RUNNING",
+            "CALL_CANCELLED",
+            "CONNECTION_LOST",
+            "MUTATION_OUTCOME_UNKNOWN",
+        }:
             self.invalidate_readiness()
         return result
 
     def diagnostics(self) -> dict[str, Any]:
         return {
             **dict(self.real_client.diagnostics),
-            "backend": selected_backend(),
+            "backend": self.configuration.backend,
             "frontend_transport": "stdio",
             "readiness_cached": bool(self._adapter and self._ready_at),
             "readiness_ttl_seconds": _READINESS_TTL_SECONDS,
             "manifest_status": self.manifest_store.latest_status(),
+            "authority_policy": self.authority_policy.safe_summary(),
             "real_benchmark_backend": self.real_benchmark_backend is not None,
             "closing": self._closing,
         }
@@ -334,41 +536,32 @@ class FusionAgentRuntime:
         self.invalidate_readiness()
         await self.real_client.close(timeout_seconds=timeout_seconds)
 
-    async def _replace_real_client(self, signature: tuple[str, ...]) -> None:
+    async def _replace_real_client(self) -> None:
         await self.real_client.close(timeout_seconds=2.0)
         self.real_client = self._new_real_client()
         self.controller = SessionController(
             real_client=self.real_client,
             manifest_store=self.manifest_store,
+            environment_snapshot=self._session_environment_snapshot(),
+            authority_broker=self.authority_broker,
+            authority_provider=self.configuration.backend,
         )
-        self._configuration = signature
         self._ready_generation = -1
         self._ready_fingerprint = ""
         self.invalidate_readiness()
 
-    def _configuration_signature(self) -> tuple[str, ...]:
-        return tuple(
-            os.getenv(name, "")
-            for name in (
-                "FUSION_MCP_ENDPOINT",
-                "FUSION_MCP_COMMAND",
-                "FUSION_AGENT_BACKEND",
-                "FUSION_FAUST_COMMAND",
-                "FUSION_FAUST_CWD",
-                "FUSION_MCP_TRANSPORT_MODE",
-                "FUSION_MCP_CONNECT_TIMEOUT_SECONDS",
-                "FUSION_MCP_READ_TIMEOUT_SECONDS",
-                "FUSION_MCP_MUTATION_TIMEOUT_SECONDS",
-                "FUSION_MCP_SSE_TIMEOUT_SECONDS",
-                "FUSION_MCP_AUTO_CANARY_TIMEOUT_SECONDS",
-                "FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS",
-                "FUSION_MCP_POST_DISPATCH_COOLDOWN_SECONDS",
-            )
-        )
-
     def _ensure_open(self) -> None:
         if self._closing:
             raise RuntimeError("Fusion Agent runtime is closed")
+
+    def _session_environment_snapshot(self) -> dict[str, str]:
+        return {
+            "launcher_python": self.configuration.launcher_python,
+            "fusion_mcp_endpoint": self.configuration.endpoint or "",
+            "default_mode": self.configuration.default_mode,
+            "require_real": str(self.configuration.require_real).lower(),
+            "allow_dry_run": str(self.configuration.allow_dry_run).lower(),
+        }
 
 
 class _MockCapabilityBackend:
@@ -438,14 +631,18 @@ class _MockFastBackend:
                 )
             request = _inspection_request(arguments)
             self._last_queries = list(request.get("queries") or [])
-            return ToolResult.success(message=json.dumps(self._snapshot(request), sort_keys=True))
+            return ToolResult.success(
+                message=json.dumps(self._snapshot(request), sort_keys=True)
+            )
         if name == "fusion_mcp_execute":
             self._previous_entities = deepcopy(self.entities)
             for query in self._last_queries:
                 if str(query.get("id") or "").startswith("__fusion_agent_component_"):
                     continue
                 selector = query.get("selector") or {}
-                entity_name = str(selector.get("name") or query.get("id") or "FastPathEntity")
+                entity_name = str(
+                    selector.get("name") or query.get("id") or "FastPathEntity"
+                )
                 entity_type = str(query.get("entity_type") or "feature")
                 self.entities[(entity_type, entity_name)] = {
                     "entity_type": entity_type,
@@ -468,9 +665,15 @@ class _MockFastBackend:
         if name == "fusion_mcp_update":
             action = str(arguments.get("featureType") or "")
             if action == "undo":
-                self.entities, self._previous_entities = self._previous_entities, deepcopy(self.entities)
+                self.entities, self._previous_entities = (
+                    self._previous_entities,
+                    deepcopy(self.entities),
+                )
             elif action == "redo":
-                self.entities, self._previous_entities = self._previous_entities, deepcopy(self.entities)
+                self.entities, self._previous_entities = (
+                    self._previous_entities,
+                    deepcopy(self.entities),
+                )
             return ToolResult.success(success=True, action=action)
         return ToolResult.failure("UNKNOWN_TOOL", f"mock native tool not found: {name}")
 
@@ -491,7 +694,9 @@ class _MockFastBackend:
         if query == "projects":
             return ToolResult.success(projects=[])
         if query == "document":
-            return ToolResult.success(operation=arguments.get("operation"), documents=[self.document])
+            return ToolResult.success(
+                operation=arguments.get("operation"), documents=[self.document]
+            )
         if query == "screenshot":
             return ToolResult.success(
                 structured_content={
@@ -503,7 +708,9 @@ class _MockFastBackend:
                     }
                 }
             )
-        return ToolResult.failure("MOCK_OPERATION_FAILED", f"unsupported read query: {query}")
+        return ToolResult.failure(
+            "MOCK_OPERATION_FAILED", f"unsupported read query: {query}"
+        )
 
     def _snapshot(self, request: dict[str, Any]) -> dict[str, Any]:
         results = []
@@ -514,7 +721,10 @@ class _MockFastBackend:
             if entity_type == "document":
                 matches = [{"entity_type": "document", "exists": True, **self.document}]
                 match_count = 1
-            elif entity_type == "component" and selector.get("path") in {"root", "Root"}:
+            elif entity_type == "component" and selector.get("path") in {
+                "root",
+                "Root",
+            }:
                 path = str(selector["path"])
                 matches = [
                     {
@@ -552,7 +762,17 @@ class _MockFastBackend:
                     "match_count_exact": True,
                 }
             )
-        counts = {name: 0 for name in ("components", "occurrences", "bodies", "sketches", "features", "parameters")}
+        counts = {
+            name: 0
+            for name in (
+                "components",
+                "occurrences",
+                "bodies",
+                "sketches",
+                "features",
+                "parameters",
+            )
+        }
         singular_to_plural = {
             "component": "components",
             "occurrence": "occurrences",
@@ -624,7 +844,9 @@ def _inspection_request(arguments: dict[str, Any]) -> dict[str, Any]:
         return {"queries": [], "limit_per_query": 20}
     encoded = ast.literal_eval(match.group(1))
     loaded = json.loads(encoded)
-    return loaded if isinstance(loaded, dict) else {"queries": [], "limit_per_query": 20}
+    return (
+        loaded if isinstance(loaded, dict) else {"queries": [], "limit_per_query": 20}
+    )
 
 
 def _float_env(name: str, default: float) -> float:
@@ -632,13 +854,50 @@ def _float_env(name: str, default: float) -> float:
     if value is None:
         return default
     parsed = float(value)
-    if parsed <= 0:
+    if not math.isfinite(parsed) or parsed <= 0:
         raise ValueError(f"{name} must be positive")
     return parsed
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    value = os.getenv(name)
+    try:
+        parsed = default if value is None else int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _choice_env(name: str, default: str, allowed: set[str]) -> str:
+    normalized = os.getenv(name, default).strip().lower()
+    if normalized not in allowed:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    return normalized
 
 
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
+
+def _request_session_id() -> str | None:
+    context = current_request_context()
+    if context is None:
+        return None
+    return context.session_id or context.request_id

@@ -41,23 +41,46 @@ class ScriptDefinition:
 FIXTURE_REGISTRY: dict[str, FixtureDefinition] = {
     "active_document": FixtureDefinition(
         id="active_document",
-        state={"document": "benchmark_fixture", "saved": False, "marker": "fusion_agent_benchmark"},
+        state={
+            "document": "benchmark_fixture",
+            "saved": False,
+            "marker": "fusion_agent_benchmark",
+        },
     ),
     "empty_design": FixtureDefinition(
         id="empty_design",
-        state={"document": "benchmark_empty", "bodies": [], "features": [], "saved": False},
+        state={
+            "document": "benchmark_empty",
+            "bodies": [],
+            "features": [],
+            "saved": False,
+        },
     ),
     "sample_design_medium": FixtureDefinition(
         id="sample_design_medium",
-        state={"document": "benchmark_medium", "body_count": 8, "occurrence_count": 16, "saved": False},
+        state={
+            "document": "benchmark_medium",
+            "body_count": 8,
+            "occurrence_count": 16,
+            "saved": False,
+        },
     ),
     "sample_design_large": FixtureDefinition(
         id="sample_design_large",
-        state={"document": "benchmark_large", "body_count": 240, "occurrence_count": 480, "saved": False},
+        state={
+            "document": "benchmark_large",
+            "body_count": 240,
+            "occurrence_count": 480,
+            "saved": False,
+        },
     ),
     "parameterized_design": FixtureDefinition(
         id="parameterized_design",
-        state={"document": "benchmark_parameter", "parameters": {"width": "20 mm"}, "saved": False},
+        state={
+            "document": "benchmark_parameter",
+            "parameters": {"width": "20 mm"},
+            "saved": False,
+        },
     ),
 }
 
@@ -113,7 +136,12 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "persistent_cold_first_read": ScriptDefinition(
         "persistent_cold_first_read",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=1250, fast_ms=480, safe_calls=3, fast_calls=1,
+            status="read_succeeded",
+            success=True,
+            safe_ms=1250,
+            fast_ms=480,
+            safe_calls=3,
+            fast_calls=1,
             observation={},
             route_observations=(
                 {
@@ -138,35 +166,64 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "read_api_documentation": ScriptDefinition(
         "read_api_documentation",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=110, fast_ms=35, safe_calls=4, fast_calls=1,
+            status="read_succeeded",
+            success=True,
+            safe_ms=110,
+            fast_ms=35,
+            safe_calls=4,
+            fast_calls=1,
             observation={"api_documentation": {"matches": 1, "class": "Application"}},
         ),
     ),
     "read_document_summary": ScriptDefinition(
         "read_document_summary",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=140, fast_ms=42, safe_calls=5, fast_calls=1,
+            status="read_succeeded",
+            success=True,
+            safe_ms=140,
+            fast_ms=42,
+            safe_calls=5,
+            fast_calls=1,
             observation={"document": {"name": "benchmark_fixture", "body_count": 8}},
         ),
     ),
     "inspect_medium": ScriptDefinition(
         "inspect_medium",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=320, fast_ms=85, safe_calls=7, fast_calls=1,
-            observation={"inspection": {"matched": 8, "ambiguous": False, "truncated": False}},
+            status="read_succeeded",
+            success=True,
+            safe_ms=320,
+            fast_ms=85,
+            safe_calls=7,
+            fast_calls=1,
+            observation={
+                "inspection": {"matched": 8, "ambiguous": False, "truncated": False}
+            },
         ),
     ),
     "inspect_large": ScriptDefinition(
         "inspect_large",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=900, fast_ms=260, safe_calls=12, fast_calls=2,
-            observation={"inspection": {"matched": 100, "ambiguous": False, "truncated": True}},
+            status="read_succeeded",
+            success=True,
+            safe_ms=900,
+            fast_ms=260,
+            safe_calls=12,
+            fast_calls=2,
+            observation={
+                "inspection": {"matched": 100, "ambiguous": False, "truncated": True}
+            },
         ),
     ),
     "inspect_large_bounded": ScriptDefinition(
         "inspect_large_bounded",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=1450, fast_ms=620, safe_calls=4, fast_calls=1,
+            status="read_succeeded",
+            success=True,
+            safe_ms=1450,
+            fast_ms=620,
+            safe_calls=4,
+            fast_calls=1,
             observation={},
             route_observations=tuple(
                 {
@@ -187,7 +244,12 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "inspect_large_by_token": ScriptDefinition(
         "inspect_large_by_token",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=650, fast_ms=110, safe_calls=4, fast_calls=1,
+            status="read_succeeded",
+            success=True,
+            safe_ms=650,
+            fast_ms=110,
+            safe_calls=4,
+            fast_calls=1,
             observation={},
             route_observations=tuple(
                 {
@@ -209,38 +271,81 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "capture_screenshot": ScriptDefinition(
         "capture_screenshot",
         _profiles(
-            status="read_succeeded", success=True, safe_ms=250, fast_ms=100, safe_calls=5, fast_calls=1,
-            observation={"screenshot": {"mime_type": "image/png", "verified": True, "bytes": 4096}},
+            status="read_succeeded",
+            success=True,
+            safe_ms=250,
+            fast_ms=100,
+            safe_calls=5,
+            fast_calls=1,
+            observation={
+                "screenshot": {
+                    "mime_type": "image/png",
+                    "verified": True,
+                    "bytes": 4096,
+                }
+            },
         ),
     ),
     "create_cube": ScriptDefinition(
         "create_cube",
         _profiles(
-            status="applied_verified", success=True, safe_ms=700, fast_ms=300, safe_calls=10, fast_calls=3,
-            scripts=(4, 1), mutation_dispatches=(4, 1),
-            observation={"feature": {"name": "benchmark_cube", "health": "ok", "bbox_mm": [10, 10, 10]}},
+            status="applied_verified",
+            success=True,
+            safe_ms=700,
+            fast_ms=300,
+            safe_calls=10,
+            fast_calls=3,
+            scripts=(4, 1),
+            mutation_dispatches=(4, 1),
+            observation={
+                "feature": {
+                    "name": "benchmark_cube",
+                    "health": "ok",
+                    "bbox_mm": [10, 10, 10],
+                }
+            },
         ),
     ),
     "create_plate": ScriptDefinition(
         "create_plate",
         _profiles(
-            status="applied_verified", success=True, safe_ms=1200, fast_ms=520, safe_calls=16, fast_calls=4,
-            scripts=(7, 1), mutation_dispatches=(7, 1),
-            observation={"feature": {"name": "benchmark_plate", "health": "ok"}, "hole_count": 4},
+            status="applied_verified",
+            success=True,
+            safe_ms=1200,
+            fast_ms=520,
+            safe_calls=16,
+            fast_calls=4,
+            scripts=(7, 1),
+            mutation_dispatches=(7, 1),
+            observation={
+                "feature": {"name": "benchmark_plate", "health": "ok"},
+                "hole_count": 4,
+            },
         ),
     ),
     "update_parameter": ScriptDefinition(
         "update_parameter",
         _profiles(
-            status="applied_verified", success=True, safe_ms=500, fast_ms=230, safe_calls=8, fast_calls=3,
-            scripts=(2, 1), mutation_dispatches=(2, 1),
+            status="applied_verified",
+            success=True,
+            safe_ms=500,
+            fast_ms=230,
+            safe_calls=8,
+            fast_calls=3,
+            scripts=(2, 1),
+            mutation_dispatches=(2, 1),
             observation={"parameters": {"width": "25 mm"}, "feature_health": "ok"},
         ),
     ),
     "block_destructive": ScriptDefinition(
         "block_destructive",
         _profiles(
-            status="blocked_before_apply", success=True, safe_ms=80, fast_ms=45, safe_calls=2, fast_calls=1,
+            status="blocked_before_apply",
+            success=True,
+            safe_ms=80,
+            fast_ms=45,
+            safe_calls=2,
+            fast_calls=1,
             observation={
                 "blocked": True,
                 "blocked_reason": "destructive_requires_safe_harness_preview",
@@ -253,8 +358,15 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "simulate_mutation_timeout": ScriptDefinition(
         "simulate_mutation_timeout",
         _profiles(
-            status="outcome_unknown", success=False, safe_ms=250, fast_ms=210, safe_calls=3, fast_calls=2,
-            scripts=(1, 1), mutation_dispatches=(1, 1), outcome_unknown=True,
+            status="outcome_unknown",
+            success=False,
+            safe_ms=250,
+            fast_ms=210,
+            safe_calls=3,
+            fast_calls=2,
+            scripts=(1, 1),
+            mutation_dispatches=(1, 1),
+            outcome_unknown=True,
             observation={
                 "error_code": "MUTATION_OUTCOME_UNKNOWN",
                 "replayed": False,
@@ -266,7 +378,12 @@ SCRIPT_REGISTRY: dict[str, ScriptDefinition] = {
     "simulate_manifest_drift": ScriptDefinition(
         "simulate_manifest_drift",
         _profiles(
-            status="manifest_drift", success=False, safe_ms=170, fast_ms=125, safe_calls=3, fast_calls=2,
+            status="manifest_drift",
+            success=False,
+            safe_ms=170,
+            fast_ms=125,
+            safe_calls=3,
+            fast_calls=2,
             reconnects=(1, 1),
             observation={
                 "error_code": "MANIFEST_DRIFT",
@@ -302,7 +419,11 @@ _PUBLIC_NORMAL_CASE_PROFILES = {
     "b07_packaging_machine": (1_740.0, 18, 2),
 }
 
-for _case_id, (_duration_ms, _call_count, _dispatch_count) in _PUBLIC_NORMAL_CASE_PROFILES.items():
+for _case_id, (
+    _duration_ms,
+    _call_count,
+    _dispatch_count,
+) in _PUBLIC_NORMAL_CASE_PROFILES.items():
     _internal_case_id = f"pub_{_case_id.split('_', 1)[0]}"
     SCRIPT_REGISTRY[_internal_case_id] = ScriptDefinition(
         _internal_case_id,

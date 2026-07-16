@@ -31,7 +31,10 @@ class ManifestStore:
         saved = self.save_if_changed(manifest)
         if saved is not None:
             return saved
-        return self.root / f"fusion_mcp_tools_latest_{self._source_key(manifest.source)}.json"
+        return (
+            self.root
+            / f"fusion_mcp_tools_latest_{self._source_key(manifest.source)}.json"
+        )
 
     def save_if_changed(self, manifest: ToolManifest) -> Path | None:
         """Atomically persist ``manifest`` only when its tool fingerprint changed."""
@@ -48,11 +51,15 @@ class ManifestStore:
                 current = self._load_path(self.root / "fusion_mcp_tools_latest.json")
             if current is not None and current.fingerprint == manifest.fingerprint:
                 if not latest.exists():
-                    self._atomic_write(latest, manifest.model_dump_json(indent=2, by_alias=True))
+                    self._atomic_write(
+                        latest, manifest.model_dump_json(indent=2, by_alias=True)
+                    )
                 self.last_persistence_error = None
                 return None
 
-            manifest.previous_fingerprint = current.fingerprint if current is not None else None
+            manifest.previous_fingerprint = (
+                current.fingerprint if current is not None else None
+            )
 
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             path = self.root / f"fusion_mcp_tools_{source}_{timestamp}.json"
@@ -105,7 +112,9 @@ class ManifestStore:
                     # The migration is atomic and intentionally does not create
                     # a timestamped duplicate.
                     self.root.mkdir(parents=True, exist_ok=True)
-                    self._atomic_write(authoritative, manifest.model_dump_json(indent=2, by_alias=True))
+                    self._atomic_write(
+                        authoritative, manifest.model_dump_json(indent=2, by_alias=True)
+                    )
                 return manifest
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"

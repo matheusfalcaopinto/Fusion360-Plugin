@@ -21,7 +21,11 @@ from benchmark.codex_driver import (
     discover_codex_executable,
 )
 from benchmark.fixtures import FIXTURE_REGISTRY, SCRIPT_REGISTRY
-from benchmark.loader import BenchmarkSuiteError, load_benchmark_cases, load_benchmark_suite
+from benchmark.loader import (
+    BenchmarkSuiteError,
+    load_benchmark_cases,
+    load_benchmark_suite,
+)
 from benchmark.models import (
     BenchmarkCase,
     BenchmarkReport,
@@ -42,6 +46,7 @@ from benchmark.public import (
     PublicBenchmarkRunner,
     load_public_manifest,
 )
+from benchmark.provenance import RevisionIdentity, collect_workspace_revision
 from benchmark.runner import (
     BenchmarkExecutionError,
     BenchmarkRunner,
@@ -85,11 +90,13 @@ __all__ = [
     "PublicBenchmarkReport",
     "PublicBenchmarkRunner",
     "ROUTE_LOCK_ENV",
+    "RevisionIdentity",
     "SCRIPT_REGISTRY",
     "TrialContext",
     "TrustedAdapterContext",
     "TrustedPublicBenchmarkDriver",
     "build_public_adapter_registry",
+    "collect_workspace_revision",
     "discover_codex_executable",
     "enforce_route_lock",
     "load_benchmark_cases",

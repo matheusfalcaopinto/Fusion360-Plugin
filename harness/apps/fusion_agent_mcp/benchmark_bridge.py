@@ -212,9 +212,13 @@ class FusionRuntimeLifecycleBackend:
                     "active document changed during real fixture preparation"
                 )
             if session.fixture_marker != context.fixture_marker:
-                raise BenchmarkExecutionError("real fixture marker write did not round-trip")
+                raise BenchmarkExecutionError(
+                    "real fixture marker write did not round-trip"
+                )
             if session.fixture_fingerprint != fingerprint:
-                raise BenchmarkExecutionError("real fixture fingerprint write did not round-trip")
+                raise BenchmarkExecutionError(
+                    "real fixture fingerprint write did not round-trip"
+                )
             if not session.unsaved:
                 raise BenchmarkExecutionError("real benchmark fixture is not unsaved")
             return session
@@ -243,7 +247,9 @@ class FusionRuntimeLifecycleBackend:
         return FixtureIdentity(
             document_id=_optional_payload_string(payload.get("document_id")),
             fixture_marker=_optional_payload_string(payload.get("fixture_marker")),
-            fixture_fingerprint=_optional_payload_string(payload.get("fixture_fingerprint")),
+            fixture_fingerprint=_optional_payload_string(
+                payload.get("fixture_fingerprint")
+            ),
             unsaved=payload.get("unsaved") is True,
         )
 
@@ -329,8 +335,12 @@ class FusionRuntimeLifecycleBackend:
             operation_id="benchmark:lifecycle:list-open",
         )
         values = payload.get("document_ids")
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-            raise BenchmarkExecutionError("real lifecycle list-open returned an invalid payload")
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) for value in values
+        ):
+            raise BenchmarkExecutionError(
+                "real lifecycle list-open returned an invalid payload"
+            )
         return values
 
     async def containment_audit(
@@ -343,7 +353,9 @@ class FusionRuntimeLifecycleBackend:
             "REAL_BENCHMARK_CAPABILITY_MISSING: independent save/sync containment audit"
         )
 
-    async def _restore_document_id(self, document_id: str | None, *, operation_id: str) -> bool:
+    async def _restore_document_id(
+        self, document_id: str | None, *, operation_id: str
+    ) -> bool:
         payload = await self._script_call(
             _restore_document_script(document_id),
             semantics="mutating",
@@ -366,7 +378,9 @@ class FusionRuntimeLifecycleBackend:
         except BaseException:
             return
 
-    async def _best_effort_restore(self, document_id: str | None, trial_id: str) -> None:
+    async def _best_effort_restore(
+        self, document_id: str | None, trial_id: str
+    ) -> None:
         try:
             await self._restore_document_id(
                 document_id,
@@ -407,7 +421,9 @@ class FusionRuntimeBenchmarkBridge:
     fail-closed without MCP calls.
     """
 
-    def __init__(self, runtime: Any, backend: RuntimeBenchmarkBackend | None = None) -> None:
+    def __init__(
+        self, runtime: Any, backend: RuntimeBenchmarkBackend | None = None
+    ) -> None:
         self.runtime = runtime
         self.backend = backend or getattr(runtime, "real_benchmark_backend", None)
         self._sessions: dict[str, FixtureSession] = {}
@@ -434,7 +450,9 @@ class FusionRuntimeBenchmarkBridge:
             available = {str(item) for item in value}
         if CANONICAL_ALL_CAPABILITY not in available:
             for case in cases:
-                applicable_paths = set(case.execution_paths).intersection(execution_paths)
+                applicable_paths = set(case.execution_paths).intersection(
+                    execution_paths
+                )
                 if not applicable_paths:
                     continue
                 required.add(f"canonical_real_fixture:{case.fixture_id}")
@@ -454,7 +472,9 @@ class FusionRuntimeBenchmarkBridge:
     async def prepare(self, context: TrialContext) -> RealTrialStart:
         backend = self._require_backend()
         if self._sessions:
-            raise BenchmarkExecutionError("parallel or nested real benchmark fixture detected")
+            raise BenchmarkExecutionError(
+                "parallel or nested real benchmark fixture detected"
+            )
         session = await backend.prepare_fixture(context)
         if not isinstance(session, FixtureSession):
             session = FixtureSession(**dict(session))
@@ -481,7 +501,9 @@ class FusionRuntimeBenchmarkBridge:
             ) from identity_exc
         if not isinstance(identity, FixtureIdentity):
             identity = FixtureIdentity(**dict(identity))
-        marker_ok, fingerprint_ok, isolated = _verify_identity(context, session, identity)
+        marker_ok, fingerprint_ok, isolated = _verify_identity(
+            context, session, identity
+        )
         return RealTrialStart(
             fixture_marker_verified=marker_ok,
             fingerprint_verified=fingerprint_ok,
@@ -494,7 +516,9 @@ class FusionRuntimeBenchmarkBridge:
             },
         )
 
-    async def execute(self, path: ExecutionPath, context: TrialContext) -> ExecutionObservation:
+    async def execute(
+        self, path: ExecutionPath, context: TrialContext
+    ) -> ExecutionObservation:
         enforce_route_lock(path)
         if path != context.execution_path:
             raise BenchmarkExecutionError(
@@ -502,7 +526,9 @@ class FusionRuntimeBenchmarkBridge:
             )
         backend = self._require_backend()
         session = self._session(context)
-        await self._require_active_identity(context, session, phase="before route dispatch")
+        await self._require_active_identity(
+            context, session, phase="before route dispatch"
+        )
         if path == "safe_harness":
             value = await backend.execute_safe_harness(context, session)
         else:
@@ -511,17 +537,23 @@ class FusionRuntimeBenchmarkBridge:
             value = ExecutionObservation.model_validate(value)
         return value
 
-    async def observe(self, context: TrialContext) -> IndependentEvidence | dict[str, Any]:
+    async def observe(
+        self, context: TrialContext
+    ) -> IndependentEvidence | dict[str, Any]:
         # Correctness evidence comes from a separate read-only backend call;
         # executor output is intentionally absent from this contract.
         backend = self._require_backend()
         session = self._session(context)
-        await self._require_active_identity(context, session, phase="before oracle observation")
+        await self._require_active_identity(
+            context, session, phase="before oracle observation"
+        )
         evidence = await backend.observe_oracle(context, session)
         if isinstance(evidence, IndependentEvidence):
             return evidence
         if not isinstance(evidence, dict):
-            raise BenchmarkExecutionError("independent real oracle must return an object")
+            raise BenchmarkExecutionError(
+                "independent real oracle must return an object"
+            )
         return evidence
 
     async def finalize(
@@ -559,18 +591,24 @@ class FusionRuntimeBenchmarkBridge:
             errors.append(f"restore_readback:{type(exc).__name__}:{exc}")
         restoration_ms = (time.perf_counter() - restoration_started) * 1000
         try:
-            open_document_ids = [str(value) for value in await backend.list_open_document_ids()]
+            open_document_ids = [
+                str(value) for value in await backend.list_open_document_ids()
+            ]
             if session.fixture_document_id in open_document_ids:
                 closed = False
                 errors.append(f"fixture_still_open:{session.fixture_document_id}")
             unidentified = [
-                value for value in open_document_ids if value.startswith("unidentified:")
+                value
+                for value in open_document_ids
+                if value.startswith("unidentified:")
             ]
             if unidentified:
                 closed = False
                 errors.append(f"unidentified_open_documents:{len(unidentified)}")
             baseline = session.metadata.get("original_open_document_ids")
-            if isinstance(baseline, list) and all(isinstance(value, str) for value in baseline):
+            if isinstance(baseline, list) and all(
+                isinstance(value, str) for value in baseline
+            ):
                 if sorted(open_document_ids) != sorted(baseline):
                     closed = False
                     errors.append(
@@ -609,7 +647,9 @@ class FusionRuntimeBenchmarkBridge:
         phase: str,
     ) -> None:
         identity = await self._require_backend().read_fixture_identity(context, session)
-        marker_ok, fingerprint_ok, isolated = _verify_identity(context, session, identity)
+        marker_ok, fingerprint_ok, isolated = _verify_identity(
+            context, session, identity
+        )
         violations = []
         if not marker_ok:
             violations.append("marker")
@@ -619,14 +659,17 @@ class FusionRuntimeBenchmarkBridge:
             violations.append("document isolation")
         if violations:
             raise BenchmarkExecutionError(
-                f"real fixture identity drift {phase} for {context.trial_id}: " + ", ".join(violations)
+                f"real fixture identity drift {phase} for {context.trial_id}: "
+                + ", ".join(violations)
             )
 
     def _session(self, context: TrialContext) -> FixtureSession:
         try:
             return self._sessions[context.trial_id]
         except KeyError as exc:
-            raise BenchmarkExecutionError(f"no active fixture session for {context.trial_id}") from exc
+            raise BenchmarkExecutionError(
+                f"no active fixture session for {context.trial_id}"
+            ) from exc
 
     def _require_backend(self) -> RuntimeBenchmarkBackend:
         if self.backend is None:
@@ -748,8 +791,7 @@ def run(_context: str):
     finally:
         if not keep_open:
             created.close(False)
-"""
-        .replace("__MARKER_JSON__", repr(json.dumps(marker)))
+""".replace("__MARKER_JSON__", repr(json.dumps(marker)))
         .replace("__FINGERPRINT_JSON__", repr(json.dumps(fingerprint)))
         .replace("__STABLE_DOCUMENT_KEY_FUNCTION__", _STABLE_DOCUMENT_KEY_FUNCTION)
     )
@@ -849,8 +891,7 @@ def run(_context: str):
         target.activate()
     closed = bool(target.close(False))
     print(json.dumps({"ok": True, "found": True, "closed": closed}, sort_keys=True))
-"""
-        .replace("__DOCUMENT_ID_JSON__", repr(json.dumps(document_id)))
+""".replace("__DOCUMENT_ID_JSON__", repr(json.dumps(document_id)))
         .replace("__MARKER_JSON__", repr(json.dumps(marker)))
         .replace("__FINGERPRINT_JSON__", repr(json.dumps(fingerprint)))
         .replace("__STABLE_DOCUMENT_KEY_FUNCTION__", _STABLE_DOCUMENT_KEY_FUNCTION)
@@ -858,8 +899,7 @@ def run(_context: str):
 
 
 def _close_fixture_by_marker_script(marker: str, fingerprint: str) -> str:
-    return (
-        """import adsk.core
+    return """import adsk.core
 import adsk.fusion
 import json
 
@@ -895,15 +935,13 @@ def run(_context: str):
         target.activate()
         closed = bool(target.close(False))
     print(json.dumps({"ok": True, "match_count": len(matches), "closed": closed}, sort_keys=True))
-"""
-        .replace("__MARKER_JSON__", repr(json.dumps(marker)))
-        .replace("__FINGERPRINT_JSON__", repr(json.dumps(fingerprint)))
+""".replace("__MARKER_JSON__", repr(json.dumps(marker))).replace(
+        "__FINGERPRINT_JSON__", repr(json.dumps(fingerprint))
     )
 
 
 def _restore_document_script(document_id: str | None) -> str:
-    return (
-        """import adsk.core
+    return """import adsk.core
 import adsk.fusion
 import json
 
@@ -931,9 +969,8 @@ def run(_context: str):
     active = app.activeDocument
     restored = _stable_document_key(active) == _DOCUMENT_ID
     print(json.dumps({"ok": True, "restored": restored}, sort_keys=True))
-"""
-        .replace("__DOCUMENT_ID_JSON__", repr(json.dumps(document_id)))
-        .replace("__STABLE_DOCUMENT_KEY_FUNCTION__", _STABLE_DOCUMENT_KEY_FUNCTION)
+""".replace("__DOCUMENT_ID_JSON__", repr(json.dumps(document_id))).replace(
+        "__STABLE_DOCUMENT_KEY_FUNCTION__", _STABLE_DOCUMENT_KEY_FUNCTION
     )
 
 
@@ -976,13 +1013,20 @@ def run(_context: str):
 def _decode_script_payload(result: Any, *, operation_id: str) -> dict[str, Any]:
     if isinstance(result, dict):
         ok = bool(result.get("ok", not result.get("isError", False)))
-        data = result.get("structuredContent") or result.get("structured_content") or result.get("data") or {}
+        data = (
+            result.get("structuredContent")
+            or result.get("structured_content")
+            or result.get("data")
+            or {}
+        )
         content = result.get("content") or []
         error_code = result.get("error_code")
         error_message = result.get("error_message")
     else:
         ok = bool(getattr(result, "ok", False))
-        data = getattr(result, "structured_content", None) or getattr(result, "data", {})
+        data = getattr(result, "structured_content", None) or getattr(
+            result, "data", {}
+        )
         content = getattr(result, "content", [])
         error_code = getattr(result, "error_code", None)
         error_message = getattr(result, "error_message", None)
@@ -1009,7 +1053,9 @@ def _decode_script_payload(result: Any, *, operation_id: str) -> dict[str, Any]:
                     f"real lifecycle call {operation_id} returned a negative acknowledgement"
                 )
             return payload
-    raise BenchmarkExecutionError(f"real lifecycle call {operation_id} returned no JSON object")
+    raise BenchmarkExecutionError(
+        f"real lifecycle call {operation_id} returned no JSON object"
+    )
 
 
 def _parse_payload_candidate(candidate: Any) -> dict[str, Any] | None:
@@ -1025,7 +1071,10 @@ def _parse_payload_candidate(candidate: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(candidate, str):
         return None
-    texts = [candidate.strip(), *(line.strip() for line in reversed(candidate.splitlines()))]
+    texts = [
+        candidate.strip(),
+        *(line.strip() for line in reversed(candidate.splitlines())),
+    ]
     for text in texts:
         if not text:
             continue
@@ -1050,7 +1099,9 @@ def _optional_payload_string(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise BenchmarkExecutionError("real lifecycle optional document identity is invalid")
+        raise BenchmarkExecutionError(
+            "real lifecycle optional document identity is invalid"
+        )
     return value
 
 

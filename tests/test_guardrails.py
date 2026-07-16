@@ -11,7 +11,11 @@ SOURCE_PACKAGES = ROOT / "harness" / "packages"
 SOURCE_APPS = ROOT / "harness" / "apps"
 sys.path[:0] = [str(SOURCE_PACKAGES), str(SOURCE_APPS)]
 
-from agent_core.guardrails import PlannerUnsupportedError, classify_safe_change, diff_snapshots  # noqa: E402
+from agent_core.guardrails import (  # noqa: E402
+    PlannerUnsupportedError,
+    classify_safe_change,
+    diff_snapshots,
+)
 from agent_core.planner import PlanningRequest, RuleBasedPlanner  # noqa: E402
 from fusion_mcp_adapter.manifest_store import ManifestStore  # noqa: E402
 from fusion_mcp_adapter.tool_result import ToolDefinition, ToolManifest  # noqa: E402
@@ -36,7 +40,9 @@ def test_planner_guard_rejects_audit_reorg_delete_hub_prompts() -> None:
 
 def test_manifest_store_keeps_real_and_mock_latest_separate(tmp_path: Path) -> None:
     store = ManifestStore(tmp_path)
-    real = ToolManifest(source="fusion_real", tools=[ToolDefinition(name="fusion_mcp_execute")])
+    real = ToolManifest(
+        source="fusion_real", tools=[ToolDefinition(name="fusion_mcp_execute")]
+    )
     mock = ToolManifest(source="mock", tools=[ToolDefinition(name="inspect_design")])
 
     store.save(real)
@@ -93,7 +99,9 @@ def test_safe_change_diff_limits_no_drift_claim_to_observed_scope() -> None:
 def test_duplicate_body_names_are_ambiguous_without_component_scope() -> None:
     snapshot = {"duplicate_body_names": {"Bolt": 3}}
 
-    result = classify_safe_change("delete", [{"name": "Bolt"}], {"allow_delete": True}, snapshot)
+    result = classify_safe_change(
+        "delete", [{"name": "Bolt"}], {"allow_delete": True}, snapshot
+    )
 
     assert result["blocked"] is True
     assert result["classification"] == "ambiguous_targets"
@@ -107,7 +115,10 @@ def test_vendor_capture_fails_when_file_missing(tmp_path: Path) -> None:
         facade._uses_crud_profile = lambda: True
 
         async def fake_execute_script_json(_script: str) -> dict:
-            return {"success": True, "screenshot": {"path": str(tmp_path / "missing.png"), "bytes": 0}}
+            return {
+                "success": True,
+                "screenshot": {"path": str(tmp_path / "missing.png"), "bytes": 0},
+            }
 
         facade._execute_script_json = fake_execute_script_json
         with pytest.raises(RuntimeError, match="local file does not exist"):

@@ -32,7 +32,9 @@ async def post_only_streamablehttp_client(
 ) -> AsyncGenerator[tuple[Any, Any, Any], None]:
     """Yield SDK-compatible streams while never issuing standalone HTTP GET."""
 
-    timeout_seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else timeout
+    timeout_seconds = (
+        timeout.total_seconds() if isinstance(timeout, timedelta) else timeout
+    )
     sse_seconds = (
         sse_read_timeout.total_seconds()
         if isinstance(sse_read_timeout, timedelta)

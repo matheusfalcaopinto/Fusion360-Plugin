@@ -51,7 +51,9 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _definition_paths() -> list[Path]:
-    return sorted(CASES_ROOT.glob("*/definition.json"), key=lambda path: path.parent.name)
+    return sorted(
+        CASES_ROOT.glob("*/definition.json"), key=lambda path: path.parent.name
+    )
 
 
 def _case_id(value: object) -> str:
@@ -127,7 +129,8 @@ def _assert_exact_run_signature(path: Path, tree: ast.Module) -> None:
     run_functions = [
         node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "run"
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "run"
     ]
     assert len(run_functions) == 1, f"{path}: expected exactly one top-level run"
     run_function = run_functions[0]
@@ -201,7 +204,8 @@ def _eco_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
     assertion_ids = []
     for index, assertion in enumerate(verification["assertions"], start=1):
         assertion_id = str(
-            assertion.get("id") or f"{definition['case_id']}_eco_contract_assertion_{index}"
+            assertion.get("id")
+            or f"{definition['case_id']}_eco_contract_assertion_{index}"
         )
         assertion["id"] = assertion_id
         assertion_ids.append(assertion_id)
@@ -226,9 +230,13 @@ def _eco_request(definition: dict[str, Any], script: str) -> dict[str, Any]:
     )
 
 
-def _assert_assertion_contract(assertions: list[dict[str, Any]], query_ids: set[str]) -> None:
+def _assert_assertion_contract(
+    assertions: list[dict[str, Any]], query_ids: set[str]
+) -> None:
     assert len(assertions) <= 100
-    explicit_ids = [assertion.get("id") for assertion in assertions if assertion.get("id")]
+    explicit_ids = [
+        assertion.get("id") for assertion in assertions if assertion.get("id")
+    ]
     assert len(explicit_ids) == len(set(explicit_ids)), "assertion ids must be unique"
     for assertion in assertions:
         assert assertion.get("query_id") in query_ids
@@ -298,10 +306,19 @@ def _runner_default_cases() -> list[str]:
     tree = ast.parse(RUNNER.read_text(encoding="utf-8"), filename=str(RUNNER))
     for statement in tree.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            if any(isinstance(target, ast.Name) and target.id == "DEFAULT_CASES" for target in targets):
+            targets = (
+                statement.targets
+                if isinstance(statement, ast.Assign)
+                else [statement.target]
+            )
+            if any(
+                isinstance(target, ast.Name) and target.id == "DEFAULT_CASES"
+                for target in targets
+            ):
                 value = ast.literal_eval(statement.value)
-                assert isinstance(value, list) and all(isinstance(item, str) for item in value)
+                assert isinstance(value, list) and all(
+                    isinstance(item, str) for item in value
+                )
                 return value
     raise AssertionError(f"{RUNNER}: DEFAULT_CASES was not found")
 
@@ -361,12 +378,16 @@ def test_case_definition_and_additive_fast_path_contract(definition_path: Path) 
     assert definition["time_limit_minutes"] > 0
     assert isinstance(definition.get("maximum_autonomous_repairs"), int)
     assert definition["maximum_autonomous_repairs"] >= 0
-    assert isinstance(definition.get("risk_domains"), list) and definition["risk_domains"]
+    assert (
+        isinstance(definition.get("risk_domains"), list) and definition["risk_domains"]
+    )
     assert len(definition["risk_domains"]) == len(set(definition["risk_domains"]))
     assert isinstance(definition.get("expected"), dict) and definition["expected"]
     api_references = definition.get("api_references")
     assert isinstance(api_references, list) and api_references
-    assert all(isinstance(reference, str) and reference.strip() for reference in api_references)
+    assert all(
+        isinstance(reference, str) and reference.strip() for reference in api_references
+    )
     assert len(api_references) == len(set(api_references))
 
     prompt = (case_root / "prompt.txt").read_text(encoding="utf-8")
@@ -387,7 +408,10 @@ def test_case_definition_and_additive_fast_path_contract(definition_path: Path) 
         assert target.get("entity_type") in SUPPORTED_ENTITY_TYPES
         selector = target.get("selector")
         assert isinstance(selector, dict)
-        assert any(selector.get(key) for key in ("entity_token", "path", "component_path", "name"))
+        assert any(
+            selector.get(key)
+            for key in ("entity_token", "path", "component_path", "name")
+        )
         if selector.get("component_path"):
             assert selector.get("name")
         if target.get("bind_target", True):
@@ -404,7 +428,9 @@ def test_case_definition_and_additive_fast_path_contract(definition_path: Path) 
             {"query_id": target["id"], **assertion} for assertion in assertions
         ]
         _assert_assertion_contract(normalized_assertions, {target["id"]})
-        assert all(assertion["field"].split(".", 1)[0] in fields for assertion in assertions)
+        assert all(
+            assertion["field"].split(".", 1)[0] in fields for assertion in assertions
+        )
 
     build_path = case_root / "build_script.py"
     script = build_path.read_text(encoding="utf-8")
@@ -441,7 +467,9 @@ def test_case_definition_and_additive_fast_path_contract(definition_path: Path) 
 
 
 @pytest.mark.parametrize("definition_path", CASE_DEFINITIONS, ids=_case_id)
-def test_oracle_and_optional_eco_files_are_complete_and_valid(definition_path: Path) -> None:
+def test_oracle_and_optional_eco_files_are_complete_and_valid(
+    definition_path: Path,
+) -> None:
     case_root = definition_path.parent
     definition = _load_json(definition_path)
 
@@ -466,7 +494,9 @@ def test_oracle_and_optional_eco_files_are_complete_and_valid(definition_path: P
     assert isinstance(eco.get("intent"), str) and eco["intent"].strip()
     api_references = eco.get("api_references", [])
     assert isinstance(api_references, list)
-    assert all(isinstance(reference, str) and reference.strip() for reference in api_references)
+    assert all(
+        isinstance(reference, str) and reference.strip() for reference in api_references
+    )
     assert len(api_references) == len(set(api_references))
     target_query_ids = eco.get("target_query_ids")
     assert isinstance(target_query_ids, list) and target_query_ids
@@ -544,35 +574,47 @@ def test_runner_case_summary_requires_every_phase_once_and_cleanup() -> None:
 
     duplicate_dispatch = json.loads(json.dumps(compound))
     duplicate_dispatch["eco"]["fast_path"]["transport_mutating_dispatch_count"] = 2
-    assert runner._summarize_case_result(
-        "duplicate",
-        duplicate_dispatch,
-        has_eco=True,
-    )["passed"] is False
+    assert (
+        runner._summarize_case_result(
+            "duplicate",
+            duplicate_dispatch,
+            has_eco=True,
+        )["passed"]
+        is False
+    )
 
     missing_eco = _passing_case_result()
-    assert runner._summarize_case_result(
-        "missing_eco",
-        missing_eco,
-        has_eco=True,
-    )["passed"] is False
+    assert (
+        runner._summarize_case_result(
+            "missing_eco",
+            missing_eco,
+            has_eco=True,
+        )["passed"]
+        is False
+    )
 
     missing_cleanup = _passing_case_result()
     missing_cleanup.pop("cleanup")
-    assert runner._summarize_case_result(
-        "missing_cleanup",
-        missing_cleanup,
-        has_eco=False,
-    )["passed"] is False
+    assert (
+        runner._summarize_case_result(
+            "missing_cleanup",
+            missing_cleanup,
+            has_eco=False,
+        )["passed"]
+        is False
+    )
 
     repeated_camera = _passing_case_result()
     for artifact in repeated_camera["images"]:
         artifact["sha256"] = "same-camera"
-    assert runner._summarize_case_result(
-        "repeated_camera",
-        repeated_camera,
-        has_eco=False,
-    )["passed"] is False
+    assert (
+        runner._summarize_case_result(
+            "repeated_camera",
+            repeated_camera,
+            has_eco=False,
+        )["passed"]
+        is False
+    )
 
 
 def test_runner_ignores_stale_case_result_from_an_older_run(
@@ -616,9 +658,7 @@ def test_runner_restoration_failure_is_recorded_best_effort() -> None:
 
     assert restored is False
     assert suite_result["restored"] is False
-    assert suite_result["restoration_error"] == (
-        "RuntimeError: endpoint unavailable"
-    )
+    assert suite_result["restoration_error"] == ("RuntimeError: endpoint unavailable")
 
 
 def test_capture_images_fits_then_keeps_directional_capture(
@@ -690,8 +730,7 @@ def test_capture_images_fits_then_keeps_directional_capture(
         "right",
     ]
     assert all(
-        (tmp_path / artifact["path"]).read_bytes() == raw_png
-        for artifact in artifacts
+        (tmp_path / artifact["path"]).read_bytes() == raw_png for artifact in artifacts
     )
 
 
@@ -735,7 +774,13 @@ def test_partial_runner_writes_run_specific_result_without_overwriting_canonical
     monkeypatch.setattr(runner, "FusionRuntimeLifecycleBackend", FakeLifecycle)
     monkeypatch.setattr(runner, "_run_case", fake_run_case)
 
-    asyncio.run(runner._main(["partial_case"]))
+    asyncio.run(
+        runner._main(
+            ["partial_case"],
+            git_commit="a" * 40,
+            nightly_run_identity="12345-2",
+        )
+    )
 
     assert runtime.closed is True
     assert not (tmp_path / "reference_suite_result.json").exists()
@@ -744,6 +789,8 @@ def test_partial_runner_writes_run_specific_result_without_overwriting_canonical
     aggregate = _load_json(partial_results[0])
     assert aggregate["status"] == "passed"
     assert aggregate["requested_case_ids"] == ["partial_case"]
+    assert aggregate["tested_commit"] == "a" * 40
+    assert aggregate["nightly_run_identity"] == "12345-2"
     assert aggregate["restored"] is True
     assert aggregate["cases"][0]["passed"] is True
     assert aggregate["result_file"] == partial_results[0].name

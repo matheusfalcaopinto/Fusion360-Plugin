@@ -9,6 +9,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -31,12 +32,20 @@ from fusion_mcp_adapter.real_client import RealMcpClient
 from fusion_tool_facade.policy import MOCK_FACADE_NATIVE_MAP
 from memory.gate import MemoryGate
 from memory.retriever import MemoryRetriever
-from memory.schemas import MemoryRecord, MemoryScope, MemorySource, MemoryType, TrustLevel
+from memory.schemas import (
+    MemoryRecord,
+    MemoryScope,
+    MemorySource,
+    MemoryType,
+    TrustLevel,
+)
 from memory.store import MemoryStore
 
 try:  # pragma: no cover - covered when Typer is installed in the target env
     import typer
-except ModuleNotFoundError:  # pragma: no cover - fallback is covered by integration smoke
+except (
+    ModuleNotFoundError
+):  # pragma: no cover - fallback is covered by integration smoke
     typer = None
 
 
@@ -45,7 +54,9 @@ def _mode(mock: bool, real: bool) -> str:
         return "real"
     if mock:
         if _env_bool("FUSION_AGENT_REQUIRE_REAL", False):
-            raise ValueError("Fusion Agent is configured for real-only mode; mode must be 'real'")
+            raise ValueError(
+                "Fusion Agent is configured for real-only mode; mode must be 'real'"
+            )
         return "mock"
     return _default_mode("mock")
 
@@ -55,14 +66,18 @@ async def _inspect(mode: str) -> dict[str, Any]:
         return await controller.inspect(mode=mode, options=SessionOptions(mode=mode))
 
 
-async def _run(prompt: str, mode: str, project: str, max_repairs: int, dry_run: bool) -> dict[str, Any]:
+async def _run(
+    prompt: str, mode: str, project: str, max_repairs: int, dry_run: bool
+) -> dict[str, Any]:
     _ensure_dry_run_allowed(dry_run)
     async with SessionController() as controller:
         result = await controller.run(
             prompt,
             project=project,
             mode=mode,
-            options=SessionOptions(mode=mode, project=project, max_repairs=max_repairs, dry_run=dry_run),
+            options=SessionOptions(
+                mode=mode, project=project, max_repairs=max_repairs, dry_run=dry_run
+            ),
         )
     return result.model_dump(mode="json")
 
@@ -92,7 +107,9 @@ async def _capture(
         result = await controller.capture_viewport(
             project=project,
             mode=mode,
-            options=SessionOptions(mode=mode, project=project, output_dir=Path(output_dir)),
+            options=SessionOptions(
+                mode=mode, project=project, output_dir=Path(output_dir)
+            ),
             output_dir=Path(output_dir),
             name=name,
             view=view,
@@ -126,14 +143,20 @@ async def _benchmark_public(
     confirm_real_benchmark: bool,
     disposable_fixture_confirmed: bool,
     include_faults: bool,
+    *,
+    environment_snapshot: Mapping[str, str] | None = None,
+    runtime_configuration: Any | None = None,
 ) -> dict[str, Any]:
     # Only our own code-owned driver is installed by the CLI. Competitor
     # adapters remain policy wrappers with no executable driver and therefore
     # report ``not_run`` until a trusted embedding injects one explicitly.
     own_adapter_id = "fusion_agent_codex"
+    startup_environment = dict(environment_snapshot or {})
     own_driver = FusionAgentCodexPublicDriver(
         output_dir=Path(output_dir),
         manifest_dir="manifests",
+        runtime_configuration=runtime_configuration,
+        environment_snapshot=startup_environment,
     )
     runner = PublicBenchmarkRunner(
         build_public_adapter_registry(
@@ -153,7 +176,8 @@ async def _benchmark_public(
                     normal_profile_equivalent_confirmed=True,
                 )
             },
-        )
+        ),
+        environment_snapshot=startup_environment,
     )
     report = await runner.run(
         manifest,
@@ -177,24 +201,72 @@ def _default_public_manifest() -> str:
     return str(asset_root("benchmarks") / "public_competitors_v1.json")
 
 
+def _startup_environment_snapshot() -> dict[str, str]:
+    """Capture CLI process metadata before starting an event loop."""
+
+    return dict(os.environ)
+
+
+def _startup_runtime_configuration() -> Any:
+    """Create the immutable Fusion runtime configuration at CLI startup."""
+
+    from fusion_agent_mcp.runtime import RuntimeConfiguration
+
+    return RuntimeConfiguration.from_environment()
+
+
 async def _tools_discover(mode: str) -> dict[str, Any]:
     async with SessionController() as controller:
-        manifest = await controller.discover_tools(mode=mode, options=SessionOptions(mode=mode))
+        manifest = await controller.discover_tools(
+            mode=mode, options=SessionOptions(mode=mode)
+        )
     return manifest.model_dump(mode="json")
 
 
-async def _tools_probe(endpoint: str | None = None) -> dict[str, Any]:
+async def _tools_probe(
+    endpoint: str | None = None,
+    *,
+    remote_policy: str | None = None,
+    remote_allowlist: str | None = None,
+    bearer_token: str | None = None,
+    transport_mode: str | None = None,
+    command: str | None = None,
+    use_environment: bool = True,
+) -> dict[str, Any]:
     endpoints = [endpoint] if endpoint else _candidate_endpoints()
     probes = []
     for candidate in endpoints:
         if not candidate:
             continue
-        decision = validate_endpoint(candidate)
+        policy_token = bearer_token if use_environment else (bearer_token or "")
+        decision = validate_endpoint(
+            candidate,
+            policy=remote_policy,
+            allowlist=remote_allowlist,
+            bearer_token=policy_token,
+        )
         revalidate_resolution(decision)
         health_uri = candidate.removesuffix("/mcp") + "/health"
-        health = _http_get_probe(health_uri, decision=decision)
+        health = _http_get_probe(
+            health_uri,
+            decision=decision,
+            bearer_token=bearer_token,
+            use_environment=use_environment,
+        )
         list_tools: dict[str, Any]
-        client = RealMcpClient(endpoint=candidate, timeout_seconds=3)
+        client = RealMcpClient(
+            endpoint=candidate,
+            command=command,
+            timeout_seconds=3,
+            transport_mode=transport_mode or "legacy",
+            connect_timeout_seconds=3,
+            read_timeout_seconds=3,
+            mutation_timeout_seconds=3,
+            sse_read_timeout_seconds=3,
+            remote_policy=remote_policy,
+            remote_allowlist=remote_allowlist,
+            bearer_token=bearer_token,
+        )
         try:
             manifest = await client.list_tools()
             list_tools = {
@@ -206,7 +278,14 @@ async def _tools_probe(endpoint: str | None = None) -> dict[str, Any]:
             list_tools = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         finally:
             await client.close(timeout_seconds=2.0)
-        probes.append({"endpoint": candidate, "health_uri": health_uri, "health": health, "tools_list": list_tools})
+        probes.append(
+            {
+                "endpoint": candidate,
+                "health_uri": health_uri,
+                "health": health,
+                "tools_list": list_tools,
+            }
+        )
     return {"probes": probes}
 
 
@@ -242,7 +321,9 @@ def _tools_propose_mapping() -> dict[str, Any]:
                 {
                     "facade_operation": facade_operation,
                     "candidate_native_tool": native_tool,
-                    "available": native_tool in names or native_tool in {"local_noop", "inspection_cache", "local_validation"},
+                    "available": native_tool in names
+                    or native_tool
+                    in {"local_noop", "inspection_cache", "local_validation"},
                     "status": "allowlisted_via_vendor_facade",
                 }
                 for facade_operation, native_tool in crud_mapping.items()
@@ -286,11 +367,20 @@ def _memory_write(
     store = MemoryStore()
     memory_source = MemorySource(source)
     if memory_source == MemorySource.LEGACY:
-        raise ValueError("legacy is assigned only while reading records without v2 metadata")
+        raise ValueError(
+            "legacy is assigned only while reading records without v2 metadata"
+        )
     relative = Path(path)
     if relative.is_absolute() or relative.suffix.lower() != ".md":
         raise ValueError("memory path must be a relative .md path")
-    title = next((line.lstrip("# ").strip() for line in content.splitlines() if line.startswith("#")), relative.stem)
+    title = next(
+        (
+            line.lstrip("# ").strip()
+            for line in content.splitlines()
+            if line.startswith("#")
+        ),
+        relative.stem,
+    )
     record = MemoryRecord(
         id=f"project:{project}:{relative.as_posix()}",
         scope=MemoryScope.PROJECT,
@@ -299,7 +389,9 @@ def _memory_write(
         content=content,
         content_path=store.project_root(project) / relative,
         project=project,
-        tags=[part.lower() for part in relative.stem.replace("-", "_").split("_") if part],
+        tags=[
+            part.lower() for part in relative.stem.replace("-", "_").split("_") if part
+        ],
         source=memory_source,
         provenance=["cli:memory_write"],
         trust_level=TrustLevel.UNTRUSTED,
@@ -315,7 +407,8 @@ def _memory_write(
     }
 
 
-def _doctor() -> dict[str, Any]:
+def _doctor(environment: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    snapshot = dict(environment) if environment is not None else None
     manifest_store = ManifestStore()
     return {
         "project_root": str(Path.cwd()),
@@ -323,16 +416,60 @@ def _doctor() -> dict[str, Any]:
         "outputs": str(Path("outputs").resolve()),
         "manifests": str(Path("manifests").resolve()),
         "python_executable": sys.executable,
-        "launcher_path": os.getenv("FUSION_AGENT_LAUNCHER") or str((Path.cwd() / "scripts" / "fusion_agent_codex_mcp_launcher.py").resolve()),
-        "source_plugin_root": os.getenv("FUSION_AGENT_HARNESS_ROOT") or str(Path.cwd().resolve()),
+        "launcher_path": (
+            snapshot.get("launcher_path", "")
+            if snapshot is not None
+            else os.getenv("FUSION_AGENT_LAUNCHER")
+        )
+        or str(
+            (Path.cwd() / "scripts" / "fusion_agent_codex_mcp_launcher.py").resolve()
+        ),
+        "source_plugin_root": (
+            snapshot.get("source_plugin_root", "")
+            if snapshot is not None
+            else os.getenv("FUSION_AGENT_HARNESS_ROOT")
+        )
+        or str(Path.cwd().resolve()),
         "cache_plugin_version": _plugin_version(),
-        "fusion_mcp_endpoint": os.getenv("FUSION_MCP_ENDPOINT") or "",
-        "fusion_mcp_endpoint_configured": bool(os.getenv("FUSION_MCP_ENDPOINT")),
-        "fusion_mcp_command_configured": bool(os.getenv("FUSION_MCP_COMMAND")),
-        "fusion_agent_default_mode": _default_mode("mock"),
-        "fusion_agent_require_real": _env_bool("FUSION_AGENT_REQUIRE_REAL", False),
-        "fusion_agent_allow_dry_run": _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True),
-        "dry_run_policy": "disabled" if not _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True) else "allowed",
+        "fusion_mcp_endpoint": (
+            snapshot.get("fusion_mcp_endpoint", "")
+            if snapshot is not None
+            else os.getenv("FUSION_MCP_ENDPOINT") or ""
+        ),
+        "fusion_mcp_endpoint_configured": bool(
+            snapshot.get("fusion_mcp_endpoint", "")
+            if snapshot is not None
+            else os.getenv("FUSION_MCP_ENDPOINT")
+        ),
+        "fusion_mcp_command_configured": bool(
+            snapshot.get("fusion_mcp_command", "")
+            if snapshot is not None
+            else os.getenv("FUSION_MCP_COMMAND")
+        ),
+        "fusion_agent_default_mode": (
+            str(snapshot.get("default_mode") or "mock")
+            if snapshot is not None
+            else _default_mode("mock")
+        ),
+        "fusion_agent_require_real": (
+            bool(snapshot.get("require_real", False))
+            if snapshot is not None
+            else _env_bool("FUSION_AGENT_REQUIRE_REAL", False)
+        ),
+        "fusion_agent_allow_dry_run": (
+            bool(snapshot.get("allow_dry_run", True))
+            if snapshot is not None
+            else _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True)
+        ),
+        "dry_run_policy": (
+            "allowed"
+            if (
+                bool(snapshot.get("allow_dry_run", True))
+                if snapshot is not None
+                else _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True)
+            )
+            else "disabled"
+        ),
         "manifest_status": manifest_store.latest_status(),
     }
 
@@ -351,7 +488,9 @@ def _default_mode(default: str = "mock") -> str:
 
 def _ensure_dry_run_allowed(dry_run: bool) -> None:
     if dry_run and not _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True):
-        raise ValueError("Fusion Agent dry-run is disabled by FUSION_AGENT_ALLOW_DRY_RUN=0")
+        raise ValueError(
+            "Fusion Agent dry-run is disabled by FUSION_AGENT_ALLOW_DRY_RUN=0"
+        )
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -384,16 +523,29 @@ def _plugin_version() -> str:
     manifest_path = Path(".codex-plugin") / "plugin.json"
     if manifest_path.exists():
         try:
-            return str(json.loads(manifest_path.read_text(encoding="utf-8")).get("version") or "")
+            return str(
+                json.loads(manifest_path.read_text(encoding="utf-8")).get("version")
+                or ""
+            )
         except Exception:
             return ""
     return ""
 
 
-def _http_get_probe(uri: str, *, decision: EndpointDecision) -> dict[str, Any]:
+def _http_get_probe(
+    uri: str,
+    *,
+    decision: EndpointDecision,
+    bearer_token: str | None = None,
+    use_environment: bool = True,
+) -> dict[str, Any]:
     headers: dict[str, str] = {}
     if decision.requires_bearer_token:
-        token = os.getenv("FUSION_MCP_BEARER_TOKEN", "").strip()
+        token = (
+            os.getenv("FUSION_MCP_BEARER_TOKEN", "").strip()
+            if use_environment
+            else (bearer_token or "").strip()
+        )
         if not token:
             return {"ok": False, "error": "remote bearer token is unavailable"}
         headers["Authorization"] = f"Bearer {token}"
@@ -444,10 +596,14 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Run one modeling session."""
 
-        _print_json(asyncio.run(_run(prompt, _mode(mock, real), project, max_repairs, dry_run)))
+        _print_json(
+            asyncio.run(_run(prompt, _mode(mock, real), project, max_repairs, dry_run))
+        )
 
     @app.command("verify")
-    def verify_command(prompt: str, mock: bool = False, real: bool = False, project: str = "default") -> None:
+    def verify_command(
+        prompt: str, mock: bool = False, real: bool = False, project: str = "default"
+    ) -> None:
         """Verify the active design against a planned CadSpec without executing geometry."""
 
         _print_json(asyncio.run(_verify(prompt, _mode(mock, real), project)))
@@ -466,10 +622,25 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Capture the active Fusion viewport through the safe facade."""
 
-        _print_json(asyncio.run(_capture(_mode(mock, real), project, output_dir, name, view, isolate_prefix, width, height)))
+        _print_json(
+            asyncio.run(
+                _capture(
+                    _mode(mock, real),
+                    project,
+                    output_dir,
+                    name,
+                    view,
+                    isolate_prefix,
+                    width,
+                    height,
+                )
+            )
+        )
 
     @benchmark_app.command("run")
-    def benchmark_run_command(suite: str, mock: bool = False, real: bool = False, dry_run: bool = False) -> None:
+    def benchmark_run_command(
+        suite: str, mock: bool = False, real: bool = False, dry_run: bool = False
+    ) -> None:
         """Run a benchmark suite."""
 
         _print_json(asyncio.run(_benchmark_run(suite, _mode(mock, real), dry_run)))
@@ -485,6 +656,8 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Write an honest public comparison report; unavailable adapters remain not_run."""
 
+        environment_snapshot = _startup_environment_snapshot()
+        runtime_configuration = _startup_runtime_configuration()
         _print_json(
             asyncio.run(
                 _benchmark_public(
@@ -494,6 +667,8 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
                     confirm_real_benchmark,
                     disposable_fixture_confirmed,
                     include_faults,
+                    environment_snapshot=environment_snapshot,
+                    runtime_configuration=runtime_configuration,
                 )
             )
         )
@@ -545,7 +720,9 @@ else:
     def app() -> None:
         """Argparse fallback used when Typer is not installed."""
 
-        parser = argparse.ArgumentParser(prog="fusion-agent", description="Fusion CAD automation harness")
+        parser = argparse.ArgumentParser(
+            prog="fusion-agent", description="Fusion CAD automation harness"
+        )
         subparsers = parser.add_subparsers(dest="command")
 
         inspect_parser = subparsers.add_parser("inspect")
@@ -586,10 +763,14 @@ else:
         benchmark_run.add_argument("--dry-run", action="store_true")
         benchmark_public = benchmark_sub.add_parser("public")
         benchmark_public.add_argument("--manifest", default=_default_public_manifest())
-        benchmark_public.add_argument("--output-dir", default="outputs/public_benchmark")
+        benchmark_public.add_argument(
+            "--output-dir", default="outputs/public_benchmark"
+        )
         benchmark_public.add_argument("--mock", action="store_true")
         benchmark_public.add_argument("--confirm-real-benchmark", action="store_true")
-        benchmark_public.add_argument("--disposable-fixture-confirmed", action="store_true")
+        benchmark_public.add_argument(
+            "--disposable-fixture-confirmed", action="store_true"
+        )
         benchmark_public.add_argument("--no-faults", action="store_true")
 
         tools_parser = subparsers.add_parser("tools")
@@ -610,7 +791,13 @@ else:
         memory_write.add_argument("project")
         memory_write.add_argument("path")
         memory_write.add_argument("content")
-        memory_write.add_argument("--source", default="user", choices=[item.value for item in MemorySource if item != MemorySource.LEGACY])
+        memory_write.add_argument(
+            "--source",
+            default="user",
+            choices=[
+                item.value for item in MemorySource if item != MemorySource.LEGACY
+            ],
+        )
         memory_write.add_argument("--citation", action="append", default=[])
 
         subparsers.add_parser("doctor")
@@ -619,9 +806,23 @@ else:
         if args.command == "inspect":
             _print_json(asyncio.run(_inspect(_mode(args.mock, args.real))))
         elif args.command == "run":
-            _print_json(asyncio.run(_run(args.prompt, _mode(args.mock, args.real), args.project, args.max_repairs, args.dry_run)))
+            _print_json(
+                asyncio.run(
+                    _run(
+                        args.prompt,
+                        _mode(args.mock, args.real),
+                        args.project,
+                        args.max_repairs,
+                        args.dry_run,
+                    )
+                )
+            )
         elif args.command == "verify":
-            _print_json(asyncio.run(_verify(args.prompt, _mode(args.mock, args.real), args.project)))
+            _print_json(
+                asyncio.run(
+                    _verify(args.prompt, _mode(args.mock, args.real), args.project)
+                )
+            )
         elif args.command == "capture":
             _print_json(
                 asyncio.run(
@@ -638,8 +839,16 @@ else:
                 )
             )
         elif args.command == "benchmark" and args.benchmark_command == "run":
-            _print_json(asyncio.run(_benchmark_run(args.suite, _mode(args.mock, args.real), args.dry_run)))
+            _print_json(
+                asyncio.run(
+                    _benchmark_run(
+                        args.suite, _mode(args.mock, args.real), args.dry_run
+                    )
+                )
+            )
         elif args.command == "benchmark" and args.benchmark_command == "public":
+            environment_snapshot = _startup_environment_snapshot()
+            runtime_configuration = _startup_runtime_configuration()
             _print_json(
                 asyncio.run(
                     _benchmark_public(
@@ -649,6 +858,8 @@ else:
                         args.confirm_real_benchmark,
                         args.disposable_fixture_confirmed,
                         not args.no_faults,
+                        environment_snapshot=environment_snapshot,
+                        runtime_configuration=runtime_configuration,
                     )
                 )
             )
@@ -661,7 +872,11 @@ else:
         elif args.command == "memory" and args.memory_command == "search":
             _print_json(_memory_search(args.query, args.project))
         elif args.command == "memory" and args.memory_command == "write":
-            _print_json(_memory_write(args.project, args.path, args.content, args.source, args.citation))
+            _print_json(
+                _memory_write(
+                    args.project, args.path, args.content, args.source, args.citation
+                )
+            )
         elif args.command == "doctor":
             _print_json(_doctor())
         else:

@@ -9,7 +9,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_core.guardrails import raise_if_unsupported_for_planner, validate_planned_spec
+from agent_core.guardrails import (
+    raise_if_unsupported_for_planner,
+    validate_planned_spec,
+)
 from cad_spec.models import (
     AcceptanceTestSpec,
     CadSpec,
@@ -42,13 +45,28 @@ class RuleBasedPlanner:
 
         prompt = request.user_prompt.lower()
         raise_if_unsupported_for_planner(request.user_prompt)
-        if any(phrase in prompt for phrase in ("spacer assembly", "two plates with spacers", "standoff assembly")):
+        if any(
+            phrase in prompt
+            for phrase in (
+                "spacer assembly",
+                "two plates with spacers",
+                "standoff assembly",
+            )
+        ):
             return _checked(request.user_prompt, _spacer_plate_assembly_spec(prompt))
-        if "hinge" in prompt or "revolute" in prompt or "simple hinge assembly" in prompt:
+        if (
+            "hinge" in prompt
+            or "revolute" in prompt
+            or "simple hinge assembly" in prompt
+        ):
             return _checked(request.user_prompt, _hinge_assembly_spec(prompt))
-        if "cnc" in prompt and any(word in prompt for word in ("build", "assembly", "machine", "router")):
+        if "cnc" in prompt and any(
+            word in prompt for word in ("build", "assembly", "machine", "router")
+        ):
             return _checked(request.user_prompt, _desktop_cnc_assembly_spec(prompt))
-        if ("nema17" in prompt or "nema 17" in prompt or "stepper motor" in prompt) and any(
+        if (
+            "nema17" in prompt or "nema 17" in prompt or "stepper motor" in prompt
+        ) and any(
             phrase in prompt
             for phrase in (
                 "assembly",
@@ -62,18 +80,46 @@ class RuleBasedPlanner:
             )
         ):
             return _checked(request.user_prompt, _nema17_external_assembly_spec(prompt))
-        if ("nema17" in prompt or "nema 17" in prompt or "stepper motor" in prompt) and any(
-            word in prompt for word in ("polish", "detail", "detailed", "second round", "in depth", "visual")
+        if (
+            "nema17" in prompt or "nema 17" in prompt or "stepper motor" in prompt
+        ) and any(
+            word in prompt
+            for word in (
+                "polish",
+                "detail",
+                "detailed",
+                "second round",
+                "in depth",
+                "visual",
+            )
         ):
             return _checked(request.user_prompt, _nema17_polish_spec(prompt))
         if "nema17" in prompt or "nema 17" in prompt or "stepper motor" in prompt:
             return _checked(request.user_prompt, _nema17_stepper_spec(prompt))
-        if "mgn12" in prompt or "mgn 12" in prompt or ("linear rail" in prompt and "carriage" in prompt):
+        if (
+            "mgn12" in prompt
+            or "mgn 12" in prompt
+            or ("linear rail" in prompt and "carriage" in prompt)
+        ):
             return _checked(request.user_prompt, _mgn12_linear_rail_spec(prompt))
         if (
-            "2020" in prompt
-            and any(word in prompt for word in ("profile", "extrusion", "aluminum", "aluminium", "t-slot", "tslot"))
-        ) or "20x20 aluminum profile" in prompt or "20x20 aluminium profile" in prompt:
+            (
+                "2020" in prompt
+                and any(
+                    word in prompt
+                    for word in (
+                        "profile",
+                        "extrusion",
+                        "aluminum",
+                        "aluminium",
+                        "t-slot",
+                        "tslot",
+                    )
+                )
+            )
+            or "20x20 aluminum profile" in prompt
+            or "20x20 aluminium profile" in prompt
+        ):
             return _checked(request.user_prompt, _profile2020_aluminum_spec(prompt))
         if "spacer" in prompt or "cylindrical" in prompt:
             return _checked(request.user_prompt, _spacer_spec(prompt))
@@ -87,7 +133,9 @@ class RuleBasedPlanner:
             return _checked(request.user_prompt, _cube_spec(prompt))
         if "parameter" in prompt or "change" in prompt or "alter" in prompt:
             return _checked(request.user_prompt, _parameter_edit_spec(prompt))
-        raise ValueError(f"RuleBasedPlanner cannot plan this request yet: {request.user_prompt}")
+        raise ValueError(
+            f"RuleBasedPlanner cannot plan this request yet: {request.user_prompt}"
+        )
 
 
 class PromptPlanner(RuleBasedPlanner):
@@ -102,7 +150,11 @@ class PromptPlanner(RuleBasedPlanner):
             DeprecationWarning,
             stacklevel=2,
         )
-        self.prompt_path = Path(prompt_path) if prompt_path is not None else _default_prompt_path("planner_prompt.md")
+        self.prompt_path = (
+            Path(prompt_path)
+            if prompt_path is not None
+            else _default_prompt_path("planner_prompt.md")
+        )
 
     def load_prompt(self) -> str:
         """Return the planner prompt text."""
@@ -146,9 +198,17 @@ def _spacer_plate_assembly_spec(prompt: str) -> CadSpec:
         "spacer_bottom_plate_body",
         "spacer_standoff_body",
     ]
-    occurrence_names = [f"spacer_standoff_{index:02d}_occurrence" for index in range(1, 5)]
+    occurrence_names = [
+        f"spacer_standoff_{index:02d}_occurrence" for index in range(1, 5)
+    ]
     joints = [
-        JointSpec(name="spacer_plate_stack_rigid_joint", type="rigid", parent="spacer_bottom_plate_component", child="spacer_top_plate_component", axis="z"),
+        JointSpec(
+            name="spacer_plate_stack_rigid_joint",
+            type="rigid",
+            parent="spacer_bottom_plate_component",
+            child="spacer_top_plate_component",
+            axis="z",
+        ),
         *[
             JointSpec(
                 name=f"spacer_standoff_{index:02d}_rigid_joint",
@@ -261,10 +321,27 @@ def _spacer_plate_assembly_spec(prompt: str) -> CadSpec:
         acceptance_tests=[
             AcceptanceTestSpec(type="component_exists", target="spacer_plate_assembly"),
             AcceptanceTestSpec(type="named_bodies", target=body_names),
-            AcceptanceTestSpec(type="target_bounding_box", target="spacer_top_plate_body", target_mm=[100.0, 60.0, 6.0], tolerance_mm=0.1),
-            AcceptanceTestSpec(type="target_bounding_box", target="spacer_standoff_body", target_mm=[8.0, 8.0, 25.0], tolerance_mm=0.1),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="spacer_top_plate_body",
+                target_mm=[100.0, 60.0, 6.0],
+                tolerance_mm=0.1,
+            ),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="spacer_standoff_body",
+                target_mm=[8.0, 8.0, 25.0],
+                tolerance_mm=0.1,
+            ),
             AcceptanceTestSpec(type="component_metadata"),
-            AcceptanceTestSpec(type="occurrence_contract", target={"occurrence_names": occurrence_names, "component": "spacer_standoff_component", "count": 4}),
+            AcceptanceTestSpec(
+                type="occurrence_contract",
+                target={
+                    "occurrence_names": occurrence_names,
+                    "component": "spacer_standoff_component",
+                    "count": 4,
+                },
+            ),
             AcceptanceTestSpec(type="joint_contract"),
             AcceptanceTestSpec(type="interference_free"),
             AcceptanceTestSpec(type="physical_properties"),
@@ -290,8 +367,20 @@ def _hinge_assembly_spec(prompt: str) -> CadSpec:
         "hinge_right_knuckle_body",
     ]
     joints = [
-        JointSpec(name="hinge_revolute_joint", type="revolute", parent="hinge_left_leaf_component", child="hinge_right_leaf_component", axis="x"),
-        JointSpec(name="hinge_pin_rigid_joint", type="rigid", parent="hinge_left_leaf_component", child="hinge_pin_component", axis="x"),
+        JointSpec(
+            name="hinge_revolute_joint",
+            type="revolute",
+            parent="hinge_left_leaf_component",
+            child="hinge_right_leaf_component",
+            axis="x",
+        ),
+        JointSpec(
+            name="hinge_pin_rigid_joint",
+            type="rigid",
+            parent="hinge_left_leaf_component",
+            child="hinge_pin_component",
+            axis="x",
+        ),
     ]
     outputs = [
         OutputSpec(
@@ -391,12 +480,34 @@ def _hinge_assembly_spec(prompt: str) -> CadSpec:
         acceptance_tests=[
             AcceptanceTestSpec(type="component_exists", target="hinge_assembly"),
             AcceptanceTestSpec(type="named_bodies", target=body_names),
-            AcceptanceTestSpec(type="target_bounding_box", target="hinge_left_leaf_body", target_mm=[60.0, 30.0, 3.0], tolerance_mm=0.1),
-            AcceptanceTestSpec(type="target_bounding_box", target="hinge_pin_body", target_mm=[64.0, 4.0, 4.0], tolerance_mm=0.1),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="hinge_left_leaf_body",
+                target_mm=[60.0, 30.0, 3.0],
+                tolerance_mm=0.1,
+            ),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="hinge_pin_body",
+                target_mm=[64.0, 4.0, 4.0],
+                tolerance_mm=0.1,
+            ),
             AcceptanceTestSpec(type="component_metadata"),
-            AcceptanceTestSpec(type="occurrence_contract", target={"component_names": component_names, "count": 3}),
+            AcceptanceTestSpec(
+                type="occurrence_contract",
+                target={"component_names": component_names, "count": 3},
+            ),
             AcceptanceTestSpec(type="joint_contract"),
-            AcceptanceTestSpec(type="interference_free", target={"allowed_contact_pairs": [["hinge_pin_body", "hinge_left_knuckle_01_body"], ["hinge_pin_body", "hinge_left_knuckle_02_body"], ["hinge_pin_body", "hinge_right_knuckle_body"]]}),
+            AcceptanceTestSpec(
+                type="interference_free",
+                target={
+                    "allowed_contact_pairs": [
+                        ["hinge_pin_body", "hinge_left_knuckle_01_body"],
+                        ["hinge_pin_body", "hinge_left_knuckle_02_body"],
+                        ["hinge_pin_body", "hinge_right_knuckle_body"],
+                    ]
+                },
+            ),
             AcceptanceTestSpec(type="physical_properties"),
             AcceptanceTestSpec(type="screenshots_exist"),
             AcceptanceTestSpec(type="named_objects"),
@@ -410,7 +521,9 @@ def _cube_spec(prompt: str) -> CadSpec:
     return CadSpec(
         intent="create_parametric_part",
         units="mm",
-        assumptions=["Cube is centered at the origin on the XY plane and extruded along Z+."],
+        assumptions=[
+            "Cube is centered at the origin on the XY plane and extruded along Z+."
+        ],
         document_policy=DocumentPolicy(modify_existing=False, create_checkpoint=True),
         parameters=[ParameterSpec(name="cube_size", expression=size)],
         components=[
@@ -439,7 +552,9 @@ def _cube_spec(prompt: str) -> CadSpec:
 
 
 def _plate_spec(prompt: str) -> CadSpec:
-    length, width, thickness = _triple_dimensions(prompt, defaults=("100 mm", "60 mm", "6 mm"))
+    length, width, thickness = _triple_dimensions(
+        prompt, defaults=("100 mm", "60 mm", "6 mm")
+    )
     hole_diameter = _length_after(prompt, "hole", default="5 mm")
     hole_offset = _length_after(prompt, "edge", default="12 mm")
     has_holes = "hole" in prompt
@@ -464,7 +579,9 @@ def _plate_spec(prompt: str) -> CadSpec:
         ParameterSpec(name="plate_width", expression=width),
         ParameterSpec(name="plate_thickness", expression=thickness),
     ]
-    acceptance = _base_acceptance([length, width, thickness], ["plate_length", "plate_width", "plate_thickness"])
+    acceptance = _base_acceptance(
+        [length, width, thickness], ["plate_length", "plate_width", "plate_thickness"]
+    )
     if has_holes:
         parameters.extend(
             [
@@ -547,7 +664,10 @@ def _spacer_spec(prompt: str) -> CadSpec:
                 ],
             )
         ],
-        acceptance_tests=_base_acceptance([outer, outer, height], ["outer_diameter", "inner_diameter", "spacer_height"])
+        acceptance_tests=_base_acceptance(
+            [outer, outer, height],
+            ["outer_diameter", "inner_diameter", "spacer_height"],
+        )
         + [AcceptanceTestSpec(type="hole_count", target=1)],
     )
 
@@ -576,7 +696,10 @@ def _nema17_base_spec(body_length: str) -> CadSpec:
             ParameterSpec(name="nema17_shaft_length", expression="24 mm"),
             ParameterSpec(name="nema17_mount_hole_spacing", expression="31 mm"),
             ParameterSpec(name="nema17_mount_hole_diameter", expression="3 mm"),
-            ParameterSpec(name="nema17_overall_depth", expression=f"{_to_float_mm(body_length) + 24.0:g} mm"),
+            ParameterSpec(
+                name="nema17_overall_depth",
+                expression=f"{_to_float_mm(body_length) + 24.0:g} mm",
+            ),
         ],
         components=[
             ComponentSpec(
@@ -819,13 +942,38 @@ def _nema17_external_assembly_spec(prompt: str) -> CadSpec:
             )
         ],
         acceptance_tests=[
-            AcceptanceTestSpec(type="component_exists", target="nema17_external_assembly"),
-            *[AcceptanceTestSpec(type="component_exists", target=name) for name in component_names],
+            AcceptanceTestSpec(
+                type="component_exists", target="nema17_external_assembly"
+            ),
+            *[
+                AcceptanceTestSpec(type="component_exists", target=name)
+                for name in component_names
+            ],
             AcceptanceTestSpec(type="named_bodies", target=body_names),
-            AcceptanceTestSpec(type="target_bounding_box", target="nema17_front_endplate_body", target_mm=[42.3, 42.3, 3.0], tolerance_mm=0.1),
-            AcceptanceTestSpec(type="target_bounding_box", target="nema17_rear_endplate_body", target_mm=[42.3, 42.3, 3.0], tolerance_mm=0.1),
-            AcceptanceTestSpec(type="target_bounding_box", target="nema17_front_pilot_boss_body", target_mm=[22.0, 22.0, 2.0], tolerance_mm=0.1),
-            AcceptanceTestSpec(type="target_bounding_box", target="nema17_shaft_body", target_mm=[5.0, 5.0, 24.0], tolerance_mm=0.1),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="nema17_front_endplate_body",
+                target_mm=[42.3, 42.3, 3.0],
+                tolerance_mm=0.1,
+            ),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="nema17_rear_endplate_body",
+                target_mm=[42.3, 42.3, 3.0],
+                tolerance_mm=0.1,
+            ),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="nema17_front_pilot_boss_body",
+                target_mm=[22.0, 22.0, 2.0],
+                tolerance_mm=0.1,
+            ),
+            AcceptanceTestSpec(
+                type="target_bounding_box",
+                target="nema17_shaft_body",
+                target_mm=[5.0, 5.0, 24.0],
+                tolerance_mm=0.1,
+            ),
             AcceptanceTestSpec(type="named_parameters", target=parameter_names),
             AcceptanceTestSpec(
                 type="nema17_dimensions",
@@ -945,8 +1093,12 @@ def _profile2020_aluminum_spec(prompt: str) -> CadSpec:
             )
         ],
         acceptance_tests=[
-            AcceptanceTestSpec(type="component_exists", target="profile2020_aluminum_component"),
-            AcceptanceTestSpec(type="named_bodies", target=["profile2020_aluminum_body"]),
+            AcceptanceTestSpec(
+                type="component_exists", target="profile2020_aluminum_component"
+            ),
+            AcceptanceTestSpec(
+                type="named_bodies", target=["profile2020_aluminum_body"]
+            ),
             AcceptanceTestSpec(
                 type="target_bounding_box",
                 target="profile2020_aluminum_body",
@@ -1036,7 +1188,9 @@ def _mgn12_linear_rail_spec(prompt: str) -> CadSpec:
             ParameterSpec(name="mgn12_carriage_top_height", expression="5 mm"),
             ParameterSpec(name="mgn12_carriage_mount_x_spacing", expression="32.4 mm"),
             ParameterSpec(name="mgn12_carriage_mount_y_spacing", expression="20 mm"),
-            ParameterSpec(name="mgn12_carriage_mount_thread_diameter", expression="3 mm"),
+            ParameterSpec(
+                name="mgn12_carriage_mount_thread_diameter", expression="3 mm"
+            ),
         ],
         components=[
             ComponentSpec(
@@ -1072,8 +1226,13 @@ def _mgn12_linear_rail_spec(prompt: str) -> CadSpec:
             )
         ],
         acceptance_tests=[
-            AcceptanceTestSpec(type="component_exists", target="mgn12_linear_rail_assembly"),
-            *[AcceptanceTestSpec(type="component_exists", target=name) for name in component_names],
+            AcceptanceTestSpec(
+                type="component_exists", target="mgn12_linear_rail_assembly"
+            ),
+            *[
+                AcceptanceTestSpec(type="component_exists", target=name)
+                for name in component_names
+            ],
             AcceptanceTestSpec(type="named_bodies", target=body_names),
             AcceptanceTestSpec(
                 type="target_bounding_box",
@@ -1232,7 +1391,10 @@ def _desktop_cnc_assembly_spec(prompt: str) -> CadSpec:
         ],
         acceptance_tests=[
             AcceptanceTestSpec(type="component_exists", target="desktop_cnc_assembly"),
-            *[AcceptanceTestSpec(type="component_exists", target=name) for name in component_names],
+            *[
+                AcceptanceTestSpec(type="component_exists", target=name)
+                for name in component_names
+            ],
             AcceptanceTestSpec(type="named_bodies", target=body_names),
             AcceptanceTestSpec(type="named_parameters", target=parameter_names),
             AcceptanceTestSpec(
@@ -1347,7 +1509,9 @@ def _l_bracket_spec(prompt: str) -> CadSpec:
     return CadSpec(
         intent="create_parametric_part",
         units="mm",
-        assumptions=["L bracket is represented as a single valid solid body in the mock harness."],
+        assumptions=[
+            "L bracket is represented as a single valid solid body in the mock harness."
+        ],
         parameters=[
             ParameterSpec(name="leg_length", expression=leg),
             ParameterSpec(name="bracket_thickness", expression=thickness),
@@ -1389,7 +1553,10 @@ def _l_bracket_spec(prompt: str) -> CadSpec:
         acceptance_tests=[
             AcceptanceTestSpec(type="component_count", target=1),
             AcceptanceTestSpec(type="body_count", target=1),
-            AcceptanceTestSpec(type="named_parameters", target=["leg_length", "bracket_thickness", "hole_diameter"]),
+            AcceptanceTestSpec(
+                type="named_parameters",
+                target=["leg_length", "bracket_thickness", "hole_diameter"],
+            ),
             AcceptanceTestSpec(type="hole_count", target=2),
             AcceptanceTestSpec(type="named_objects", target=True),
             AcceptanceTestSpec(type="feature_health", target=True),
@@ -1398,7 +1565,9 @@ def _l_bracket_spec(prompt: str) -> CadSpec:
 
 
 def _box_spec(prompt: str) -> CadSpec:
-    length, width, height = _triple_dimensions(prompt, defaults=("80 mm", "50 mm", "30 mm"))
+    length, width, height = _triple_dimensions(
+        prompt, defaults=("80 mm", "50 mm", "30 mm")
+    )
     wall = _length_after(prompt, "wall", default="3 mm")
     return CadSpec(
         intent="create_parametric_part",
@@ -1432,7 +1601,8 @@ def _box_spec(prompt: str) -> CadSpec:
             )
         ],
         acceptance_tests=_base_acceptance(
-            [length, width, height], ["box_length", "box_width", "box_height", "wall_thickness"]
+            [length, width, height],
+            ["box_length", "box_width", "box_height", "wall_thickness"],
         ),
     )
 
@@ -1442,7 +1612,9 @@ def _parameter_edit_spec(prompt: str) -> CadSpec:
     return CadSpec(
         intent="edit_named_parameter",
         units="mm",
-        assumptions=["Parameter edit targets plate_thickness unless a richer parser identifies another parameter."],
+        assumptions=[
+            "Parameter edit targets plate_thickness unless a richer parser identifies another parameter."
+        ],
         document_policy=DocumentPolicy(modify_existing=True, create_checkpoint=True),
         parameters=[ParameterSpec(name="plate_thickness", expression=expression)],
         components=[
@@ -1458,15 +1630,23 @@ def _parameter_edit_spec(prompt: str) -> CadSpec:
                 ],
             )
         ],
-        acceptance_tests=[AcceptanceTestSpec(type="named_parameters", target=["plate_thickness"])],
+        acceptance_tests=[
+            AcceptanceTestSpec(type="named_parameters", target=["plate_thickness"])
+        ],
     )
 
 
-def _base_acceptance(bbox_exprs: list[str], parameter_names: list[str]) -> list[AcceptanceTestSpec]:
+def _base_acceptance(
+    bbox_exprs: list[str], parameter_names: list[str]
+) -> list[AcceptanceTestSpec]:
     return [
         AcceptanceTestSpec(type="component_count", target=1),
         AcceptanceTestSpec(type="body_count", target=1),
-        AcceptanceTestSpec(type="bounding_box", target_mm=[_to_float_mm(expr) for expr in bbox_exprs], tolerance_mm=0.05),
+        AcceptanceTestSpec(
+            type="bounding_box",
+            target_mm=[_to_float_mm(expr) for expr in bbox_exprs],
+            tolerance_mm=0.05,
+        ),
         AcceptanceTestSpec(type="named_parameters", target=parameter_names),
         AcceptanceTestSpec(type="named_objects", target=True),
         AcceptanceTestSpec(type="feature_health", target=True),
@@ -1517,17 +1697,26 @@ def _length_after(prompt: str, word: str, default: str) -> str:
 
 
 def _all_lengths(prompt: str) -> list[str]:
-    return [f"{match.group(1)} {match.group(2)}" for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(mm|cm|in)", prompt)]
+    return [
+        f"{match.group(1)} {match.group(2)}"
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(mm|cm|in)", prompt)
+    ]
 
 
-def _triple_dimensions(prompt: str, defaults: tuple[str, str, str]) -> tuple[str, str, str]:
+def _triple_dimensions(
+    prompt: str, defaults: tuple[str, str, str]
+) -> tuple[str, str, str]:
     match = re.search(
         r"(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*(mm|cm|in)",
         prompt,
     )
     if match:
         unit = match.group(4)
-        return (f"{match.group(1)} {unit}", f"{match.group(2)} {unit}", f"{match.group(3)} {unit}")
+        return (
+            f"{match.group(1)} {unit}",
+            f"{match.group(2)} {unit}",
+            f"{match.group(3)} {unit}",
+        )
     lengths = _all_lengths(prompt)
     if len(lengths) >= 3:
         return (lengths[0], lengths[1], lengths[2])

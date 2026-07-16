@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import os
 from typing import Any
 
+from agent_core.request_context import current_request_context
 
 EXECUTE_TOOL_NAME = "fusion_mcp_execute"
 PROTECTED_SCRIPT_LIMIT_ENV = "FUSION_AGENT_MAX_PROTECTED_SCRIPT_BYTES"
@@ -78,14 +78,19 @@ def normalize_execute_script(script: str) -> str:
     try:
         tree = ast.parse(script)
     except SyntaxError as exc:
-        raise ValueError(f"fusion_mcp_execute script syntax error at line {exc.lineno}: {exc.msg}") from exc
+        raise ValueError(
+            f"fusion_mcp_execute script syntax error at line {exc.lineno}: {exc.msg}"
+        ) from exc
     entrypoints = [
         node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "run"
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "run"
     ]
     if len(entrypoints) != 1 or isinstance(entrypoints[0], ast.AsyncFunctionDef):
-        raise ValueError("fusion_mcp_execute script must define exactly one synchronous run function")
+        raise ValueError(
+            "fusion_mcp_execute script must define exactly one synchronous run function"
+        )
     entrypoint = entrypoints[0]
     if _has_stream_preamble(entrypoint):
         return script
@@ -103,7 +108,9 @@ def prepare_execute_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_object, dict):
         raise ValueError("fusion_mcp_execute featureType=script requires object.script")
     protected_object = dict(raw_object)
-    protected_object["script"] = normalize_execute_script(protected_object.get("script"))
+    protected_object["script"] = normalize_execute_script(
+        protected_object.get("script")
+    )
     payload["object"] = protected_object
     return payload
 
@@ -141,23 +148,22 @@ def execute_script_telemetry(original: str, transmitted: str) -> dict[str, Any]:
 
 
 def protected_script_limit_bytes() -> int:
-    """Read a byte limit without allowing invalid configuration to disable it."""
+    """Return the request's runtime-start limit without consulting the environment."""
 
-    raw = os.getenv(PROTECTED_SCRIPT_LIMIT_ENV)
-    if raw is None:
+    context = current_request_context()
+    if context is None:
         return DEFAULT_PROTECTED_SCRIPT_LIMIT_BYTES
-    try:
-        configured = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_PROTECTED_SCRIPT_LIMIT_BYTES
-    return configured if configured >= 0 else DEFAULT_PROTECTED_SCRIPT_LIMIT_BYTES
+    return context.limits.get(
+        "protected_script_bytes", DEFAULT_PROTECTED_SCRIPT_LIMIT_BYTES
+    )
 
 
 def _has_stream_preamble(entrypoint: ast.FunctionDef) -> bool:
     if len(entrypoint.body) < len(_STREAM_PREAMBLE_NODES):
         return False
     return all(
-        ast.dump(actual, include_attributes=False) == ast.dump(expected, include_attributes=False)
+        ast.dump(actual, include_attributes=False)
+        == ast.dump(expected, include_attributes=False)
         for actual, expected in zip(
             entrypoint.body[: len(_STREAM_PREAMBLE_NODES)],
             _STREAM_PREAMBLE_NODES,

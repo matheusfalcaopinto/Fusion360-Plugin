@@ -8,7 +8,8 @@ execucao como sensivel.
 
 | Versao | Suporte |
 | --- | --- |
-| 0.1.x | Suportada |
+| 0.4.x | Suportada |
+| 0.3.x e anteriores | Somente migracao; nao use para host I/O real |
 
 ## Como reportar vulnerabilidades
 
@@ -32,11 +33,16 @@ Sao considerados problemas de seguranca:
 - escrita destrutiva em documento existente sem protecao;
 - bypass de verificacao programatica;
 - vazamento de caminhos, tokens ou dados de projeto em artefatos publicados.
+- import/export fora de roots aprovadas ou sem capability vinculada;
+- evidencia incompleta, assertion desconhecida ou numero nao finito promovido a sucesso;
+- diferenca entre a superficie anunciada e a autorizacao aplicada no uso;
+- wheel, cache ou instalacao divergente do source manifest publicado.
 
 ## Uso seguro
 
 - Comece em mock ou dry-run.
 - Use documentos descartaveis ao testar escrita real.
+- Configure `FUSION_AGENT_AUTHORITY_POLICY_PATH`; sem policy, mantenha host I/O negado.
 - Revise artefatos e traces antes de aceitar reparos automaticos.
 - Nunca coloque tokens, endpoints privados ou arquivos proprietarios em issues
   publicas.

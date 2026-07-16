@@ -11,7 +11,13 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from memory.schemas import MemoryRecord, MemoryScope, MemorySource, MemoryType, TrustLevel
+from memory.schemas import (
+    MemoryRecord,
+    MemoryScope,
+    MemorySource,
+    MemoryType,
+    TrustLevel,
+)
 from memory.taint import inspect_memory_content, validate_memory_content
 
 
@@ -21,9 +27,17 @@ _PROJECT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 class MemoryStore:
     """Read and write Markdown memory files under workspace/."""
 
-    def __init__(self, workspace_root: Path | str = "workspace", template_root: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        workspace_root: Path | str = "workspace",
+        template_root: Path | str | None = None,
+    ) -> None:
         self.workspace_root = Path(workspace_root)
-        self.template_root = Path(template_root) if template_root is not None else _default_template_root()
+        self.template_root = (
+            Path(template_root)
+            if template_root is not None
+            else _default_template_root()
+        )
         self.global_root = self.workspace_root / "global"
         self.projects_root = self.workspace_root / "projects"
 
@@ -89,14 +103,18 @@ class MemoryStore:
             record.source_retrieved_at = record.source_retrieved_at or record.created_at
             record.source_content_sha256 = _sha256(record.content)
         record.content_sha256 = _sha256(record.content)
-        record.taint_flags = sorted(set(record.taint_flags) | set(inspect_memory_content(record.content)))
+        record.taint_flags = sorted(
+            set(record.taint_flags) | set(inspect_memory_content(record.content))
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, record.content)
         record.content_path = path
         _atomic_write(_metadata_path(path), _metadata_json(record))
         return path
 
-    def write_project_markdown(self, project: str, relative_path: str, content: str) -> Path:
+    def write_project_markdown(
+        self, project: str, relative_path: str, content: str
+    ) -> Path:
         """Write a Markdown file under a project memory directory."""
 
         validate_memory_content(content)
@@ -121,9 +139,18 @@ class MemoryStore:
         return resolved
 
 
-def _record_from_file(path: Path, scope: MemoryScope, project: str | None) -> MemoryRecord:
+def _record_from_file(
+    path: Path, scope: MemoryScope, project: str | None
+) -> MemoryRecord:
     content = path.read_text(encoding="utf-8")
-    title = next((line.lstrip("# ").strip() for line in content.splitlines() if line.startswith("#")), path.stem)
+    title = next(
+        (
+            line.lstrip("# ").strip()
+            for line in content.splitlines()
+            if line.startswith("#")
+        ),
+        path.stem,
+    )
     lowered = path.stem.lower()
     if "failure" in lowered:
         record_type = MemoryType.FAILURE_PATTERN
@@ -199,13 +226,21 @@ def _valid_https_url(value: str) -> bool:
 def _metadata_json(record: MemoryRecord) -> str:
     payload = record.model_dump(
         mode="json",
-        exclude={"content", "content_path", "relevance_score", "safety_status", "contradiction_status"},
+        exclude={
+            "content",
+            "content_path",
+            "relevance_score",
+            "safety_status",
+            "contradiction_status",
+        },
     )
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".memory-", suffix=".tmp")
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=".memory-", suffix=".tmp"
+    )
     temp = Path(temp_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:

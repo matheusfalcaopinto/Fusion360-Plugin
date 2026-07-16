@@ -68,7 +68,9 @@ def _redacted_descriptor(value: Any) -> dict[str, Any]:
         serialized = value
     else:
         try:
-            serialized = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+            serialized = json.dumps(
+                value, sort_keys=True, default=str, ensure_ascii=False
+            ).encode("utf-8")
         except (TypeError, ValueError):
             serialized = str(value).encode("utf-8")
     return {
@@ -89,7 +91,9 @@ class JsonlTraceLogger:
     def log(self, event: dict[str, Any]) -> None:
         """Append one sanitized event to the trace."""
 
-        payload = redact_sensitive({"timestamp": datetime.now(timezone.utc).isoformat(), **event})
+        payload = redact_sensitive(
+            {"timestamp": datetime.now(timezone.utc).isoformat(), **event}
+        )
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n")
 
@@ -126,7 +130,9 @@ class JsonlTraceLogger:
     ) -> None:
         """Record one tool call and transport diagnostics without raw payloads."""
 
-        serialized = json.dumps(arguments, sort_keys=True, default=str, ensure_ascii=False)
+        serialized = json.dumps(
+            arguments, sort_keys=True, default=str, ensure_ascii=False
+        )
         event: dict[str, Any] = {
             "session_id": session_id,
             "event": "tool_call",
@@ -161,7 +167,9 @@ class JsonlTraceLogger:
             "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
             "mutation_outcome": mutation_outcome,
         }
-        event.update({key: value for key, value in optional.items() if value is not None})
+        event.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
         self.log(event)
 
     def log_transport_event(self, event: str, **fields: Any) -> None:

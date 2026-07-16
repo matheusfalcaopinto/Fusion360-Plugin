@@ -135,7 +135,9 @@ def test_replay_policy_is_backward_compatible_and_effect_is_independent() -> Non
     assert positional.trusted_internal_read is True
     assert positional.replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
     assert McpCallOptions.for_read().replay_policy == ReplayPolicy.TRANSPORT_RETRY
-    assert McpCallOptions.for_mutation().replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
+    assert (
+        McpCallOptions.for_mutation().replay_policy == ReplayPolicy.BEFORE_DISPATCH_ONLY
+    )
     assert (
         McpCallOptions.for_trusted_internal_read().replay_policy
         == ReplayPolicy.BEFORE_DISPATCH_ONLY
@@ -177,7 +179,9 @@ async def test_persistent_context_and_session_are_owned_by_one_worker_task() -> 
 
 
 @pytest.mark.asyncio
-async def test_trusted_internal_read_timeout_is_never_replayed_and_starts_cooldown() -> None:
+async def test_trusted_internal_read_timeout_is_never_replayed_and_starts_cooldown() -> (
+    None
+):
     state = _State(block_calls=True)
     client = _client(state, mode="persistent")
 
@@ -198,7 +202,9 @@ async def test_trusted_internal_read_timeout_is_never_replayed_and_starts_cooldo
 
 
 @pytest.mark.asyncio
-async def test_trusted_read_allows_two_predispatch_reconnects_then_dispatches_once() -> None:
+async def test_trusted_read_allows_two_predispatch_reconnects_then_dispatches_once() -> (
+    None
+):
     state = _State(fail_transport_enters=2)
     client = _client(state, mode="persistent")
 
@@ -228,12 +234,16 @@ async def test_auto_falls_back_once_before_user_dispatch() -> None:
     assert diagnostics["auto_canary_count"] == 1
     assert diagnostics["auto_canary_completed"] is True
     assert "injected canary failure" in diagnostics["fallback_reason"]
-    assert state.call_count == 2  # failed canary + one user call, never a duplicate user call
+    assert (
+        state.call_count == 2
+    )  # failed canary + one user call, never a duplicate user call
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_auto_canary_timeout_falls_back_but_cooldown_blocks_user_dispatch(monkeypatch) -> None:
+async def test_auto_canary_timeout_falls_back_but_cooldown_blocks_user_dispatch(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(real_client_module, "_AUTO_CANARY_TIMEOUT_SECONDS", 0.02)
     state = _State(block_calls=True)
     client = _client(state, mode="auto")
@@ -266,7 +276,9 @@ async def test_auto_never_falls_back_after_mutation_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_only_transport_suppresses_initialized_get_callback(monkeypatch) -> None:
+async def test_post_only_transport_suppresses_initialized_get_callback(
+    monkeypatch,
+) -> None:
     callback_invoked = asyncio.Event()
     get_calls = 0
 

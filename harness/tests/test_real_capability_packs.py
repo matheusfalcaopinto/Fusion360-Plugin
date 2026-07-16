@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_core.capability_executor import CapabilityExecutionResult
+from benchmark.filesystem import read_text
 from benchmark.real_capability_packs import (
     NIGHTLY_PACK_CAPABILITIES,
     ORACLE_SCHEMA_VERSION,
@@ -15,6 +16,7 @@ from benchmark.real_capability_packs import (
     validate_real_runner_environment,
 )
 from fusion_agent_mcp.benchmark_bridge import FixtureIdentity, FixtureSession
+from fusion_agent_mcp.runtime import RuntimeConfiguration
 from fusion_mcp_adapter.tool_result import ToolDefinition, ToolManifest, ToolResult
 from fusion_tool_facade.autodesk_typed_backend import AutodeskTypedBackend
 
@@ -111,11 +113,14 @@ def test_real_environment_guard_rejects_mock_or_dry_run(monkeypatch) -> None:
     monkeypatch.setenv("FUSION_AGENT_DEFAULT_MODE", "real")
     monkeypatch.setenv("FUSION_AGENT_REQUIRE_REAL", "1")
     monkeypatch.setenv("FUSION_AGENT_ALLOW_DRY_RUN", "0")
-    assert validate_real_runner_environment()["backend"] == "autodesk_http"
+    configuration = RuntimeConfiguration.from_environment()
+    assert validate_real_runner_environment(configuration)["backend"] == "autodesk_http"
 
     monkeypatch.setenv("FUSION_AGENT_ALLOW_DRY_RUN", "1")
+    assert validate_real_runner_environment(configuration)["allow_dry_run"] == "0"
+    configuration = RuntimeConfiguration.from_environment()
     with pytest.raises(RuntimeError, match="refuse"):
-        validate_real_runner_environment()
+        validate_real_runner_environment(configuration)
 
 
 def test_nightly_workflow_runs_pack_runner_and_uploads_failure_evidence() -> None:
@@ -126,17 +131,19 @@ def test_nightly_workflow_runs_pack_runner_and_uploads_failure_evidence() -> Non
     assert "FUSION_AGENT_BACKEND: autodesk_http" in workflow
     assert 'FUSION_AGENT_REQUIRE_REAL: "1"' in workflow
     assert (
-        "python scripts/run-real-capability-packs.py --artifact-root nightly-artifacts"
+        "python scripts/run-real-capability-packs.py --artifact-root nightly-private"
         in workflow
     )
-    assert "nightly-artifacts/capability-packs.json" in workflow
+    assert "nightly-private/capability-packs.json" in workflow
+    assert "python scripts/prepare-nightly-public.py" in workflow
+    assert "path: nightly-public/**" in workflow
     assert "if: always()" in workflow
     for path in (
         "manifests/**",
         "logs/**",
         "benchmark_parametric_suite/cases/*/images/**",
     ):
-        assert path in workflow
+        assert path not in workflow
 
 
 class _OfflineRuntime:
@@ -273,6 +280,31 @@ async def test_offline_suite_uses_fixture_execute_oracle_cleanup_order(
         (tmp_path / "capability-packs.json").read_text(encoding="utf-8")
     )
     assert persisted["status"] == "passed"
+
+
+@pytest.mark.asyncio
+async def test_capability_pack_result_is_atomic_beyond_320_characters(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path
+    for index in range(5):
+        output /= f"nightly-capability-root-{index}-" + ("n" * 55)
+    output_path = output / "capability-packs.json"
+    assert len(str(output_path.resolve())) > 320
+    runtime = _OfflineRuntime()
+    lifecycle = _OfflineLifecycle()
+    case = build_capability_pack_cases(output)[0]
+
+    result = await run_capability_pack_suite(
+        runtime=runtime,
+        lifecycle=lifecycle,
+        cases=(case,),
+        artifact_root=output,
+        environment={"backend": "autodesk_http"},
+    )
+
+    assert result["status"] == "passed"
+    assert json.loads(read_text(output_path))["run_id"] == result["run_id"]
 
 
 @pytest.mark.asyncio

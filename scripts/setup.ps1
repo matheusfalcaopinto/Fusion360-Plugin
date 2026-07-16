@@ -16,24 +16,58 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PluginRoot = Split-Path -Parent $ScriptDir
 $Launcher = Join-Path $PluginRoot "scripts\fusion_agent_codex_mcp_launcher.py"
 $DefaultPython = Join-Path $PluginRoot ".venv\Scripts\python.exe"
-$Python = if ($env:FUSION_AGENT_PYTHON) { $env:FUSION_AGENT_PYTHON } else { $DefaultPython }
+$Python = $DefaultPython
 $WheelsRoot = Join-Path $PluginRoot "wheels"
 
 $Wheels = @(Get-ChildItem -Path $WheelsRoot -Filter "fusion_agent_harness-*.whl" -ErrorAction SilentlyContinue)
-if ($Wheels.Count -gt 1) {
-    throw "Expected exactly one bundled harness wheel, found $($Wheels.Count)."
+$DevelopmentSourceRoot = $env:FUSION_AGENT_HARNESS_ROOT
+if ($Wheels.Count -ne 1 -and -not ($Wheels.Count -eq 0 -and $DevelopmentSourceRoot)) {
+    throw "Expected exactly one bundled harness wheel before setup, found $($Wheels.Count). Set FUSION_AGENT_HARNESS_ROOT only for the documented non-release development override."
 }
 $Wheel = if ($Wheels.Count -eq 1) { $Wheels[0] } else { $null }
+if (-not $Wheel) {
+    $DevelopmentSourceRoot = (Resolve-Path -LiteralPath $DevelopmentSourceRoot -ErrorAction Stop).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $DevelopmentSourceRoot "pyproject.toml") -PathType Leaf)) {
+        throw "FUSION_AGENT_HARNESS_ROOT must contain pyproject.toml before the development override can alter the environment."
+    }
+    Write-Warning "Using the explicit FUSION_AGENT_HARNESS_ROOT development override; no release wheel is being verified or installed."
+}
+
+# Verify the bundle with a trusted, already-available interpreter before this
+# script creates a venv or lets pip process any wheel member.
+if ($Wheel) {
+    $VerifierPython = $null
+    if ($env:FUSION_AGENT_PYTHON -and (Test-Path $env:FUSION_AGENT_PYTHON)) {
+        $VerifierPython = $env:FUSION_AGENT_PYTHON
+    }
+    elseif (Test-Path $DefaultPython) {
+        $VerifierPython = $Python
+    }
+    else {
+        $SystemPythonForVerification = Get-Command python -ErrorAction SilentlyContinue
+        if ($SystemPythonForVerification) { $VerifierPython = $SystemPythonForVerification.Source }
+    }
+    if (-not $VerifierPython) {
+        throw "A pre-existing Python 3.11+ interpreter is required to verify the plugin bundle before installation."
+    }
+    & $VerifierPython -E -s -S (Join-Path $PluginRoot "scripts\preinstall_verify.py") `
+        --plugin-root $PluginRoot --wheel $Wheel.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Fusion Agent preinstall bundle verification failed." }
+}
 
 if (-not (Test-Path $Python)) {
-    if ($env:FUSION_AGENT_PYTHON) {
-        throw "FUSION_AGENT_PYTHON does not exist: $Python"
+    $BootstrapPython = $null
+    if ($env:FUSION_AGENT_PYTHON -and (Test-Path $env:FUSION_AGENT_PYTHON)) {
+        $BootstrapPython = $env:FUSION_AGENT_PYTHON
     }
-    $SystemPython = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $SystemPython) {
+    else {
+        $SystemPython = Get-Command python -ErrorAction SilentlyContinue
+        if ($SystemPython) { $BootstrapPython = $SystemPython.Source }
+    }
+    if (-not $BootstrapPython) {
         throw "Could not find Python. Install Python 3.11+ or set FUSION_AGENT_PYTHON."
     }
-    & $SystemPython.Source -m venv (Join-Path $PluginRoot ".venv")
+    & $BootstrapPython -m venv (Join-Path $PluginRoot ".venv")
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the plugin virtual environment." }
 }
 
@@ -44,8 +78,8 @@ try {
             & $Python -m pip install --force-reinstall $Wheel.FullName
             if ($LASTEXITCODE -ne 0) { throw "Failed to install $($Wheel.FullName)." }
         }
-        elseif ($env:FUSION_AGENT_HARNESS_ROOT) {
-            & $Python -m pip install -e $env:FUSION_AGENT_HARNESS_ROOT
+        elseif ($DevelopmentSourceRoot) {
+            & $Python -m pip install -e $DevelopmentSourceRoot
             if ($LASTEXITCODE -ne 0) { throw "Failed to install FUSION_AGENT_HARNESS_ROOT." }
         }
         else {
@@ -57,11 +91,18 @@ try {
         }
     }
 
+    if ($Wheel) {
+        & $Python (Join-Path $PluginRoot "scripts\preinstall_verify.py") `
+            --plugin-root $PluginRoot --wheel $Wheel.FullName --verify-installed
+        if ($LASTEXITCODE -ne 0) { throw "Installed Fusion Agent wheel verification failed." }
+    }
+
     if (-not $SkipMcpConfig) {
         $ConfigureArgs = @(
             (Join-Path $PluginRoot "scripts\configure_mcp.py"),
             "--plugin-root", $PluginRoot,
             "--python", $Python,
+            "--require-contained-runtime",
             "--tool-profile", $ToolProfile,
             "--backend", $Backend
         )

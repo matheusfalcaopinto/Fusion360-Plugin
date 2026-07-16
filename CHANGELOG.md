@@ -2,6 +2,29 @@
 
 Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
+## 0.4.1 - 2026-07-16
+
+- Vincula host I/O e mutacoes CAD a policies, paths canonicos, identidade de
+  documento/entidade, digests e capabilities descartaveis; CadSpec v1 e Faust
+  permanecem por um ciclo fail-closed, e Faust anuncia somente
+  `parameter.set` literal com prova lossless.
+- Introduz contexto request-local, evidencia tipada e decisoes
+  `passed|failed|incomplete`; assertions desconhecidas, evidencia parcial e
+  numeros nao finitos nunca autorizam sucesso ou reparo.
+- Gera tools, resources, templates e prompts de uma registry declarativa,
+  valida output schemas em runtime e limita erros/readiness a projecoes
+  publicas redigidas.
+- Reforca proveniencia de benchmark, long paths do Windows, allowlist exata do
+  wheel/RECORD/source, verificacao preinstall e reproducibilidade cross-platform.
+- Fixa Actions por SHA, separa build de publish e restringe nightlies a
+  fixtures descartaveis, prova vinculada ao run atual e artifacts publicos
+  sanitizados.
+- Fecha os 14 findings CAN-010/012/014/018/024/025/026/027/032/033/034/038/039/042
+  com regressao reproducer-first, controle positivo, variantes de bypass e
+  comprovacao de zero dispatch nas rejeicoes.
+- Materializa CI a partir do lock frozen, compara performance contra o SHA
+  revisado e exige tres nightlies checksummed no mesmo candidato antes da tag.
+
 ## 0.4.0 - 2026-07-15
 
 - Adiciona benchmark publico normalizado com adapters isolados e pinados para

@@ -10,14 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _load_script(name: str):
     path = ROOT / "scripts" / name
-    spec = importlib.util.spec_from_file_location(f"fusion_agent_test_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(
+        f"fusion_agent_test_{path.stem}", path
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_configure_mcp_writes_existing_python_and_launcher_as_absolute_paths(tmp_path: Path) -> None:
+def test_configure_mcp_writes_existing_python_and_launcher_as_absolute_paths(
+    tmp_path: Path,
+) -> None:
     plugin = tmp_path / "plugin"
     scripts = plugin / "scripts"
     scripts.mkdir(parents=True)
@@ -57,7 +61,9 @@ def test_launcher_reads_full_cachebuster_version(tmp_path: Path) -> None:
     manifest = tmp_path / ".codex-plugin" / "plugin.json"
     manifest.parent.mkdir()
     manifest.write_text(
-        json.dumps({"name": "fusion-agent-codex", "version": "0.2.1+codex.20260714123456"}),
+        json.dumps(
+            {"name": "fusion-agent-codex", "version": "0.2.1+codex.20260714123456"}
+        ),
         encoding="utf-8",
     )
     module = _load_script("fusion_agent_codex_mcp_launcher.py")
@@ -75,7 +81,9 @@ def test_distributed_mcp_config_defaults_to_legacy_transport() -> None:
     assert environment["FUSION_AGENT_REMOTE_POLICY"] == "loopback_only"
 
 
-def test_plugin_validator_accepts_absent_fusion_data_and_rejects_credential_leaks() -> None:
+def test_plugin_validator_accepts_absent_fusion_data_and_rejects_credential_leaks() -> (
+    None
+):
     module = _load_script("validate_plugin.py")
     errors: list[str] = []
     module._check_fusion_data({"mcpServers": {}}, {}, errors)
@@ -101,3 +109,32 @@ def test_plugin_validator_accepts_absent_fusion_data_and_rejects_credential_leak
     assert any("secret query" in error for error in errors)
     assert any("Codex OAuth" in error for error in errors)
     assert any("fusion_agent env" in error for error in errors)
+
+
+def test_plugin_validator_contains_installed_runtime_and_launcher(
+    tmp_path: Path,
+) -> None:
+    module = _load_script("validate_plugin.py")
+    plugin = tmp_path / "plugin"
+    launcher = plugin / "scripts" / "fusion_agent_codex_mcp_launcher.py"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("# launcher\n", encoding="utf-8")
+    runtime = plugin / ".venv" / "Scripts" / "python.exe"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("", encoding="utf-8")
+
+    errors: list[str] = []
+    module._check_mcp_runtime_paths(plugin, str(runtime), [str(launcher)], errors)
+    assert errors == []
+
+    outside = tmp_path / "outside-python.exe"
+    outside.write_text("", encoding="utf-8")
+    errors = []
+    module._check_mcp_runtime_paths(plugin, str(outside), [str(launcher)], errors)
+    assert any("contained" in error for error in errors)
+
+    errors = []
+    module._check_mcp_runtime_paths(
+        plugin, str(runtime), [str(tmp_path / "evil.py")], errors
+    )
+    assert any("launcher" in error for error in errors)

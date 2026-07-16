@@ -66,7 +66,9 @@ class FusionMcpAdapter:
             try:
                 payload = prepare_execute_arguments(payload)
             except ValueError as exc:
-                result = ToolResult.failure(ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, str(exc))
+                result = ToolResult.failure(
+                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, str(exc)
+                )
                 self._log_tool_call(
                     facade_tool,
                     native_tool_name,
@@ -78,7 +80,9 @@ class FusionMcpAdapter:
                 return result
             transmitted_script = _execute_script(payload)
             if original_script is not None and transmitted_script is not None:
-                executor_telemetry = execute_script_telemetry(original_script, transmitted_script)
+                executor_telemetry = execute_script_telemetry(
+                    original_script, transmitted_script
+                )
 
         tool_def = self._tool_definition(native_tool_name)
         validation_error = self._validate_input(tool_def, payload)
@@ -101,13 +105,17 @@ class FusionMcpAdapter:
         if options is None:
             result = await self.client.call_tool(native_tool_name, payload)
         else:
-            result = await self.client.call_tool(native_tool_name, payload, options=options)
+            result = await self.client.call_tool(
+                native_tool_name, payload, options=options
+            )
         duration_ms = int((time.perf_counter() - started) * 1000)
 
         if result.ok:
             output_error = self._validate_output(tool_def, result.data)
             if output_error:
-                result = ToolResult.failure(ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, output_error)
+                result = ToolResult.failure(
+                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, output_error
+                )
 
         self._log_tool_call(
             facade_tool,
@@ -119,12 +127,16 @@ class FusionMcpAdapter:
         )
         return result
 
-    def _validate_input(self, tool_def: ToolDefinition | None, payload: dict[str, Any]) -> str | None:
+    def _validate_input(
+        self, tool_def: ToolDefinition | None, payload: dict[str, Any]
+    ) -> str | None:
         if tool_def is None or not tool_def.input_schema:
             return None
         return _validate_json_schema(payload, tool_def.input_schema)
 
-    def _validate_output(self, tool_def: ToolDefinition | None, payload: Any) -> str | None:
+    def _validate_output(
+        self, tool_def: ToolDefinition | None, payload: Any
+    ) -> str | None:
         if tool_def is None or not tool_def.output_schema:
             return None
         return _validate_json_schema(payload, tool_def.output_schema)
@@ -171,7 +183,9 @@ def _execute_script(payload: dict[str, Any]) -> str | None:
     return script if isinstance(script, str) else None
 
 
-def _validate_json_schema(payload: dict[str, Any], schema: dict[str, Any]) -> str | None:
+def _validate_json_schema(
+    payload: dict[str, Any], schema: dict[str, Any]
+) -> str | None:
     try:
         json_validate(payload, schema)
         return None

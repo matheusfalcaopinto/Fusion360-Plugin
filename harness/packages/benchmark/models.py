@@ -80,10 +80,16 @@ class BenchmarkRunConfig(_StrictModel):
     warmups: int = Field(default=0, ge=0, le=20)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
     model: str | None = Field(default=None, min_length=1, max_length=200)
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "ultra"] = "high"
+    reasoning_effort: Literal[
+        "none", "minimal", "low", "medium", "high", "xhigh", "ultra"
+    ] = "high"
     confirm_real_benchmark: bool = False
-    baseline_run_id: str | None = Field(default=None, pattern=r"^bench_[A-Za-z0-9_-]{8,96}$")
-    project: str = Field(default="fusion_agent_benchmark", pattern=r"^[A-Za-z0-9_.-]{1,80}$")
+    baseline_run_id: str | None = Field(
+        default=None, pattern=r"^bench_[A-Za-z0-9_-]{8,96}$"
+    )
+    project: str = Field(
+        default="fusion_agent_benchmark", pattern=r"^[A-Za-z0-9_.-]{1,80}$"
+    )
     dry_run: bool = False
 
     @model_validator(mode="after")
@@ -124,7 +130,9 @@ class ExecutionObservation(_StrictModel):
     hub_sync_count: int = Field(default=0, ge=0)
     personal_project_access_count: int = Field(default=0, ge=0)
     parallel_overlap_count: int = Field(default=0, ge=0)
-    transport_session_key: str | None = Field(default=None, min_length=1, max_length=200)
+    transport_session_key: str | None = Field(
+        default=None, min_length=1, max_length=200
+    )
     connection_generation: int | None = Field(default=None, ge=0)
     independent_metric_fields: list[str] = Field(default_factory=list)
     fixture_marker_verified: bool = True

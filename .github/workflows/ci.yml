@@ -4,48 +4,95 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   canonical-source-and-wheel:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ["3.11"]
+        python-version: ["3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install canonical harness
         run: python -m pip install -e "./harness[test]"
-      - name: Unit, fake MCP, linter, route-lock, and benchmark mock tests
+      - name: Run complete test suite
         run: python -m pytest -q -p no:cacheprovider
       - name: Build deterministic wheel
         run: python scripts/build-distribution.py
       - name: Require tracked wheel to match canonical sources
         run: git diff --exit-code -- wheels
+      - name: Verify wheel before installation
+        run: python scripts/preinstall_verify.py --plugin-root .
       - name: Validate plugin bundle
         run: python scripts/validate_plugin.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: fusion-agent-harness-${{ matrix.os }}
+          name: fusion-agent-harness-${{ matrix.os }}-py${{ matrix.python-version }}
           path: wheels/*.whl
+          if-no-files-found: error
+          retention-days: 7
 
-  python-312-packaging-smoke:
+  quality-and-policy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
+          fetch-depth: 0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
           cache: pip
-      - name: Build deterministic wheel
-        run: python scripts/build-distribution.py
-      - name: Install bundled wheel
-        run: python -m pip install wheels/*.whl
-      - name: Smoke installed commands and assets
+      - name: Install frozen quality environment
         run: |
-          fusion-agent --help
-          python -c "from fusion_agent_assets import asset_root; from fusion_agent_mcp.server import list_tool_definitions; assert list_tool_definitions(); assert (asset_root('benchmarks') / 'public_competitors_v1.json').is_file()"
+          python -m pip install "uv==0.11.29"
+          python -m uv sync --frozen --project harness --extra test --extra dev
+      - name: Ruff formatting and lint
+        run: |
+          python -m uv run --frozen --project harness --extra test --extra dev python -m ruff format --check harness scripts tests
+          python -m uv run --frozen --project harness --extra test --extra dev python -m ruff check harness scripts tests
+      - name: Compile first-party Python
+        run: python -m uv run --frozen --project harness --extra test --extra dev python -m compileall -q harness/apps harness/packages harness/tests scripts tests
+      - name: Type-check configured first-party boundaries
+        run: python -m uv run --frozen --project harness --extra test --extra dev python -m mypy
+      - name: pip-audit and locked dependency checks
+        run: |
+          python -m uv lock --check --project harness
+          python -m uv run --frozen --project harness --extra test --extra dev python -m pip check
+          python -m uv run --frozen --project harness --extra test --extra dev python -m pip_audit
+      - name: Coverage gate
+        run: >-
+          python -m uv run --frozen --project harness --extra test --extra dev
+          python -m pytest -q -p no:cacheprovider
+          --cov=harness/apps --cov=harness/packages --cov-branch
+          --cov-report=term-missing --cov-report=json:coverage.json
+          --cov-fail-under=70
+      - name: Require 90 percent on critical 0.4.1 boundaries
+        run: >-
+          python -m uv run --frozen --project harness --extra test --extra dev
+          python scripts/check-coverage-gate.py --coverage-json coverage.json
+      - name: Compare candidate performance with reviewed baseline
+        shell: bash
+        env:
+          BASELINE_SHA: a148a741bbe7fc89cd1db62df3414db84aff41bd
+        run: |
+          set -euo pipefail
+          baseline_root="$(mktemp -d)"
+          git archive --format=tar --output="$RUNNER_TEMP/fusion-agent-baseline.tar" "$BASELINE_SHA"
+          tar -xf "$RUNNER_TEMP/fusion-agent-baseline.tar" -C "$baseline_root"
+          python -m uv run --frozen --project harness --extra test --extra dev python scripts/measure-performance.py --source-root "$baseline_root" --git-commit "$BASELINE_SHA" --output "$RUNNER_TEMP/performance-baseline.json"
+          python -m uv run --frozen --project harness --extra test --extra dev python scripts/measure-performance.py --source-root . --git-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/performance-candidate.json"
+          python -m uv run --frozen --project harness --extra test --extra dev python scripts/check-performance-gate.py --baseline "$RUNNER_TEMP/performance-baseline.json" --candidate "$RUNNER_TEMP/performance-candidate.json" --candidate-commit "$GITHUB_SHA"
+      - name: Validate GitHub workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Validate immutable workflow policy
+        run: >-
+          python -m uv run --frozen --project harness --extra test --extra dev
+          python -m pytest -q tests/test_release_hardening_041.py -k github_actions

@@ -293,7 +293,9 @@ async def test_late_malformed_reference_blocks_every_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepared_script_integrity_rejects_substitution_without_dispatch() -> None:
+async def test_prepared_script_integrity_rejects_substitution_without_dispatch() -> (
+    None
+):
     client = Client()
     backend = _backend(client)
     spec = _contract(
@@ -356,12 +358,7 @@ def test_capabilities_require_complete_crud_pair() -> None:
     )
 
     assert "revolve" not in execute_only.capabilities
-    assert direct_only.capabilities == {
-        "parameters",
-        "export_step",
-        "export_stp",
-        "export_stl",
-    }
+    assert direct_only.capabilities == {"parameters"}
 
 
 def test_relative_or_mismatched_io_path_fails_during_preflight() -> None:

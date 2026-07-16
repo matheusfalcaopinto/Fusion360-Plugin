@@ -4,10 +4,48 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+
+
+PUBLIC_DOWNSTREAM_ERROR_MESSAGE = "The downstream Fusion operation failed."
+
+
+class PublicError(BaseModel):
+    """Bounded error information safe for public responses and journals."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    code: str
+    generic_message: str
+    correlation_id: str
+    retryable: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        code: str,
+        generic_message: str,
+        retryable: bool = False,
+    ) -> "PublicError":
+        return cls(
+            code=code,
+            generic_message=generic_message,
+            correlation_id=f"diag-{uuid.uuid4().hex}",
+            retryable=retryable,
+        )
+
+    @classmethod
+    def downstream_failure(cls, code: str = "FUSION_OPERATION_FAILED") -> "PublicError":
+        return cls.create(
+            code=code,
+            generic_message=PUBLIC_DOWNSTREAM_ERROR_MESSAGE,
+            retryable=False,
+        )
 
 
 class ToolDefinition(BaseModel):
@@ -34,7 +72,9 @@ class ToolManifest(BaseModel):
     source: str = "unknown"
     tools: list[ToolDefinition] = Field(default_factory=list)
     fingerprint: str = ""
-    captured_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    captured_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     server: dict[str, Any] = Field(default_factory=dict)
     server_name: str | None = None
     server_version: str | None = None
@@ -68,7 +108,9 @@ class ToolManifest(BaseModel):
             }
             for tool in sorted(self.tools, key=lambda item: item.name)
         ]
-        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        serialized = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def refresh_fingerprint(self) -> str:
@@ -103,6 +145,7 @@ class ToolResult(BaseModel):
     )
     error_code: str | None = None
     error_message: str | None = None
+    public_error: PublicError | None = None
 
     @classmethod
     def success(
@@ -115,7 +158,9 @@ class ToolResult(BaseModel):
     ) -> "ToolResult":
         """Build a successful result."""
 
-        compatible_data = dict(structured_content) if structured_content is not None else data
+        compatible_data = (
+            dict(structured_content) if structured_content is not None else data
+        )
         return cls(
             ok=True,
             data=compatible_data,
@@ -135,6 +180,7 @@ class ToolResult(BaseModel):
         structured_content: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         is_error: bool = True,
+        public_error: PublicError | None = None,
     ) -> "ToolResult":
         """Build a failed result."""
 
@@ -147,28 +193,39 @@ class ToolResult(BaseModel):
             is_error=is_error,
             error_code=error_code,
             error_message=error_message,
+            public_error=public_error,
         )
 
     @classmethod
     def from_mcp(cls, result: dict[str, Any]) -> "ToolResult":
         """Preserve every MCP result channel while keeping the legacy ``data`` view."""
 
-        content = result.get("content") if isinstance(result.get("content"), list) else []
+        raw_content = result.get("content")
+        content: list[Any] = list(raw_content) if isinstance(raw_content, list) else []
         structured = result.get("structuredContent", result.get("structured_content"))
         structured = structured if isinstance(structured, dict) else None
         meta = result.get("_meta", result.get("meta"))
         meta = meta if isinstance(meta, dict) else {}
         is_error = bool(result.get("isError", result.get("is_error", False)))
-        data = dict(structured) if structured is not None else _compatible_data_from_content(content, result)
+        data = (
+            dict(structured)
+            if structured is not None
+            else _compatible_data_from_content(content, result)
+        )
         semantic_error = _semantic_failure_message(data)
-        if is_error or semantic_error:
+        if is_error or semantic_error or _explicit_error_field(data):
+            public_error = PublicError.downstream_failure()
             return cls.failure(
                 "FUSION_OPERATION_FAILED",
-                semantic_error or _content_text(content) or str(result),
-                data=data,
-                content=content,
-                structured_content=structured,
-                meta=meta,
+                public_error.generic_message,
+                # Downstream error channels are untrusted diagnostics.  They
+                # must not become canonical result data, exception text, MCP
+                # content, telemetry, or durable session artifacts.
+                data={},
+                content=[],
+                structured_content=None,
+                meta={},
+                public_error=public_error,
             )
         return cls(
             ok=True,
@@ -180,7 +237,9 @@ class ToolResult(BaseModel):
         )
 
 
-def _compatible_data_from_content(content: list[Any], fallback: dict[str, Any]) -> dict[str, Any]:
+def _compatible_data_from_content(
+    content: list[Any], fallback: dict[str, Any]
+) -> dict[str, Any]:
     text = _content_text(content)
     if text:
         try:
@@ -193,14 +252,27 @@ def _compatible_data_from_content(content: list[Any], fallback: dict[str, Any]) 
     return {
         key: value
         for key, value in fallback.items()
-        if key not in {"content", "structuredContent", "structured_content", "_meta", "meta", "isError", "is_error"}
+        if key
+        not in {
+            "content",
+            "structuredContent",
+            "structured_content",
+            "_meta",
+            "meta",
+            "isError",
+            "is_error",
+        }
     }
 
 
 def _content_text(content: list[Any]) -> str:
     texts: list[str] = []
     for block in content:
-        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ):
             texts.append(block["text"])
     return "\n".join(texts)
 
@@ -209,6 +281,17 @@ def _semantic_failure_message(data: dict[str, Any]) -> str | None:
     """Normalize native servers that encode errors in successful MCP envelopes."""
 
     return _semantic_failure_from_value(data, depth=0)
+
+
+def _explicit_error_field(data: dict[str, Any]) -> bool:
+    """Fail closed for malformed envelopes that omit a negative status flag."""
+
+    if data.get("ok") is True or data.get("success") is True:
+        return False
+    return any(
+        isinstance(data.get(key), str) and bool(str(data[key]).strip())
+        for key in ("error", "error_message")
+    )
 
 
 def _semantic_failure_from_value(value: Any, *, depth: int) -> str | None:

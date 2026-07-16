@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import re
 import json
-import os
 import hashlib
 import hmac
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_core.request_context import current_request_context
 from cad_spec.unit_policy import expression_to_mm
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.errors import ToolNotAllowed
@@ -41,7 +41,12 @@ VENDOR_FACADE_NATIVE_TOOLS = {
     "fusion_mcp_update",
 }
 
-_VENDOR_SIGNATURE_TOOLS = {"get_scene_info", "create_sketch", "extrude", "create_parameter"}
+_VENDOR_SIGNATURE_TOOLS = {
+    "get_scene_info",
+    "create_sketch",
+    "extrude",
+    "create_parameter",
+}
 _CRUD_SIGNATURE_TOOLS = {"fusion_mcp_read", "fusion_mcp_execute"}
 _UNIT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in|deg|rad)\s*$", re.IGNORECASE)
 
@@ -65,7 +70,9 @@ class PreparedFusionOperation:
 class FusionOperationDispatchError(RuntimeError):
     """Typed backend failure carrying authoritative transport evidence."""
 
-    def __init__(self, message: str, *, error_code: str | None, transport: dict[str, Any]) -> None:
+    def __init__(
+        self, message: str, *, error_code: str | None, transport: dict[str, Any]
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.transport = transport
@@ -74,10 +81,12 @@ class FusionOperationDispatchError(RuntimeError):
 def is_vendor_manifest(tool_names: set[str]) -> bool:
     """Return true when a manifest matches a supported Fusion MCP schema."""
 
-    return _VENDOR_SIGNATURE_TOOLS.issubset(tool_names) or _CRUD_SIGNATURE_TOOLS.issubset(tool_names)
+    return _VENDOR_SIGNATURE_TOOLS.issubset(
+        tool_names
+    ) or _CRUD_SIGNATURE_TOOLS.issubset(tool_names)
 
 
-CRUD_INSPECT_SCRIPT = r'''
+CRUD_INSPECT_SCRIPT = r"""
 import json
 import re
 import adsk.core
@@ -810,7 +819,7 @@ def run(_context: str):
     ]
     payload["component_count"] = len(payload["occurrences"]) or len(modeled_components)
     print(json.dumps(payload, sort_keys=True))
-'''
+"""
 
 
 _INSPECTION_SECTIONS = {
@@ -835,18 +844,9 @@ def _normalize_inspection_options(options: dict[str, Any] | None) -> dict[str, A
     unsupported = sorted(set(normalized_sections) - _INSPECTION_SECTIONS)
     if unsupported:
         raise ValueError(f"unsupported inspection sections: {', '.join(unsupported)}")
-    max_entities = int(
-        raw.get("max_entities_visited", os.getenv("FUSION_AGENT_INSPECTION_MAX_ENTITIES", "1000"))
-    )
-    deadline_ms = int(
-        raw.get("deadline_ms", os.getenv("FUSION_AGENT_INSPECTION_DEADLINE_MS", "1500"))
-    )
-    max_response_bytes = int(
-        raw.get(
-            "max_response_bytes",
-            os.getenv("FUSION_AGENT_INSPECTION_MAX_RESPONSE_BYTES", "1048576"),
-        )
-    )
+    max_entities = int(raw.get("max_entities_visited", 1000))
+    deadline_ms = int(raw.get("deadline_ms", 1500))
+    max_response_bytes = int(raw.get("max_response_bytes", 1_048_576))
     if max_entities < 1 or max_entities > 5000:
         raise ValueError("max_entities_visited must be between 1 and 5000")
     if deadline_ms < 50 or deadline_ms > 5000:
@@ -870,7 +870,7 @@ def _bounded_inspect_script(options: dict[str, Any] | None = None) -> str:
     return BOUNDED_INSPECT_SCRIPT.replace("__REQUEST_JSON__", repr(request))
 
 
-BOUNDED_INSPECT_SCRIPT = r'''
+BOUNDED_INSPECT_SCRIPT = r"""
 import adsk.core
 import adsk.fusion
 import json
@@ -1184,7 +1184,7 @@ def run(_context: str):
         meta["response_bytes"] = measured
         payload["inspection_meta"] = meta
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-'''
+"""
 
 
 class VendorFusionFacade:
@@ -1195,7 +1195,9 @@ class VendorFusionFacade:
     expected by the Fusion360 MCP bridge.
     """
 
-    def __init__(self, adapter: FusionMcpAdapter, available_tools: set[str] | None = None) -> None:
+    def __init__(
+        self, adapter: FusionMcpAdapter, available_tools: set[str] | None = None
+    ) -> None:
         self.adapter = adapter
         self.available_tools = available_tools or set()
         self.parameters: dict[str, str] = {}
@@ -1204,7 +1206,9 @@ class VendorFusionFacade:
         self.active_component = "root"
         self._last_scene: dict[str, Any] = {}
 
-    async def inspect_design(self, inspection_options: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def inspect_design(
+        self, inspection_options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Inspect active document state through read-only vendor tools."""
 
         if self._uses_crud_profile():
@@ -1267,7 +1271,9 @@ class VendorFusionFacade:
         result = {"state": state, **meta}
         for _iteration in range(8):
             measured = len(
-                json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                json.dumps(result, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
             )
             if meta["response_bytes"] == measured:
                 break
@@ -1289,7 +1295,9 @@ class VendorFusionFacade:
         if self._uses_crud_profile():
             _split_unit_expression(expression)
             result = await self._execute_script_json(
-                _crud_create_parameter_script({"name": name, "expression": expression, "comment": comment or ""}),
+                _crud_create_parameter_script(
+                    {"name": name, "expression": expression, "comment": comment or ""}
+                ),
                 operation_id=operation_id,
             )
             self.parameters[name] = expression
@@ -1299,12 +1307,18 @@ class VendorFusionFacade:
         result = await self._call(
             "create_parameter",
             {"name": name, "value": value, "unit": unit, "comment": comment or ""},
-            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+            options=(
+                McpCallOptions.for_mutation(operation_id=operation_id)
+                if operation_id
+                else None
+            ),
         )
         self.parameters[name] = expression
         return result
 
-    async def update_named_parameter(self, name: str, expression: str) -> dict[str, Any]:
+    async def update_named_parameter(
+        self, name: str, expression: str
+    ) -> dict[str, Any]:
         """Update an existing parameter value."""
 
         if self._uses_crud_profile():
@@ -1319,7 +1333,9 @@ class VendorFusionFacade:
         self.parameters[name] = expression
         return result
 
-    async def create_component(self, name: str, *, operation_id: str | None = None) -> dict[str, Any]:
+    async def create_component(
+        self, name: str, *, operation_id: str | None = None
+    ) -> dict[str, Any]:
         """Create and mark a component as active."""
 
         if self._uses_crud_profile():
@@ -1338,7 +1354,10 @@ class VendorFusionFacade:
         """Record active component locally when the vendor schema lacks activation."""
 
         self.active_component = name
-        return {"active_component": name, "noop": "vendor_schema_has_no_activate_component"}
+        return {
+            "active_component": name,
+            "noop": "vendor_schema_has_no_activate_component",
+        }
 
     async def create_sketch_on_plane(
         self,
@@ -1352,7 +1371,9 @@ class VendorFusionFacade:
 
         if self._uses_crud_profile():
             return await self._execute_script_json(
-                _crud_create_sketch_script({"component": component, "plane": plane, "name": name}),
+                _crud_create_sketch_script(
+                    {"component": component, "plane": plane, "name": name}
+                ),
                 operation_id=operation_id,
             )
 
@@ -1471,7 +1492,9 @@ class VendorFusionFacade:
                 ),
                 operation_id=operation_id,
             )
-            self.body_dimensions_cm[body_name] = _shape_dimensions_cm(shape, distance, shape_inputs, self.parameters)
+            self.body_dimensions_cm[body_name] = _shape_dimensions_cm(
+                shape, distance, shape_inputs, self.parameters
+            )
             return {
                 "body": {"name": body_name},
                 "feature": {"name": name},
@@ -1484,8 +1507,12 @@ class VendorFusionFacade:
         )
         created_name = str(result.get("body_name") or result.get("name") or body_name)
         if "rename_body" in self.available_tools and created_name != body_name:
-            await self._call("rename_body", {"body_name": created_name, "new_name": body_name})
-        self.body_dimensions_cm[body_name] = _shape_dimensions_cm(shape, distance, shape_inputs, self.parameters)
+            await self._call(
+                "rename_body", {"body_name": created_name, "new_name": body_name}
+            )
+        self.body_dimensions_cm[body_name] = _shape_dimensions_cm(
+            shape, distance, shape_inputs, self.parameters
+        )
         return {"body": {"name": body_name}, "feature": result}
 
     async def cut_profile(
@@ -1517,14 +1544,24 @@ class VendorFusionFacade:
                     "center_y": center_y,
                 },
             )
-        self.hole_counts[target_body] = self.hole_counts.get(target_body, 0) + len(centers)
+        self.hole_counts[target_body] = self.hole_counts.get(target_body, 0) + len(
+            centers
+        )
         return {"body": {"name": target_body, "holes": self.hole_counts[target_body]}}
 
-    async def apply_fillet(self, edge_selector: str, radius: str, name: str) -> dict[str, Any]:
+    async def apply_fillet(
+        self, edge_selector: str, radius: str, name: str
+    ) -> dict[str, Any]:
         """Apply a vendor fillet operation."""
 
         _ = name
-        return await self._call("fillet", {"edge_selection": edge_selector, "radius": _expr_to_cm(radius, self.parameters)})
+        return await self._call(
+            "fillet",
+            {
+                "edge_selection": edge_selector,
+                "radius": _expr_to_cm(radius, self.parameters),
+            },
+        )
 
     async def create_nema17_stepper(
         self,
@@ -1546,7 +1583,9 @@ class VendorFusionFacade:
         """Create a NEMA17 stepper motor through the supported Fusion CRUD script bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("NEMA17 creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "NEMA17 creation requires the Fusion CRUD script profile"
+            )
 
         payload = {
             "component": component,
@@ -1558,19 +1597,31 @@ class VendorFusionFacade:
             "pilot_length_expr": pilot_length,
             "shaft_diameter_expr": self.parameters.get(shaft_diameter, shaft_diameter),
             "shaft_length_expr": shaft_length,
-            "mount_hole_spacing_expr": self.parameters.get(mount_hole_spacing, mount_hole_spacing),
-            "mount_hole_diameter_expr": self.parameters.get(mount_hole_diameter, mount_hole_diameter),
+            "mount_hole_spacing_expr": self.parameters.get(
+                mount_hole_spacing, mount_hole_spacing
+            ),
+            "mount_hole_diameter_expr": self.parameters.get(
+                mount_hole_diameter, mount_hole_diameter
+            ),
             "face_width_cm": _expr_to_cm(face_width, self.parameters),
             "body_length_cm": _expr_to_cm(body_length, self.parameters),
             "pilot_radius_cm": _expr_to_cm(pilot_diameter, self.parameters) / 2.0,
             "shaft_radius_cm": _expr_to_cm(shaft_diameter, self.parameters) / 2.0,
-            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters) / 2.0,
-            "mount_hole_offset_cm": _expr_to_cm(mount_hole_spacing, self.parameters) / 2.0,
+            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters)
+            / 2.0,
+            "mount_hole_offset_cm": _expr_to_cm(mount_hole_spacing, self.parameters)
+            / 2.0,
             "overall_depth_cm": _expr_to_cm(overall_depth, self.parameters),
             "mount_hole_count": mount_hole_count,
         }
-        result = await self._execute_script_json(_crud_create_nema17_stepper_script(payload))
-        self.body_dimensions_cm[body_name] = [payload["face_width_cm"], payload["face_width_cm"], payload["overall_depth_cm"]]
+        result = await self._execute_script_json(
+            _crud_create_nema17_stepper_script(payload)
+        )
+        self.body_dimensions_cm[body_name] = [
+            payload["face_width_cm"],
+            payload["face_width_cm"],
+            payload["overall_depth_cm"],
+        ]
         self.hole_counts[body_name] = mount_hole_count
         return result
 
@@ -1603,7 +1654,9 @@ class VendorFusionFacade:
         """Add visual detail bodies around an existing NEMA17 motor."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("NEMA17 polish creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "NEMA17 polish creation requires the Fusion CRUD script profile"
+            )
 
         payload = {
             "target_body": target_body,
@@ -1612,14 +1665,23 @@ class VendorFusionFacade:
             "body_length_cm": _expr_to_cm(body_length, self.parameters),
             "overall_depth_cm": _expr_to_cm(overall_depth, self.parameters),
             "mount_hole_spacing_cm": _expr_to_cm(mount_hole_spacing, self.parameters),
-            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters) / 2.0,
+            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters)
+            / 2.0,
             "pilot_radius_cm": _expr_to_cm(pilot_diameter, self.parameters) / 2.0,
             "shaft_radius_cm": _expr_to_cm(shaft_diameter, self.parameters) / 2.0,
             "detail_projection_cm": _expr_to_cm(detail_projection, self.parameters),
-            "side_panel_projection_cm": _expr_to_cm(side_panel_projection, self.parameters),
-            "lamination_band_height_cm": _expr_to_cm(lamination_band_height, self.parameters),
-            "hole_shadow_radius_cm": _expr_to_cm(hole_shadow_diameter, self.parameters) / 2.0,
-            "pilot_relief_radius_cm": _expr_to_cm(pilot_relief_diameter, self.parameters) / 2.0,
+            "side_panel_projection_cm": _expr_to_cm(
+                side_panel_projection, self.parameters
+            ),
+            "lamination_band_height_cm": _expr_to_cm(
+                lamination_band_height, self.parameters
+            ),
+            "hole_shadow_radius_cm": _expr_to_cm(hole_shadow_diameter, self.parameters)
+            / 2.0,
+            "pilot_relief_radius_cm": _expr_to_cm(
+                pilot_relief_diameter, self.parameters
+            )
+            / 2.0,
             "connector_width_cm": _expr_to_cm(connector_width, self.parameters),
             "connector_depth_cm": _expr_to_cm(connector_depth, self.parameters),
             "connector_height_cm": _expr_to_cm(connector_height, self.parameters),
@@ -1629,7 +1691,9 @@ class VendorFusionFacade:
             "wire_count": wire_count,
             "body_names": body_names,
         }
-        result = await self._execute_script_json(_crud_create_nema17_polish_script(payload))
+        result = await self._execute_script_json(
+            _crud_create_nema17_polish_script(payload)
+        )
         return result
 
     async def create_nema17_external_assembly(
@@ -1659,36 +1723,58 @@ class VendorFusionFacade:
         """Create a component-owned NEMA17 external assembly through the Fusion CRUD script bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("NEMA17 assembly creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "NEMA17 assembly creation requires the Fusion CRUD script profile"
+            )
 
         payload = {
             "feature_name": name,
             "assembly_component": assembly_component,
             "face_width_expr": self.parameters.get(face_width, face_width),
             "body_length_expr": self.parameters.get(body_length, body_length),
-            "front_plate_thickness_expr": self.parameters.get(front_plate_thickness, front_plate_thickness),
-            "rear_plate_thickness_expr": self.parameters.get(rear_plate_thickness, rear_plate_thickness),
+            "front_plate_thickness_expr": self.parameters.get(
+                front_plate_thickness, front_plate_thickness
+            ),
+            "rear_plate_thickness_expr": self.parameters.get(
+                rear_plate_thickness, rear_plate_thickness
+            ),
             "pilot_diameter_expr": self.parameters.get(pilot_diameter, pilot_diameter),
             "pilot_length_expr": self.parameters.get(pilot_length, pilot_length),
             "shaft_diameter_expr": self.parameters.get(shaft_diameter, shaft_diameter),
             "shaft_length_expr": self.parameters.get(shaft_length, shaft_length),
-            "mount_hole_spacing_expr": self.parameters.get(mount_hole_spacing, mount_hole_spacing),
-            "mount_hole_diameter_expr": self.parameters.get(mount_hole_diameter, mount_hole_diameter),
-            "connector_width_expr": self.parameters.get(connector_width, connector_width),
-            "connector_height_expr": self.parameters.get(connector_height, connector_height),
-            "connector_depth_expr": self.parameters.get(connector_depth, connector_depth),
+            "mount_hole_spacing_expr": self.parameters.get(
+                mount_hole_spacing, mount_hole_spacing
+            ),
+            "mount_hole_diameter_expr": self.parameters.get(
+                mount_hole_diameter, mount_hole_diameter
+            ),
+            "connector_width_expr": self.parameters.get(
+                connector_width, connector_width
+            ),
+            "connector_height_expr": self.parameters.get(
+                connector_height, connector_height
+            ),
+            "connector_depth_expr": self.parameters.get(
+                connector_depth, connector_depth
+            ),
             "wire_length_expr": self.parameters.get(wire_length, wire_length),
             "wire_diameter_expr": self.parameters.get(wire_diameter, wire_diameter),
             "face_width_cm": _expr_to_cm(face_width, self.parameters),
             "body_length_cm": _expr_to_cm(body_length, self.parameters),
-            "front_plate_thickness_cm": _expr_to_cm(front_plate_thickness, self.parameters),
-            "rear_plate_thickness_cm": _expr_to_cm(rear_plate_thickness, self.parameters),
+            "front_plate_thickness_cm": _expr_to_cm(
+                front_plate_thickness, self.parameters
+            ),
+            "rear_plate_thickness_cm": _expr_to_cm(
+                rear_plate_thickness, self.parameters
+            ),
             "pilot_radius_cm": _expr_to_cm(pilot_diameter, self.parameters) / 2.0,
             "pilot_length_cm": _expr_to_cm(pilot_length, self.parameters),
             "shaft_radius_cm": _expr_to_cm(shaft_diameter, self.parameters) / 2.0,
             "shaft_length_cm": _expr_to_cm(shaft_length, self.parameters),
-            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters) / 2.0,
-            "mount_hole_offset_cm": _expr_to_cm(mount_hole_spacing, self.parameters) / 2.0,
+            "mount_hole_radius_cm": _expr_to_cm(mount_hole_diameter, self.parameters)
+            / 2.0,
+            "mount_hole_offset_cm": _expr_to_cm(mount_hole_spacing, self.parameters)
+            / 2.0,
             "connector_width_cm": _expr_to_cm(connector_width, self.parameters),
             "connector_height_cm": _expr_to_cm(connector_height, self.parameters),
             "connector_depth_cm": _expr_to_cm(connector_depth, self.parameters),
@@ -1698,7 +1784,9 @@ class VendorFusionFacade:
             "component_names": component_names,
             "body_names": body_names,
         }
-        return await self._execute_script_json(_crud_create_nema17_external_assembly_script(payload))
+        return await self._execute_script_json(
+            _crud_create_nema17_external_assembly_script(payload)
+        )
 
     async def create_profile2020_aluminum_extrusion(
         self,
@@ -1721,7 +1809,9 @@ class VendorFusionFacade:
         """Create a detailed metric 2020 T-slot aluminum extrusion through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("2020 aluminum profile creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "2020 aluminum profile creation requires the Fusion CRUD script profile"
+            )
 
         offset_cm = [_expr_to_cm(value, self.parameters) for value in placement_offset]
         while len(offset_cm) < 3:
@@ -1735,8 +1825,12 @@ class VendorFusionFacade:
             "size_expr": self.parameters.get(size, size),
             "slot_width_expr": self.parameters.get(slot_width, slot_width),
             "slot_depth_expr": self.parameters.get(slot_depth, slot_depth),
-            "slot_cavity_width_expr": self.parameters.get(slot_cavity_width, slot_cavity_width),
-            "center_bore_diameter_expr": self.parameters.get(center_bore_diameter, center_bore_diameter),
+            "slot_cavity_width_expr": self.parameters.get(
+                slot_cavity_width, slot_cavity_width
+            ),
+            "center_bore_diameter_expr": self.parameters.get(
+                center_bore_diameter, center_bore_diameter
+            ),
             "lip_thickness_expr": self.parameters.get(lip_thickness, lip_thickness),
             "corner_radius_expr": self.parameters.get(corner_radius, corner_radius),
             "length_cm": _expr_to_cm(length, self.parameters),
@@ -1744,14 +1838,17 @@ class VendorFusionFacade:
             "slot_width_cm": _expr_to_cm(slot_width, self.parameters),
             "slot_depth_cm": _expr_to_cm(slot_depth, self.parameters),
             "slot_cavity_width_cm": _expr_to_cm(slot_cavity_width, self.parameters),
-            "center_bore_radius_cm": _expr_to_cm(center_bore_diameter, self.parameters) / 2.0,
+            "center_bore_radius_cm": _expr_to_cm(center_bore_diameter, self.parameters)
+            / 2.0,
             "lip_thickness_cm": _expr_to_cm(lip_thickness, self.parameters),
             "corner_radius_cm": _expr_to_cm(corner_radius, self.parameters),
             "slot_count": slot_count,
             "web_relief_count": web_relief_count,
             "placement_offset_cm": offset_cm,
         }
-        return await self._execute_script_json(_crud_create_profile2020_aluminum_script(payload))
+        return await self._execute_script_json(
+            _crud_create_profile2020_aluminum_script(payload)
+        )
 
     async def create_mgn12_linear_rail_assembly(
         self,
@@ -1780,7 +1877,9 @@ class VendorFusionFacade:
         """Create a component-owned MGN12 linear rail and carriage assembly through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("MGN12 rail assembly creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "MGN12 rail assembly creation requires the Fusion CRUD script profile"
+            )
 
         offset_cm = [_expr_to_cm(value, self.parameters) for value in placement_offset]
         while len(offset_cm) < 3:
@@ -1792,17 +1891,37 @@ class VendorFusionFacade:
             "rail_length_expr": self.parameters.get(rail_length, rail_length),
             "rail_width_expr": self.parameters.get(rail_width, rail_width),
             "rail_height_expr": self.parameters.get(rail_height, rail_height),
-            "rail_hole_pitch_expr": self.parameters.get(rail_hole_pitch, rail_hole_pitch),
-            "rail_end_hole_offset_expr": self.parameters.get(rail_end_hole_offset, rail_end_hole_offset),
-            "rail_hole_diameter_expr": self.parameters.get(rail_hole_diameter, rail_hole_diameter),
-            "rail_counterbore_diameter_expr": self.parameters.get(rail_counterbore_diameter, rail_counterbore_diameter),
-            "rail_counterbore_depth_expr": self.parameters.get(rail_counterbore_depth, rail_counterbore_depth),
-            "carriage_length_expr": self.parameters.get(carriage_length, carriage_length),
+            "rail_hole_pitch_expr": self.parameters.get(
+                rail_hole_pitch, rail_hole_pitch
+            ),
+            "rail_end_hole_offset_expr": self.parameters.get(
+                rail_end_hole_offset, rail_end_hole_offset
+            ),
+            "rail_hole_diameter_expr": self.parameters.get(
+                rail_hole_diameter, rail_hole_diameter
+            ),
+            "rail_counterbore_diameter_expr": self.parameters.get(
+                rail_counterbore_diameter, rail_counterbore_diameter
+            ),
+            "rail_counterbore_depth_expr": self.parameters.get(
+                rail_counterbore_depth, rail_counterbore_depth
+            ),
+            "carriage_length_expr": self.parameters.get(
+                carriage_length, carriage_length
+            ),
             "carriage_width_expr": self.parameters.get(carriage_width, carriage_width),
-            "carriage_total_height_expr": self.parameters.get(carriage_total_height, carriage_total_height),
-            "carriage_top_height_expr": self.parameters.get(carriage_top_height, carriage_top_height),
-            "carriage_mount_x_spacing_expr": self.parameters.get(carriage_mount_x_spacing, carriage_mount_x_spacing),
-            "carriage_mount_y_spacing_expr": self.parameters.get(carriage_mount_y_spacing, carriage_mount_y_spacing),
+            "carriage_total_height_expr": self.parameters.get(
+                carriage_total_height, carriage_total_height
+            ),
+            "carriage_top_height_expr": self.parameters.get(
+                carriage_top_height, carriage_top_height
+            ),
+            "carriage_mount_x_spacing_expr": self.parameters.get(
+                carriage_mount_x_spacing, carriage_mount_x_spacing
+            ),
+            "carriage_mount_y_spacing_expr": self.parameters.get(
+                carriage_mount_y_spacing, carriage_mount_y_spacing
+            ),
             "carriage_mount_thread_diameter_expr": self.parameters.get(
                 carriage_mount_thread_diameter,
                 carriage_mount_thread_diameter,
@@ -1811,22 +1930,41 @@ class VendorFusionFacade:
             "rail_width_cm": _expr_to_cm(rail_width, self.parameters),
             "rail_height_cm": _expr_to_cm(rail_height, self.parameters),
             "rail_hole_pitch_cm": _expr_to_cm(rail_hole_pitch, self.parameters),
-            "rail_end_hole_offset_cm": _expr_to_cm(rail_end_hole_offset, self.parameters),
-            "rail_hole_radius_cm": _expr_to_cm(rail_hole_diameter, self.parameters) / 2.0,
-            "rail_counterbore_radius_cm": _expr_to_cm(rail_counterbore_diameter, self.parameters) / 2.0,
-            "rail_counterbore_depth_cm": _expr_to_cm(rail_counterbore_depth, self.parameters),
+            "rail_end_hole_offset_cm": _expr_to_cm(
+                rail_end_hole_offset, self.parameters
+            ),
+            "rail_hole_radius_cm": _expr_to_cm(rail_hole_diameter, self.parameters)
+            / 2.0,
+            "rail_counterbore_radius_cm": _expr_to_cm(
+                rail_counterbore_diameter, self.parameters
+            )
+            / 2.0,
+            "rail_counterbore_depth_cm": _expr_to_cm(
+                rail_counterbore_depth, self.parameters
+            ),
             "carriage_length_cm": _expr_to_cm(carriage_length, self.parameters),
             "carriage_width_cm": _expr_to_cm(carriage_width, self.parameters),
-            "carriage_total_height_cm": _expr_to_cm(carriage_total_height, self.parameters),
+            "carriage_total_height_cm": _expr_to_cm(
+                carriage_total_height, self.parameters
+            ),
             "carriage_top_height_cm": _expr_to_cm(carriage_top_height, self.parameters),
-            "carriage_mount_x_spacing_cm": _expr_to_cm(carriage_mount_x_spacing, self.parameters),
-            "carriage_mount_y_spacing_cm": _expr_to_cm(carriage_mount_y_spacing, self.parameters),
-            "carriage_mount_thread_radius_cm": _expr_to_cm(carriage_mount_thread_diameter, self.parameters) / 2.0,
+            "carriage_mount_x_spacing_cm": _expr_to_cm(
+                carriage_mount_x_spacing, self.parameters
+            ),
+            "carriage_mount_y_spacing_cm": _expr_to_cm(
+                carriage_mount_y_spacing, self.parameters
+            ),
+            "carriage_mount_thread_radius_cm": _expr_to_cm(
+                carriage_mount_thread_diameter, self.parameters
+            )
+            / 2.0,
             "component_names": component_names,
             "body_names": body_names,
             "placement_offset_cm": offset_cm,
         }
-        return await self._execute_script_json(_crud_create_mgn12_linear_rail_script(payload))
+        return await self._execute_script_json(
+            _crud_create_mgn12_linear_rail_script(payload)
+        )
 
     async def create_desktop_cnc_assembly(
         self,
@@ -1864,7 +2002,9 @@ class VendorFusionFacade:
         """Create a compact component-owned desktop CNC assembly through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("desktop CNC assembly creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "desktop CNC assembly creation requires the Fusion CRUD script profile"
+            )
 
         offset_cm = [_expr_to_cm(value, self.parameters) for value in placement_offset]
         while len(offset_cm) < 3:
@@ -1885,15 +2025,19 @@ class VendorFusionFacade:
             "rail_height_cm": _expr_to_cm(rail_height, self.parameters),
             "motor_face_width_cm": _expr_to_cm(motor_face_width, self.parameters),
             "motor_body_length_cm": _expr_to_cm(motor_body_length, self.parameters),
-            "motor_shaft_radius_cm": _expr_to_cm(motor_shaft_diameter, self.parameters) / 2.0,
+            "motor_shaft_radius_cm": _expr_to_cm(motor_shaft_diameter, self.parameters)
+            / 2.0,
             "motor_shaft_length_cm": _expr_to_cm(motor_shaft_length, self.parameters),
-            "leadscrew_radius_cm": _expr_to_cm(leadscrew_diameter, self.parameters) / 2.0,
+            "leadscrew_radius_cm": _expr_to_cm(leadscrew_diameter, self.parameters)
+            / 2.0,
             "coupler_radius_cm": _expr_to_cm(coupler_diameter, self.parameters) / 2.0,
             "coupler_length_cm": _expr_to_cm(coupler_length, self.parameters),
             "plate_thickness_cm": _expr_to_cm(plate_thickness, self.parameters),
             "spoilboard_length_cm": _expr_to_cm(spoilboard_length, self.parameters),
             "spoilboard_width_cm": _expr_to_cm(spoilboard_width, self.parameters),
-            "spoilboard_thickness_cm": _expr_to_cm(spoilboard_thickness, self.parameters),
+            "spoilboard_thickness_cm": _expr_to_cm(
+                spoilboard_thickness, self.parameters
+            ),
             "spindle_radius_cm": _expr_to_cm(spindle_diameter, self.parameters) / 2.0,
             "spindle_length_cm": _expr_to_cm(spindle_length, self.parameters),
             "work_area_mm": [
@@ -1903,7 +2047,9 @@ class VendorFusionFacade:
             ],
             "placement_offset_cm": offset_cm,
         }
-        return await self._execute_script_json(_crud_create_desktop_cnc_assembly_script(payload))
+        return await self._execute_script_json(
+            _crud_create_desktop_cnc_assembly_script(payload)
+        )
 
     async def create_spacer_plate_assembly(
         self,
@@ -1927,7 +2073,9 @@ class VendorFusionFacade:
         """Create a generic spacer plate assembly through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("spacer plate assembly creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "spacer plate assembly creation requires the Fusion CRUD script profile"
+            )
         offset_cm = [_expr_to_cm(value, self.parameters) for value in placement_offset]
         while len(offset_cm) < 3:
             offset_cm.append(0.0)
@@ -1948,10 +2096,18 @@ class VendorFusionFacade:
             "hole_pattern_y_cm": _expr_to_cm(hole_pattern_y, self.parameters),
             "placement_offset_cm": offset_cm,
         }
-        result = await self._execute_script_json(_crud_create_spacer_plate_assembly_script(payload))
-        self._last_scene.setdefault("occurrences", {}).update(result.get("occurrences", {}))
-        self._last_scene.setdefault("physical_properties", {}).update(result.get("physical_properties", {}))
-        self._last_scene["interference"] = result.get("interference", {"count": 0, "pairs": []})
+        result = await self._execute_script_json(
+            _crud_create_spacer_plate_assembly_script(payload)
+        )
+        self._last_scene.setdefault("occurrences", {}).update(
+            result.get("occurrences", {})
+        )
+        self._last_scene.setdefault("physical_properties", {}).update(
+            result.get("physical_properties", {})
+        )
+        self._last_scene["interference"] = result.get(
+            "interference", {"count": 0, "pairs": []}
+        )
         return result
 
     async def create_hinge_assembly(
@@ -1974,7 +2130,9 @@ class VendorFusionFacade:
         """Create a generic hinge assembly through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("hinge assembly creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "hinge assembly creation requires the Fusion CRUD script profile"
+            )
         offset_cm = [_expr_to_cm(value, self.parameters) for value in placement_offset]
         while len(offset_cm) < 3:
             offset_cm.append(0.0)
@@ -1988,24 +2146,41 @@ class VendorFusionFacade:
             "leaf_thickness_cm": _expr_to_cm(leaf_thickness, self.parameters),
             "pin_radius_cm": _expr_to_cm(pin_diameter, self.parameters) / 2.0,
             "pin_length_cm": _expr_to_cm(pin_length, self.parameters),
-            "knuckle_radius_cm": _expr_to_cm(knuckle_outer_diameter, self.parameters) / 2.0,
+            "knuckle_radius_cm": _expr_to_cm(knuckle_outer_diameter, self.parameters)
+            / 2.0,
             "knuckle_length_cm": _expr_to_cm(knuckle_length, self.parameters),
             "leaf_gap_cm": _expr_to_cm(leaf_gap, self.parameters),
             "placement_offset_cm": offset_cm,
         }
-        result = await self._execute_script_json(_crud_create_hinge_assembly_script(payload))
-        self._last_scene.setdefault("occurrences", {}).update(result.get("occurrences", {}))
-        self._last_scene.setdefault("physical_properties", {}).update(result.get("physical_properties", {}))
-        self._last_scene["interference"] = result.get("interference", {"count": 0, "pairs": []})
+        result = await self._execute_script_json(
+            _crud_create_hinge_assembly_script(payload)
+        )
+        self._last_scene.setdefault("occurrences", {}).update(
+            result.get("occurrences", {})
+        )
+        self._last_scene.setdefault("physical_properties", {}).update(
+            result.get("physical_properties", {})
+        )
+        self._last_scene["interference"] = result.get(
+            "interference", {"count": 0, "pairs": []}
+        )
         return result
 
-    async def set_component_metadata(self, metadata: list[dict[str, Any]]) -> dict[str, Any]:
+    async def set_component_metadata(
+        self, metadata: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """Set component metadata through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("component metadata writes require the Fusion CRUD script profile")
-        result = await self._execute_script_json(_crud_set_component_metadata_script({"metadata": metadata}))
-        self._last_scene.setdefault("component_metadata", {}).update(result.get("component_metadata", {}))
+            raise RuntimeError(
+                "component metadata writes require the Fusion CRUD script profile"
+            )
+        result = await self._execute_script_json(
+            _crud_set_component_metadata_script({"metadata": metadata})
+        )
+        self._last_scene.setdefault("component_metadata", {}).update(
+            result.get("component_metadata", {})
+        )
         return result
 
     async def create_assembly_joints(
@@ -2017,7 +2192,9 @@ class VendorFusionFacade:
         """Create assembly joint contracts through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("assembly joint creation requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "assembly joint creation requires the Fusion CRUD script profile"
+            )
         result = await self._execute_script_json(
             _crud_create_assembly_joints_script({"joints": joints}),
             operation_id=operation_id,
@@ -2038,7 +2215,9 @@ class VendorFusionFacade:
         """Capture a viewport image through the Fusion CRUD bridge."""
 
         if not self._uses_crud_profile():
-            raise RuntimeError("viewport capture requires the Fusion CRUD script profile")
+            raise RuntimeError(
+                "viewport capture requires the Fusion CRUD script profile"
+            )
         payload = {
             "name": name,
             "path": str(path),
@@ -2052,15 +2231,21 @@ class VendorFusionFacade:
         captured_path = Path(str(screenshot.get("path") or path))
         if not captured_path.exists():
             screenshot["evidence_quality"] = "failed"
-            raise RuntimeError(f"viewport capture failed: local file does not exist: {captured_path}")
+            raise RuntimeError(
+                f"viewport capture failed: local file does not exist: {captured_path}"
+            )
         size = captured_path.stat().st_size
         if size <= 0:
             screenshot["evidence_quality"] = "empty_file"
-            raise RuntimeError(f"viewport capture failed: local file is empty: {captured_path}")
+            raise RuntimeError(
+                f"viewport capture failed: local file is empty: {captured_path}"
+            )
         screenshot["bytes"] = size
         screenshot["evidence_quality"] = "verified_file"
         result["evidence_quality"] = "verified_file"
-        self._last_scene.setdefault("screenshots", {})[name] = result.get("screenshot", {})
+        self._last_scene.setdefault("screenshots", {})[name] = result.get(
+            "screenshot", {}
+        )
         return result
 
     async def analyze_interference(
@@ -2073,10 +2258,16 @@ class VendorFusionFacade:
         """Analyze interference in the active design."""
 
         if not self._uses_crud_profile():
-            return {"interference": self._last_scene.get("interference", {"count": 0, "pairs": []})}
+            return {
+                "interference": self._last_scene.get(
+                    "interference", {"count": 0, "pairs": []}
+                )
+            }
         script = _crud_analyze_interference_script({"target": target})
         result = (
-            await self._execute_trusted_read_script_json(script, operation_id=operation_id)
+            await self._execute_trusted_read_script_json(
+                script, operation_id=operation_id
+            )
             if trusted_read
             else await self._execute_script_json(script, operation_id=operation_id)
         )
@@ -2093,14 +2284,20 @@ class VendorFusionFacade:
         """Measure physical properties in the active design."""
 
         if not self._uses_crud_profile():
-            return {"physical_properties": self._last_scene.get("physical_properties", {})}
+            return {
+                "physical_properties": self._last_scene.get("physical_properties", {})
+            }
         script = _crud_measure_physical_properties_script({"targets": targets or []})
         result = (
-            await self._execute_trusted_read_script_json(script, operation_id=operation_id)
+            await self._execute_trusted_read_script_json(
+                script, operation_id=operation_id
+            )
             if trusted_read
             else await self._execute_script_json(script, operation_id=operation_id)
         )
-        self._last_scene.setdefault("physical_properties", {}).update(result.get("physical_properties", {}))
+        self._last_scene.setdefault("physical_properties", {}).update(
+            result.get("physical_properties", {})
+        )
         return result
 
     async def measure_bounding_box(self, target: str | None = None) -> list[float]:
@@ -2115,7 +2312,9 @@ class VendorFusionFacade:
                 for body in bodies.values():
                     bbox = body.get("bounding_box_mm", [])
                     if len(bbox) == 3:
-                        maxes = [max(a, float(b)) for a, b in zip(maxes, bbox, strict=True)]
+                        maxes = [
+                            max(a, float(b)) for a, b in zip(maxes, bbox, strict=True)
+                        ]
                 return maxes
 
         if target and target in self.body_dimensions_cm:
@@ -2123,7 +2322,9 @@ class VendorFusionFacade:
         if self.body_dimensions_cm:
             maxes = [0.0, 0.0, 0.0]
             for dimensions in self.body_dimensions_cm.values():
-                maxes = [max(a, b * 10.0) for a, b in zip(maxes, dimensions, strict=True)]
+                maxes = [
+                    max(a, b * 10.0) for a, b in zip(maxes, dimensions, strict=True)
+                ]
             return maxes
 
         body_names = _names_from_payload(self._last_scene.get("bodies"))
@@ -2132,7 +2333,10 @@ class VendorFusionFacade:
             bbox = info.get("bounding_box") or {}
             mins = bbox.get("min") or [0, 0, 0]
             maxes = bbox.get("max") or [0, 0, 0]
-            return [abs(float(max_v) - float(min_v)) * 10.0 for min_v, max_v in zip(mins, maxes, strict=True)]
+            return [
+                abs(float(max_v) - float(min_v)) * 10.0
+                for min_v, max_v in zip(mins, maxes, strict=True)
+            ]
         return [0.0, 0.0, 0.0]
 
     async def validate_named_objects(self) -> dict[str, Any]:
@@ -2163,7 +2367,24 @@ class VendorFusionFacade:
         return await self._call(
             "export_step",
             {"body_name": target, "file_path": str(path)},
-            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+            options=(
+                McpCallOptions.for_mutation(operation_id=operation_id)
+                if operation_id
+                else None
+            ),
+        )
+
+    async def resolve_export_target_binding(
+        self, target: str, format_name: str
+    ) -> dict[str, Any]:
+        """Resolve a live export target to hashed document/entity identity facts."""
+
+        if not self._uses_crud_profile():
+            raise RuntimeError(
+                "lossless export target binding requires the Fusion CRUD profile"
+            )
+        return await self._execute_trusted_read_script_json(
+            _typed_export_binding_read_script({"target": target, "format": format_name})
         )
 
     async def export_stl(
@@ -2187,7 +2408,11 @@ class VendorFusionFacade:
         return await self._call(
             "export_stl",
             {"body_name": target, "file_path": str(path)},
-            options=(McpCallOptions.for_mutation(operation_id=operation_id) if operation_id else None),
+            options=(
+                McpCallOptions.for_mutation(operation_id=operation_id)
+                if operation_id
+                else None
+            ),
         )
 
     def prepare_typed_operation(
@@ -2203,7 +2428,9 @@ class VendorFusionFacade:
         """
 
         if not self._uses_crud_profile():
-            raise RuntimeError("typed Autodesk operations require the Fusion CRUD profile")
+            raise RuntimeError(
+                "typed Autodesk operations require the Fusion CRUD profile"
+            )
         builder = _TYPED_CRUD_SCRIPT_BUILDERS.get(kind)
         if builder is None:
             raise ValueError(f"unknown typed Autodesk facade operation: {kind}")
@@ -2231,14 +2458,21 @@ class VendorFusionFacade:
             raise ValueError(f"unknown typed Autodesk facade operation: {plan.kind}")
         rebuilt = builder(json.loads(plan.payload_json))
         rebuilt_digest = hashlib.sha256(rebuilt.encode("utf-8")).hexdigest()
-        if not hmac.compare_digest(rebuilt_digest, plan.sha256) or rebuilt != plan.script:
-            raise RuntimeError("prepared Autodesk facade operation failed integrity validation")
+        if (
+            not hmac.compare_digest(rebuilt_digest, plan.sha256)
+            or rebuilt != plan.script
+        ):
+            raise RuntimeError(
+                "prepared Autodesk facade operation failed integrity validation"
+            )
         return await self._execute_script_json(
             rebuilt,
             operation_id=operation_id,
         )
 
-    def _hole_centers(self, target_body: str, count: int, offset: str | None) -> list[tuple[float, float]]:
+    def _hole_centers(
+        self, target_body: str, count: int, offset: str | None
+    ) -> list[tuple[float, float]]:
         if count != 4 or target_body not in self.body_dimensions_cm or not offset:
             return [(0.0, 0.0) for _ in range(max(count, 1))]
         width, height, _depth = self.body_dimensions_cm[target_body]
@@ -2247,7 +2481,9 @@ class VendorFusionFacade:
         y = max(0.0, height / 2.0 - offset_cm)
         return [(-x, -y), (-x, y), (x, -y), (x, y)]
 
-    async def _optional_call(self, native_tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _optional_call(
+        self, native_tool: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
         if native_tool not in self.available_tools:
             return {}
         try:
@@ -2329,7 +2565,7 @@ class VendorFusionFacade:
                 "object": {"script": script},
             },
             options=McpCallOptions.for_trusted_internal_read(
-                timeout_seconds=float(os.getenv("FUSION_MCP_TRUSTED_READ_TIMEOUT_SECONDS", "10")),
+                timeout_seconds=_trusted_read_timeout_seconds(),
                 operation_id=operation_id,
             ),
         )
@@ -2340,6 +2576,16 @@ class VendorFusionFacade:
                 transport=_transport_evidence(result),
             )
         return _with_transport(_decode_script_payload(result.data), result)
+
+
+def _trusted_read_timeout_seconds() -> float:
+    context = current_request_context()
+    value = (
+        10.0 if context is None else float(context.timeouts.get("trusted_read", 10.0))
+    )
+    if value <= 0:
+        raise ValueError("trusted read timeout must be positive")
+    return value
 
 
 def _transport_evidence(result: ToolResult) -> dict[str, Any]:
@@ -2404,7 +2650,9 @@ def _decode_script_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _split_unit_expression(expression: str) -> tuple[float, str]:
     match = _UNIT_RE.fullmatch(expression)
     if not match:
-        raise ValueError(f"vendor facade requires explicit literal unit expression: {expression!r}")
+        raise ValueError(
+            f"vendor facade requires explicit literal unit expression: {expression!r}"
+        )
     return float(match.group(1)), match.group(2).lower()
 
 
@@ -5386,7 +5634,7 @@ def _crud_measure_physical_properties_script(payload: dict[str, Any]) -> str:
     )
 
 
-_TYPED_CRUD_HELPERS = r'''
+_TYPED_CRUD_HELPERS = r"""
 
 
 def _design():
@@ -5580,6 +5828,62 @@ def _export_target(design, reference):
     return unique[0]
 
 
+def _export_target_for_format(design, reference, format_name):
+    if format_name in ("step", "stp", "iges", "igs", "f3d"):
+        return _component(design, reference)
+    if format_name == "stl":
+        return _body(design, reference)
+    raise RuntimeError(f"unsupported export format: {format_name}")
+
+
+def _hashed_text(value):
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _document_identity(app, design):
+    document = app.activeDocument
+    if not document:
+        raise RuntimeError("active Fusion document is unavailable")
+    data_file = getattr(document, "dataFile", None)
+    data_id = str(getattr(data_file, "id", "") or "")
+    version_id = str(getattr(data_file, "versionId", "") or "")
+    root_token = str(getattr(design.rootComponent, "entityToken", "") or "")
+    if not data_id and not root_token:
+        raise RuntimeError("active Fusion document has no stable identity")
+    return _hashed_text(json.dumps({
+        "data_id": data_id,
+        "version_id": version_id,
+        "root_token": root_token,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+def _cad_target_binding(design, reference, format_name):
+    app = adsk.core.Application.get()
+    target = _export_target_for_format(design, reference, format_name)
+    token = str(getattr(target, "entityToken", "") or "")
+    if not token:
+        raise RuntimeError("export target has no stable entity identity")
+    document_identity = _document_identity(app, design)
+    entity_identity = _hashed_text(token)
+    facts = {
+        "reference_kind": "export_target",
+        "requested_ref": str(reference),
+        "document_identity": document_identity,
+        "entity_identity": entity_identity,
+        "name": str(getattr(target, "name", "") or ""),
+        "object_type": str(getattr(target, "objectType", "") or ""),
+        "format": str(format_name),
+    }
+    binding = {
+        "reference_kind": facts["reference_kind"],
+        "requested_ref": facts["requested_ref"],
+        "document_identity": document_identity,
+        "entity_identity": entity_identity,
+        "fingerprint": _hashed_text(json.dumps(facts, sort_keys=True, separators=(",", ":"))),
+    }
+    return target, binding
+
+
 def _rename_feature_bodies(feature, name):
     bodies = getattr(feature, "bodies", None)
     if bodies and bodies.count:
@@ -5588,7 +5892,7 @@ def _rename_feature_bodies(feature, name):
         else:
             for index in range(bodies.count):
                 bodies.item(index).name = f"{name}_{index + 1}"
-'''
+"""
 
 
 def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
@@ -5597,6 +5901,7 @@ def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return (
         "import json\n"
+        "import hashlib\n"
         "import os\n"
         "import adsk.core\n"
         "import adsk.fusion\n\n"
@@ -5611,7 +5916,7 @@ def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
 def _typed_sketch_constraint_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     sketch = _sketch(design, PAYLOAD["sketch"])
     entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
     constraints = sketch.geometricConstraints
@@ -5642,14 +5947,14 @@ def _typed_sketch_constraint_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "constraint": {"type": kind, "valid": bool(getattr(result, "isValid", True))},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_sketch_dimension_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     sketch = _sketch(design, PAYLOAD["sketch"])
     entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
     dimensions = sketch.sketchDimensions
@@ -5683,14 +5988,14 @@ def _typed_sketch_dimension_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "dimension": {"type": kind, "expression": result.parameter.expression},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_revolve_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     component = _component(design, PAYLOAD["component"])
     profile = _profile(design, PAYLOAD["profile"])
     axis = _axis(component, PAYLOAD["axis"])
@@ -5707,14 +6012,14 @@ def _typed_revolve_script(payload: dict[str, Any]) -> str:
         "success": True,
         "feature": {"name": feature.name, "type": "revolve"},
         "body": {"name": PAYLOAD["result_name"]},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_sweep_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     component = _component(design, PAYLOAD["component"])
     profile = _profile(design, PAYLOAD["profile"])
     path = _path(design, PAYLOAD["path"])
@@ -5732,14 +6037,14 @@ def _typed_sweep_script(payload: dict[str, Any]) -> str:
         "success": True,
         "feature": {"name": feature.name, "type": "sweep"},
         "body": {"name": PAYLOAD["result_name"]},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_loft_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     component = _component(design, PAYLOAD["component"])
     features = component.features.loftFeatures
     loft_input = features.createInput(_feature_operation(PAYLOAD["operation"]))
@@ -5754,14 +6059,14 @@ def _typed_loft_script(payload: dict[str, Any]) -> str:
         "success": True,
         "feature": {"name": feature.name, "type": "loft"},
         "body": {"name": PAYLOAD["result_name"]},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_pattern_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     bodies = [_body(design, name) for name in PAYLOAD["targets"]]
     component = bodies[0].parentComponent
     if any(body.parentComponent != component for body in bodies):
@@ -5801,14 +6106,14 @@ def _typed_pattern_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": f"{pattern_kind}_pattern"},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_mirror_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     bodies = [_body(design, name) for name in PAYLOAD["targets"]]
     component = bodies[0].parentComponent
     if any(body.parentComponent != component for body in bodies):
@@ -5826,14 +6131,14 @@ def _typed_mirror_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": "mirror"},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_boolean_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     target = _body(design, PAYLOAD["target"])
     tools = [_body(design, name) for name in PAYLOAD["tools"]]
     if any(body.parentComponent != target.parentComponent for body in tools):
@@ -5854,14 +6159,14 @@ def _typed_boolean_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": operation},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_rigid_group_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     root = design.rootComponent
     occurrences = [_occurrence(design, reference) for reference in PAYLOAD["occurrences"]]
     rigid_group = root.rigidGroups.add(_object_collection(occurrences), True)
@@ -5869,14 +6174,14 @@ def _typed_rigid_group_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "rigid_group": {"name": rigid_group.name, "occurrence_count": len(occurrences)},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_import_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    app = adsk.core.Application.get()
+        r"""    app = adsk.core.Application.get()
     design = _design()
     path = PAYLOAD["path"]
     if not os.path.isfile(path):
@@ -5911,31 +6216,31 @@ def _typed_import_script(payload: dict[str, Any]) -> str:
             "component": component.name,
             "entity_count": imported.count,
         },
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
     )
 
 
 def _typed_export_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r'''    design = _design()
+        r"""    design = _design()
     path = PAYLOAD["path"]
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
         raise RuntimeError(f"export directory does not exist on the Fusion host: {parent}")
-    manager = design.exportManager
     format_name = PAYLOAD["format"]
+    target, actual_binding = _cad_target_binding(design, PAYLOAD["target"], format_name)
+    expected_binding = PAYLOAD.get("binding")
+    if not isinstance(expected_binding, dict) or actual_binding != expected_binding:
+        raise RuntimeError("export CAD target binding changed after capability issuance")
+    manager = design.exportManager
     if format_name in ("step", "stp"):
-        target = _component(design, PAYLOAD["target"])
         options = manager.createSTEPExportOptions(path, target)
     elif format_name in ("iges", "igs"):
-        target = _component(design, PAYLOAD["target"])
         options = manager.createIGESExportOptions(path, target)
     elif format_name == "stl":
-        target = _body(design, PAYLOAD["target"])
         options = manager.createSTLExportOptions(target, path)
     elif format_name == "f3d":
-        target = _component(design, PAYLOAD["target"])
         options = manager.createFusionArchiveExportOptions(path, target)
     else:
         raise RuntimeError(f"unsupported export format: {format_name}")
@@ -5946,7 +6251,18 @@ def _typed_export_script(payload: dict[str, Any]) -> str:
     print(json.dumps({
         "success": True,
         "export": {"format": format_name, "path": path, "bytes": os.path.getsize(path)},
-    }, sort_keys=True))''',
+    }, sort_keys=True))""",
+    )
+
+
+def _typed_export_binding_read_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r"""    design = _design()
+    _target, binding = _cad_target_binding(
+        design, PAYLOAD["target"], PAYLOAD["format"]
+    )
+    print(json.dumps({"success": True, "binding": binding}, sort_keys=True))""",
     )
 
 

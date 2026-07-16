@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
@@ -24,6 +23,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from agent_core.capability_executor import CapabilityExecutionResult
+from benchmark.filesystem import (
+    atomic_write_text,
+    mkdir,
+    path_exists,
+    path_is_file,
+    unlink,
+)
 from benchmark.fixtures import FixtureDefinition
 from benchmark.models import BenchmarkCase
 from benchmark.runner import TrialContext
@@ -34,8 +40,7 @@ from fusion_agent_mcp.benchmark_bridge import (
     FusionRuntimeLifecycleBackend,
     _decode_script_payload,
 )
-from fusion_agent_mcp.runtime import FusionAgentRuntime
-from fusion_mcp_adapter.backend import selected_backend
+from fusion_agent_mcp.runtime import FusionAgentRuntime, RuntimeConfiguration
 
 
 RESULT_SCHEMA_VERSION = "fusion_real_capability_packs.v1"
@@ -786,30 +791,28 @@ def _io_case(step_path: str, stl_path: str) -> CapabilityPackCase:
     )
 
 
-def validate_real_runner_environment() -> dict[str, str]:
-    """Fail closed unless the process is explicitly configured for Autodesk real."""
+def validate_real_runner_environment(
+    configuration: RuntimeConfiguration,
+) -> dict[str, str]:
+    """Fail closed using the immutable process-start runtime configuration."""
 
-    backend = selected_backend()
-    mode = os.getenv("FUSION_AGENT_DEFAULT_MODE", "real").strip().lower()
-    require_real = os.getenv("FUSION_AGENT_REQUIRE_REAL", "0").strip().lower()
-    dry_run = os.getenv("FUSION_AGENT_ALLOW_DRY_RUN", "0").strip().lower()
-    if backend != "autodesk_http":
+    if configuration.backend != "autodesk_http":
         raise RuntimeError(
             "real capability packs require FUSION_AGENT_BACKEND=autodesk_http; "
-            f"selected={backend}"
+            f"selected={configuration.backend}"
         )
-    if mode != "real" or require_real not in {"1", "true", "yes", "on"}:
+    if configuration.default_mode != "real" or not configuration.require_real:
         raise RuntimeError(
             "real capability packs require FUSION_AGENT_DEFAULT_MODE=real and "
             "FUSION_AGENT_REQUIRE_REAL=1"
         )
-    if dry_run in {"1", "true", "yes", "on"}:
+    if configuration.allow_dry_run:
         raise RuntimeError("real capability packs refuse FUSION_AGENT_ALLOW_DRY_RUN=1")
     return {
-        "backend": backend,
-        "mode": mode,
-        "require_real": require_real,
-        "allow_dry_run": dry_run,
+        "backend": configuration.backend,
+        "mode": configuration.default_mode,
+        "require_real": "1" if configuration.require_real else "0",
+        "allow_dry_run": "1" if configuration.allow_dry_run else "0",
     }
 
 
@@ -1157,13 +1160,13 @@ def _prepare_case_artifacts(case: CapabilityPackCase, artifact_root: Path) -> No
         path = Path(value).resolve()
         if not path.is_relative_to(root):
             raise RuntimeError(f"capability pack artifact escapes nightly root: {path}")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            if not path.is_file():
+        mkdir(path.parent)
+        if path_exists(path):
+            if not path_is_file(path):
                 raise RuntimeError(
                     f"capability pack output is not a regular file: {path}"
                 )
-            path.unlink()
+            unlink(path)
 
 
 def _spec_sha256(spec: CadSpecV2) -> str:
@@ -1345,13 +1348,10 @@ def _group_summaries(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _write_result(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
+    atomic_write_text(
+        path,
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    temporary.replace(path)
 
 
 async def run_capability_pack_suite(
@@ -1445,15 +1445,20 @@ async def run_capability_pack_suite(
     return suite
 
 
-async def run_real_capability_packs(artifact_root: Path | str) -> dict[str, Any]:
+async def run_real_capability_packs(
+    artifact_root: Path | str,
+    *,
+    configuration: RuntimeConfiguration,
+) -> dict[str, Any]:
     """Validated CLI entry point used by the Windows real-Fusion workflow."""
 
-    environment = validate_real_runner_environment()
+    environment = validate_real_runner_environment(configuration)
     root = Path(artifact_root).resolve()
     cases = build_capability_pack_cases(root)
     runtime = FusionAgentRuntime(
         manifest_root=root / "manifests",
         outputs_root=root / "outputs",
+        configuration=configuration,
     )
     lifecycle = FusionRuntimeLifecycleBackend(runtime)
     try:

@@ -8,12 +8,24 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
+from agent_core.authority import (
+    AuthorityBroker,
+    AuthorityDeniedError,
+    AuthorityPolicy,
+)
 from agent_core.executor import ExecutionContext, ExecutionResult, Executor
-from agent_core.fusion_scripts import compact_snapshot_script, hub_inventory_script, safe_delete_apply_script, safe_visibility_apply_script
+from agent_core.fusion_scripts import (
+    compact_snapshot_script,
+    hub_inventory_script,
+    safe_delete_apply_script,
+    safe_visibility_apply_script,
+)
 from agent_core.guardrails import (
     bind_safe_change_targets,
     canonical_snapshot_fingerprint,
@@ -28,12 +40,18 @@ from agent_core.repair_loop import RepairLoop
 from cad_spec.models import CadSpec
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.backend import create_fusion_client
+from fusion_mcp_adapter.errors import ErrorCode
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.mock_client import MOCK_NATIVE_TOOLS, MockMcpClient
 from fusion_mcp_adapter.policy import ToolPolicy
+from fusion_mcp_adapter.tool_result import PublicError
 from fusion_tool_facade.facade import FusionFacade
 from fusion_tool_facade.policy import MOCK_FACADE_NATIVE_MAP
-from fusion_tool_facade.vendor_facade import VENDOR_FACADE_NATIVE_TOOLS, VendorFusionFacade, is_vendor_manifest
+from fusion_tool_facade.vendor_facade import (
+    VENDOR_FACADE_NATIVE_TOOLS,
+    VendorFusionFacade,
+    is_vendor_manifest,
+)
 from memory.gate import MemoryGate
 from memory.retriever import MemoryRetriever
 from memory.store import MemoryStore
@@ -112,12 +130,34 @@ class SessionController:
         *,
         real_client: Any | None = None,
         manifest_store: ManifestStore | None = None,
+        environment_snapshot: Mapping[str, str] | None = None,
+        authority_broker: AuthorityBroker | None = None,
+        authority_provider: str = "legacy-facade",
     ) -> None:
         self.planner = planner or RuleBasedPlanner()
         self.real_client = real_client or create_fusion_client()
         self._owns_real_client = real_client is None
         self.manifest_store = manifest_store
+        if authority_broker is None:
+            try:
+                authority_broker = AuthorityBroker(AuthorityPolicy.from_environment())
+            except AuthorityDeniedError:
+                authority_broker = AuthorityBroker(AuthorityPolicy.deny_all())
+        self.authority_broker = authority_broker
+        self.authority_provider = authority_provider
         self._safe_change_locks: dict[str, asyncio.Lock] = {}
+        captured = (
+            dict(environment_snapshot)
+            if environment_snapshot is not None
+            else {
+                "launcher_python": os.getenv("FUSION_AGENT_PYTHON") or "",
+                "fusion_mcp_endpoint": os.getenv("FUSION_MCP_ENDPOINT") or "",
+                "default_mode": os.getenv("FUSION_AGENT_DEFAULT_MODE") or "",
+                "require_real": os.getenv("FUSION_AGENT_REQUIRE_REAL") or "",
+                "allow_dry_run": os.getenv("FUSION_AGENT_ALLOW_DRY_RUN") or "",
+            }
+        )
+        self._environment_snapshot = MappingProxyType(captured)
 
     def _real_client(self) -> Any:
         return self.real_client
@@ -207,7 +247,13 @@ class SessionController:
 
         journal = SessionJournal(workspace_root, options.project, session_id)
         trace_logger = JsonlTraceLogger(journal.trace_path)
-        execution_context = ExecutionContext(mode=mode, project=options.project, output_dir=output_dir, dry_run=options.dry_run)
+        execution_context = ExecutionContext(
+            mode=mode,
+            project=options.project,
+            output_dir=output_dir,
+            dry_run=options.dry_run,
+            session_id=session_id,
+        )
 
         if options.dry_run:
             trace_logger.log(
@@ -230,7 +276,11 @@ class SessionController:
                 trace_logger=trace_logger,
                 session_id=session_id,
             )
-            executor = Executor(facade)
+            executor = Executor(
+                facade,
+                authority_broker=self.authority_broker,
+                authority_provider=self.authority_provider,
+            )
             verifier = GeometryVerifier(facade)
             repair_loop = RepairLoop(
                 verifier,
@@ -268,7 +318,10 @@ class SessionController:
             exports=execution.exports,
             simulated=options.dry_run,
             repair_attempts=repair_loop.attempts if repair_loop else [],
-            repaired=any(attempt.success for attempt in (repair_loop.attempts if repair_loop else [])),
+            repaired=any(
+                attempt.success
+                for attempt in (repair_loop.attempts if repair_loop else [])
+            ),
         )
 
         return SessionResult(
@@ -295,7 +348,9 @@ class SessionController:
         options = options or SessionOptions(mode=mode)
         session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         trace_logger = JsonlTraceLogger(Path("logs") / f"inspect_{session_id}.jsonl")
-        facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+        facade = await self._build_facade(
+            mode, options=options, trace_logger=trace_logger, session_id=session_id
+        )
         if isinstance(facade, VendorFusionFacade):
             return await facade.inspect_design(inspection_options or {})
         return await facade.inspect_design()
@@ -316,7 +371,9 @@ class SessionController:
 
         memory_store = MemoryStore(workspace_root=options.workspace_root)
         memory_store.seed_global()
-        retrieved = MemoryRetriever(memory_store).retrieve(user_prompt, project=options.project)
+        retrieved = MemoryRetriever(memory_store).retrieve(
+            user_prompt, project=options.project
+        )
         gated_memory = MemoryGate().filter(retrieved, user_prompt)
         skills = SkillRouter(SkillLoader().load()).rank(user_prompt)
         spec = await self.planner.plan(
@@ -330,7 +387,9 @@ class SessionController:
 
         journal = SessionJournal(options.workspace_root, options.project, session_id)
         trace_logger = JsonlTraceLogger(journal.trace_path)
-        facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+        facade = await self._build_facade(
+            mode, options=options, trace_logger=trace_logger, session_id=session_id
+        )
         verification = await GeometryVerifier(facade).verify(spec)
         status = "success" if verification.passed else "failed"
 
@@ -376,24 +435,43 @@ class SessionController:
         options.project = project or options.project
         if output_dir is not None:
             options.output_dir = Path(output_dir)
-        options.output_dir.mkdir(parents=True, exist_ok=True)
+        # A real capture destination must already exist beneath an approved
+        # export root. Creating a caller-selected directory before authority
+        # validation would itself be an unauthorized host mutation.
+        if mode != "real":
+            options.output_dir.mkdir(parents=True, exist_ok=True)
         session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         journal = SessionJournal(options.workspace_root, options.project, session_id)
         trace_logger = JsonlTraceLogger(journal.trace_path)
-        facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+        facade = await self._build_facade(
+            mode, options=options, trace_logger=trace_logger, session_id=session_id
+        )
 
         filename = name if name.lower().endswith(".png") else f"{name}.png"
         path = options.output_dir / filename
-        capture_payload = await facade.capture_viewport(
+        executor = Executor(
+            facade,
+            authority_broker=self.authority_broker,
+            authority_provider=self.authority_provider,
+        )
+        capture_payload = await executor.capture_viewport(
+            context=ExecutionContext(
+                mode=mode,
+                project=options.project,
+                output_dir=options.output_dir,
+                session_id=session_id,
+            ),
             name=Path(filename).stem,
-            path=path,
+            path=filename,
             view=view,
             isolate_prefix=isolate_prefix,
             width=width,
             height=height,
         )
         status = "success"
-        verification = VerificationResult.pass_result(metrics={"capture": capture_payload.get("screenshot", capture_payload)})
+        verification = VerificationResult.pass_result(
+            metrics={"capture": capture_payload.get("screenshot", capture_payload)}
+        )
         cad_spec_path = journal.write_text("cad_spec.json", "{}\n")
         journal.write_text("prompt.md", f"capture {view} viewport")
         journal.write_json("verification.json", verification)
@@ -417,7 +495,9 @@ class SessionController:
             capture=capture_payload,
         )
 
-    async def discover_tools(self, mode: str = "real", options: SessionOptions | None = None):
+    async def discover_tools(
+        self, mode: str = "real", options: SessionOptions | None = None
+    ):
         """Discover and save native MCP tools."""
 
         options = options or SessionOptions(mode=mode)
@@ -426,7 +506,9 @@ class SessionController:
         adapter = FusionMcpAdapter(
             client=client,
             manifest_store=manifest_store,
-            policy=ToolPolicy.from_manifest(MOCK_NATIVE_TOOLS if mode == "mock" else set()),
+            policy=ToolPolicy.from_manifest(
+                MOCK_NATIVE_TOOLS if mode == "mock" else set()
+            ),
         )
         manifest = await adapter.discover(save=False)
         try:
@@ -438,7 +520,9 @@ class SessionController:
             pass
         return manifest
 
-    async def session_health(self, mode: str = "real", options: SessionOptions | None = None) -> dict:
+    async def session_health(
+        self, mode: str = "real", options: SessionOptions | None = None
+    ) -> dict:
         """Report launcher, manifest, endpoint, and native tool-surface health."""
 
         options = options or SessionOptions(mode=mode)
@@ -455,12 +539,14 @@ class SessionController:
         diagnostics: dict = {
             "mode": mode,
             "launcher_ok": True,
-            "launcher_python": os.getenv("FUSION_AGENT_PYTHON") or "",
+            "launcher_python": self._environment_snapshot.get("launcher_python", ""),
             "python_executable": sys.executable,
-            "fusion_mcp_endpoint": os.getenv("FUSION_MCP_ENDPOINT") or "",
-            "default_mode": os.getenv("FUSION_AGENT_DEFAULT_MODE") or "",
-            "require_real": os.getenv("FUSION_AGENT_REQUIRE_REAL") or "",
-            "allow_dry_run": os.getenv("FUSION_AGENT_ALLOW_DRY_RUN") or "",
+            "fusion_mcp_endpoint": self._environment_snapshot.get(
+                "fusion_mcp_endpoint", ""
+            ),
+            "default_mode": self._environment_snapshot.get("default_mode", ""),
+            "require_real": self._environment_snapshot.get("require_real", ""),
+            "allow_dry_run": self._environment_snapshot.get("allow_dry_run", ""),
             "manifest_ok": manifest is not None,
             "manifest_error": manifest_load_error,
             "manifest_source": manifest.source if manifest else None,
@@ -478,7 +564,9 @@ class SessionController:
                 await client.ping()
                 discovered = client.current_manifest
                 if discovered is None:  # defensive: ping connects and discovers
-                    raise RuntimeError("live MCP manifest unavailable after health ping")
+                    raise RuntimeError(
+                        "live MCP manifest unavailable after health ping"
+                    )
                 live_client_diagnostics = client.diagnostics
             else:
                 discovered = await client.list_tools()
@@ -488,7 +576,10 @@ class SessionController:
             live_fingerprint = discovered.fingerprint
             manifest_drift = bool(
                 live_client_diagnostics.get("manifest_drift")
-                or (cached_fingerprint is not None and cached_fingerprint != live_fingerprint)
+                or (
+                    cached_fingerprint is not None
+                    and cached_fingerprint != live_fingerprint
+                )
             )
             diagnostics.update(
                 {
@@ -559,8 +650,12 @@ class SessionController:
             )
             raw_result = {"success": True, "snapshot": snapshot}
         else:
-            trace_logger = JsonlTraceLogger(Path("logs") / f"snapshot_{session_id}.jsonl")
-            facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+            trace_logger = JsonlTraceLogger(
+                Path("logs") / f"snapshot_{session_id}.jsonl"
+            )
+            facade = await self._build_facade(
+                mode, options=options, trace_logger=trace_logger, session_id=session_id
+            )
             if isinstance(facade, VendorFusionFacade):
                 raw_result = await facade._execute_trusted_read_script_json(
                     compact_snapshot_script(
@@ -630,12 +725,18 @@ class SessionController:
                 "results": [],
             }
         session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        trace_logger = JsonlTraceLogger(Path("logs") / f"hub_inventory_{session_id}.jsonl")
-        facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+        trace_logger = JsonlTraceLogger(
+            Path("logs") / f"hub_inventory_{session_id}.jsonl"
+        )
+        facade = await self._build_facade(
+            mode, options=options, trace_logger=trace_logger, session_id=session_id
+        )
         if not isinstance(facade, VendorFusionFacade):
             raise RuntimeError("hub inventory requires the Fusion CRUD script profile")
         result = await facade._execute_trusted_read_script_json(
-            hub_inventory_script({"query": query, "max_results": max_results, "enrich": enrich})
+            hub_inventory_script(
+                {"query": query, "max_results": max_results, "enrich": enrich}
+            )
         )
         return {"mode": mode, **result}
 
@@ -670,10 +771,17 @@ class SessionController:
         )
         baseline_snapshot = baseline.get("snapshot", {})
         baseline_complete = _snapshot_is_complete(baseline_snapshot)
-        classification = classify_safe_change(operation, targets, policy, baseline_snapshot)
         document_identity = snapshot_document_identity(baseline_snapshot)
         state_fingerprint = canonical_snapshot_fingerprint(baseline_snapshot)
-        bound_targets, binding_errors = bind_safe_change_targets(targets, baseline_snapshot)
+        bound_targets, binding_errors = bind_safe_change_targets(
+            targets, baseline_snapshot
+        )
+        classification = classify_safe_change(
+            operation,
+            bound_targets if operation == "delete" else targets,
+            policy,
+            baseline_snapshot,
+        )
         if not baseline_complete:
             classification = {
                 **classification,
@@ -682,7 +790,9 @@ class SessionController:
                 "classification": "incomplete_baseline",
                 "risk_level": "high",
                 "reasons": list(classification.get("reasons") or [])
-                + ["The bounded baseline is incomplete; increase the explicit inspection budget before applying any change."],
+                + [
+                    "The bounded baseline is incomplete; increase the explicit inspection budget before applying any change."
+                ],
             }
         elif not document_identity or not state_fingerprint:
             classification = {
@@ -692,7 +802,9 @@ class SessionController:
                 "classification": "document_identity_unavailable",
                 "risk_level": "high",
                 "reasons": list(classification.get("reasons") or [])
-                + ["The active document has no stable data-file or unsaved-session identity."],
+                + [
+                    "The active document has no stable data-file or unsaved-session identity."
+                ],
             }
         elif binding_errors:
             classification = {
@@ -702,7 +814,9 @@ class SessionController:
                 "classification": "target_binding_failed",
                 "risk_level": "high",
                 "reasons": list(classification.get("reasons") or [])
-                + ["Every mutation target must resolve to exactly one stable snapshot entity."],
+                + [
+                    "Every mutation target must resolve to exactly one stable snapshot entity."
+                ],
             }
         preview_id = datetime.now(timezone.utc).strftime("preview_%Y%m%dT%H%M%S%fZ")
         preview_dir = options.output_dir / "safe_change_previews"
@@ -729,7 +843,9 @@ class SessionController:
             "bound_targets": bound_targets,
             "binding_errors": binding_errors,
             "inspection_budget": _snapshot_budget(policy),
-            "requirements": _normalize_safe_change_requirements(policy.get("requirements") or []),
+            "requirements": _normalize_safe_change_requirements(
+                policy.get("requirements") or []
+            ),
             "negative_impact": False,
         }
         _atomic_write_json(preview_path, payload)
@@ -749,13 +865,17 @@ class SessionController:
         """Apply one small previewed batch and verify for visible regressions."""
 
         if save_after:
-            raise ValueError("save_after must be false; save only after a separate verified audit")
+            raise ValueError(
+                "save_after must be false; save only after a separate verified audit"
+            )
         if "/" in preview_id or "\\" in preview_id or ".." in preview_id:
             raise ValueError("preview_id must be a simple identifier")
         options = options or SessionOptions(mode=mode, project=project or "default")
         options.mode = mode
         options.project = project or options.project
-        preview_path = options.output_dir / "safe_change_previews" / f"{preview_id}.json"
+        preview_path = (
+            options.output_dir / "safe_change_previews" / f"{preview_id}.json"
+        )
         if not preview_path.exists():
             raise FileNotFoundError(preview_path)
         lock_key = str(preview_path.resolve())
@@ -769,7 +889,11 @@ class SessionController:
                     "No change was applied. Create and review a new v2 preview.",
                 )
             if preview.get("project") != options.project or preview.get("mode") != mode:
-                return _aborted_change(preview, "preview_context_mismatch", "Apply the preview in its original project and mode.")
+                return _aborted_change(
+                    preview,
+                    "preview_context_mismatch",
+                    "Apply the preview in its original project and mode.",
+                )
             if preview.get("preview_status") == "applying":
                 if preview.get("dispatch_phase") == "claimed":
                     # The durable claim was written, but the backend invocation
@@ -821,23 +945,48 @@ class SessionController:
             operation = normalize_operation(preview["operation"])
             classification = dict(preview.get("classification") or {})
             if classification.get("blocked"):
-                return _aborted_change(preview, "preview_blocked", "Review the preview classification and adjust targets/policy before applying.")
+                return _aborted_change(
+                    preview,
+                    "preview_blocked",
+                    "Review the preview classification and adjust targets/policy before applying.",
+                )
             if operation == "delete" and not confirm_destructive:
-                return _aborted_change(preview, "confirm_destructive_required", "Set confirm_destructive=true only after reviewing the baseline and targets.")
+                return _aborted_change(
+                    preview,
+                    "confirm_destructive_required",
+                    "Set confirm_destructive=true only after reviewing the baseline and targets.",
+                )
             if operation == "delete" and batch_size > 5:
-                return _aborted_change(preview, "delete_batch_too_large", "Run the first destructive batch with batch_size<=5.")
+                return _aborted_change(
+                    preview,
+                    "delete_batch_too_large",
+                    "Run the first destructive batch with batch_size<=5.",
+                )
             if operation in {"move", "componentize"}:
-                return _aborted_change(preview, f"{operation}_execution_not_implemented", "Use preview output to build a specialized reversible workflow.")
+                return _aborted_change(
+                    preview,
+                    f"{operation}_execution_not_implemented",
+                    "Use preview output to build a specialized reversible workflow.",
+                )
             if operation not in {"visibility", "delete"}:
-                return _aborted_change(preview, "unsupported_operation", "Only visibility and bounded delete applies are currently executable.")
+                return _aborted_change(
+                    preview,
+                    "unsupported_operation",
+                    "Only visibility and bounded delete applies are currently executable.",
+                )
 
             before_payload = _read_json_path(Path(preview["before_snapshot_path"]))
             before_snapshot = before_payload.get("snapshot", before_payload)
             if not _snapshot_is_complete(before_snapshot):
-                return _aborted_change(preview, "incomplete_baseline", "Capture a complete baseline with a larger explicit budget before retrying.")
-            if (
-                canonical_snapshot_fingerprint(before_snapshot) != preview.get("state_fingerprint")
-                or snapshot_document_identity(before_snapshot) != preview.get("document_identity")
+                return _aborted_change(
+                    preview,
+                    "incomplete_baseline",
+                    "Capture a complete baseline with a larger explicit budget before retrying.",
+                )
+            if canonical_snapshot_fingerprint(before_snapshot) != preview.get(
+                "state_fingerprint"
+            ) or snapshot_document_identity(before_snapshot) != preview.get(
+                "document_identity"
             ):
                 preview.update(
                     {
@@ -856,16 +1005,23 @@ class SessionController:
                 project=options.project,
                 mode=mode,
                 options=options,
-                **_snapshot_budget(preview.get("inspection_budget") or preview.get("policy") or {}),
+                **_snapshot_budget(
+                    preview.get("inspection_budget") or preview.get("policy") or {}
+                ),
                 label="preapply",
             )
             preapply_snapshot = preapply.get("snapshot", preapply)
-            fresh_bindings, fresh_binding_errors = bind_safe_change_targets(preview.get("targets") or [], preapply_snapshot)
+            fresh_bindings, fresh_binding_errors = bind_safe_change_targets(
+                preview.get("targets") or [], preapply_snapshot
+            )
             guard = {
                 "complete": _snapshot_is_complete(preapply_snapshot),
-                "document_matches": snapshot_document_identity(preapply_snapshot) == preview.get("document_identity"),
-                "fingerprint_matches": canonical_snapshot_fingerprint(preapply_snapshot) == preview.get("state_fingerprint"),
-                "bindings_match": _binding_identities(fresh_bindings) == _binding_identities(preview.get("bound_targets") or []),
+                "document_matches": snapshot_document_identity(preapply_snapshot)
+                == preview.get("document_identity"),
+                "fingerprint_matches": canonical_snapshot_fingerprint(preapply_snapshot)
+                == preview.get("state_fingerprint"),
+                "bindings_match": _binding_identities(fresh_bindings)
+                == _binding_identities(preview.get("bound_targets") or []),
                 "binding_errors": fresh_binding_errors,
             }
             guard["passed"] = bool(
@@ -886,7 +1042,11 @@ class SessionController:
                     }
                 )
                 _atomic_write_json(preview_path, preview)
-                return _aborted_change(preview, "preview_state_drift", "No mutation was dispatched. Create a new preview from the current design state.")
+                return _aborted_change(
+                    preview,
+                    "preview_state_drift",
+                    "No mutation was dispatched. Create a new preview from the current design state.",
+                )
 
             binding_by_index = {
                 int(binding["target_index"]): binding
@@ -894,30 +1054,51 @@ class SessionController:
                 if isinstance(binding, dict) and "target_index" in binding
             }
             batch_targets = []
-            for target_index, target in enumerate(list(preview.get("targets") or [])[: max(1, int(batch_size))]):
+            for target_index, target in enumerate(
+                list(preview.get("targets") or [])[: max(1, int(batch_size))]
+            ):
                 binding = binding_by_index.get(target_index, {})
-                batch_targets.append(
-                    {
-                        **target,
-                        "entity_token": binding.get("entity_token") or target.get("entity_token"),
-                        "key": binding.get("key") or target.get("key"),
-                        "path": binding.get("path") or target.get("path"),
-                    }
-                )
+                if operation == "delete":
+                    batch_targets.append(dict(binding))
+                else:
+                    batch_targets.append(
+                        {
+                            **target,
+                            "entity_token": binding.get("entity_token")
+                            or target.get("entity_token"),
+                            "key": binding.get("key") or target.get("key"),
+                            "path": binding.get("path") or target.get("path"),
+                        }
+                    )
             session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             facade = None
             if mode != "mock":
-                trace_logger = JsonlTraceLogger(Path("logs") / f"safe_change_{operation}_{session_id}.jsonl")
-                facade = await self._build_facade(mode, options=options, trace_logger=trace_logger, session_id=session_id)
+                trace_logger = JsonlTraceLogger(
+                    Path("logs") / f"safe_change_{operation}_{session_id}.jsonl"
+                )
+                facade = await self._build_facade(
+                    mode,
+                    options=options,
+                    trace_logger=trace_logger,
+                    session_id=session_id,
+                )
                 if not isinstance(facade, VendorFusionFacade):
-                    return _aborted_change(preview, "unsupported_facade", "Safe-change apply requires the Fusion CRUD script profile.")
+                    return _aborted_change(
+                        preview,
+                        "unsupported_facade",
+                        "Safe-change apply requires the Fusion CRUD script profile.",
+                    )
 
             claim_path = preview_path.with_suffix(".claim")
             try:
                 claim_fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(claim_fd)
             except FileExistsError:
-                return _aborted_change(preview, "preview_already_claimed", "This preview is already applying or consumed; create a new preview.")
+                return _aborted_change(
+                    preview,
+                    "preview_already_claimed",
+                    "This preview is already applying or consumed; create a new preview.",
+                )
 
             preview.update(
                 {
@@ -933,7 +1114,7 @@ class SessionController:
             _atomic_write_json(preview_path, preview)
 
             applied: dict[str, object]
-            error: str | None = None
+            error_code: str | None = None
             explicit_transport: dict[str, object] = {}
             if mode == "mock":
                 applied = {
@@ -967,17 +1148,26 @@ class SessionController:
                     if isinstance(value, dict):
                         explicit_transport = value
                 except RuntimeError as exc:
-                    error = str(exc)
+                    candidate = str(getattr(exc, "error_code", ""))
+                    error_code = (
+                        candidate
+                        if candidate in {item.value for item in ErrorCode}
+                        else ErrorCode.FUSION_OPERATION_FAILED.value
+                    )
                     value = getattr(exc, "transport", None)
                     if isinstance(value, dict):
                         explicit_transport = value
-                    applied = {"success": False, "error": error}
+                    applied = {"success": False, "error_code": error_code}
 
             transport = _safe_change_transport_fields(
                 mode=mode,
-                diagnostics=(self.real_client.diagnostics if mode != "mock" and hasattr(self.real_client, "diagnostics") else {}),
+                diagnostics=(
+                    self.real_client.diagnostics
+                    if mode != "mock" and hasattr(self.real_client, "diagnostics")
+                    else {}
+                ),
                 invoked=mode != "mock",
-                error=error,
+                error_code=error_code,
                 expected_operation_id=str(preview.get("dispatch_operation_id") or ""),
                 explicit_transport=explicit_transport,
             )
@@ -989,24 +1179,41 @@ class SessionController:
             preview.update(
                 {
                     "preview_status": "consumed" if must_consume else "ready",
-                    "consumed_at": datetime.now(timezone.utc).isoformat() if must_consume else None,
+                    "consumed_at": datetime.now(timezone.utc).isoformat()
+                    if must_consume
+                    else None,
                     **transport,
                 }
             )
             _atomic_write_json(preview_path, preview)
             if preview["preview_status"] == "ready":
                 claim_path.unlink(missing_ok=True)
-            if error:
+            if error_code:
                 outcome_unknown = transport["mutation_outcome"] == "unknown"
-                status = "mutation_outcome_unknown" if outcome_unknown else "execution_failed"
+                status = (
+                    "mutation_outcome_unknown"
+                    if outcome_unknown
+                    else "execution_failed"
+                )
+                public_code = (
+                    ErrorCode.MUTATION_OUTCOME_UNKNOWN.value
+                    if outcome_unknown
+                    else error_code
+                )
+                public_error = PublicError.downstream_failure(public_code).model_dump(
+                    mode="json"
+                )
+                applied["error"] = public_error
                 return {
                     **preview,
                     "status": status,
-                    "error_code": "MUTATION_OUTCOME_UNKNOWN" if outcome_unknown else "FUSION_OPERATION_FAILED",
-                    "error": error,
+                    "error_code": public_code,
+                    "error": public_error,
                     "applied": applied,
                     "negative_impact": False,
-                    "recovery_instructions": "Do not replay this preview. Inspect the active design before deciding whether to undo." if transport["dispatched"] else "Correct the pre-dispatch failure and create a fresh preview.",
+                    "recovery_instructions": "Do not replay this preview. Inspect the active design before deciding whether to undo."
+                    if transport["dispatched"]
+                    else "Correct the pre-dispatch failure and create a fresh preview.",
                 }
 
             after = await self.compact_snapshot(
@@ -1038,7 +1245,9 @@ class SessionController:
                 }
 
             diff = diff_snapshots(before_snapshot, after_snapshot)
-            verification = _safe_change_verification(preview, applied, diff, len(batch_targets))
+            verification = _safe_change_verification(
+                preview, applied, diff, len(batch_targets)
+            )
             verification["mutation_status"] = "observed_in_readback"
             if transport["mutation_outcome"] == "unknown":
                 verification["mutation_status"] = "outcome_unknown"
@@ -1109,7 +1318,9 @@ class SessionController:
             pass
         manifest_names = manifest.names()
         if is_vendor_manifest(manifest_names):
-            policy = ToolPolicy.from_manifest(VENDOR_FACADE_NATIVE_TOOLS & manifest_names)
+            policy = ToolPolicy.from_manifest(
+                VENDOR_FACADE_NATIVE_TOOLS & manifest_names
+            )
             return VendorFusionFacade(
                 FusionMcpAdapter(
                     client=client,
@@ -1122,7 +1333,9 @@ class SessionController:
                 available_tools=manifest_names,
             )
 
-        policy = ToolPolicy.from_manifest(set(MOCK_FACADE_NATIVE_MAP.values()) & manifest_names)
+        policy = ToolPolicy.from_manifest(
+            set(MOCK_FACADE_NATIVE_MAP.values()) & manifest_names
+        )
         return FusionFacade(
             FusionMcpAdapter(
                 client=client,
@@ -1143,7 +1356,9 @@ def _simulated_verification(spec) -> VerificationResult:
         metrics={
             "simulated": True,
             "planned_components": len(spec.components),
-            "planned_features": sum(len(component.features) for component in spec.components),
+            "planned_features": sum(
+                len(component.features) for component in spec.components
+            ),
             "planned_parameters": len(spec.parameters),
             "planned_exports": [
                 feature.name
@@ -1196,13 +1411,24 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     """Persist a preview transition atomically within its output directory."""
 
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
     os.replace(temporary, path)
 
 
-def _binding_identities(bindings: list[dict]) -> list[tuple[str, str]]:
+def _binding_identities(bindings: list[dict]) -> list[tuple[str, ...]]:
     return sorted(
-        (str(binding.get("kind") or ""), str(binding.get("identifier") or ""))
+        (
+            str(binding.get("kind") or ""),
+            str(binding.get("identifier") or ""),
+            str(binding.get("binding_fingerprint") or ""),
+            str(binding.get("visible")),
+            str(binding.get("is_root")),
+            str(binding.get("is_referenced")),
+            str(binding.get("is_imported")),
+            str(binding.get("shared_definition")),
+        )
         for binding in bindings
         if isinstance(binding, dict)
     )
@@ -1220,8 +1446,12 @@ def _normalize_safe_change_requirements(requirements: object) -> list[dict]:
         assertion_ids = item.get("assertion_ids") or []
         if not requirement_id or requirement_id in seen:
             raise ValueError("policy requirement ids must be present and unique")
-        if not isinstance(assertion_ids, list) or not all(isinstance(value, str) and value for value in assertion_ids):
-            raise ValueError(f"policy.requirements[{index}].assertion_ids must be an array of ids")
+        if not isinstance(assertion_ids, list) or not all(
+            isinstance(value, str) and value for value in assertion_ids
+        ):
+            raise ValueError(
+                f"policy.requirements[{index}].assertion_ids must be an array of ids"
+            )
         oracle = str(item.get("oracle") or "contract")
         if oracle not in {"contract", "independent_oracle"}:
             raise ValueError(
@@ -1245,10 +1475,16 @@ def _safe_change_transport_fields(
     mode: str,
     diagnostics: dict,
     invoked: bool,
-    error: str | None,
+    error_code: str | None = None,
+    error: str | None = None,
     expected_operation_id: str,
     explicit_transport: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    # ``error`` is a compatibility-only alias for callers from 0.4.0.  Treat it
+    # as a code only when it is an exact member of the public error registry;
+    # arbitrary exception text must never influence or escape this boundary.
+    if error_code is None and error in {item.value for item in ErrorCode}:
+        error_code = error
     explicit_transport = (
         explicit_transport if isinstance(explicit_transport, dict) else {}
     )
@@ -1263,16 +1499,15 @@ def _safe_change_transport_fields(
             not last_call.get("operation_id")
             or last_call.get("operation_id") == expected_operation_id
         )
-        and (
-            not last_call.get("semantics")
-            or last_call.get("semantics") == "mutating"
-        )
+        and (not last_call.get("semantics") or last_call.get("semantics") == "mutating")
     )
-    dispatched = bool(event_matches and last_call.get("dispatched")) if mode != "mock" else False
+    dispatched = (
+        bool(event_matches and last_call.get("dispatched")) if mode != "mock" else False
+    )
     outcome_event_missing = bool(mode != "mock" and invoked and not event_matches)
     unknown = bool(
         (event_matches and last_call.get("mutation_outcome") == "unknown")
-        or (error and "MUTATION_OUTCOME_UNKNOWN" in error)
+        or error_code == ErrorCode.MUTATION_OUTCOME_UNKNOWN.value
         or outcome_event_missing
     )
     replay_suppressed = bool(
@@ -1300,7 +1535,10 @@ def _safe_change_verification(
     )
     assertions = [
         {"id": "readback_complete", "passed": True},
-        {"id": "no_visible_regression", "passed": not bool(diff.get("negative_impact"))},
+        {
+            "id": "no_visible_regression",
+            "passed": not bool(diff.get("negative_impact")),
+        },
         {
             "id": "expected_target_count",
             "passed": actual_count == expected_target_count,
@@ -1314,8 +1552,12 @@ def _safe_change_verification(
     requirement_results = []
     for requirement in requirements:
         assertion_ids = list(requirement.get("assertion_ids") or [])
-        covered = bool(assertion_ids) and all(assertion_id in assertions_by_id for assertion_id in assertion_ids)
-        passed = covered and all(assertions_by_id[assertion_id]["passed"] for assertion_id in assertion_ids)
+        covered = bool(assertion_ids) and all(
+            assertion_id in assertions_by_id for assertion_id in assertion_ids
+        )
+        passed = covered and all(
+            assertions_by_id[assertion_id]["passed"] for assertion_id in assertion_ids
+        )
         independent = requirement.get("oracle") == "independent_oracle"
         requirement_results.append(
             {
@@ -1325,14 +1567,22 @@ def _safe_change_verification(
                 **({"oracle_evidence": "not_available"} if independent else {}),
             }
         )
-    required_results = [item for item in requirement_results if item.get("required", True)]
+    required_results = [
+        item for item in requirement_results if item.get("required", True)
+    ]
     if not required:
         coverage = "none"
     elif all(item["covered"] for item in required_results):
         coverage = "complete"
     else:
-        coverage = "partial" if any(item["covered"] for item in required_results) else "none"
-    assertion_status = "passed" if assertions and all(item["passed"] for item in assertions) else "failed"
+        coverage = (
+            "partial" if any(item["covered"] for item in required_results) else "none"
+        )
+    assertion_status = (
+        "passed"
+        if assertions and all(item["passed"] for item in assertions)
+        else "failed"
+    )
     contract_verified = bool(
         required
         and coverage == "complete"

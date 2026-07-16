@@ -391,18 +391,79 @@ class InterferenceOperation(OperationBase):
     output_ref: AnalysisOutputRef
 
 
+class HostFileRef(StrictModel):
+    """Reference to one path beneath an independently configured host root."""
+
+    root_id: str
+    relative_path: str
+
+    @field_validator("root_id")
+    @classmethod
+    def _validate_root_id(cls, value: str) -> str:
+        if not value or len(value) > 64:
+            raise ValueError("host root_id must contain 1 through 64 characters")
+        if not value[0].islower() or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+            for character in value
+        ):
+            raise ValueError("host root_id must match [a-z][a-z0-9-]{0,63}")
+        return value
+
+    @field_validator("relative_path")
+    @classmethod
+    def _validate_relative_path(cls, value: str) -> str:
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        if not value or value != value.strip():
+            raise ValueError(
+                "host relative_path must be non-empty without outer whitespace"
+            )
+        windows = PureWindowsPath(value)
+        posix = PurePosixPath(value)
+        if (
+            windows.is_absolute()
+            or posix.is_absolute()
+            or windows.drive
+            or windows.root
+        ):
+            raise ValueError("host relative_path must be relative")
+        parts = {
+            part for part in (*windows.parts, *posix.parts) if part not in {"", "."}
+        }
+        if ".." in parts:
+            raise ValueError("host relative_path must not contain parent traversal")
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("host relative_path contains control characters")
+        return value
+
+
 class ImportOperation(OperationBase):
     kind: Literal["io.import"]
-    path: str
+    path: str | None = None
+    file_ref: HostFileRef | None = None
     format: Literal["step", "stp", "iges", "igs", "sat", "f3d"]
     component_name: str
+
+    @model_validator(mode="after")
+    def _validate_file_request(self) -> "ImportOperation":
+        if (self.path is None) == (self.file_ref is None):
+            raise ValueError("io.import requires exactly one of path or file_ref")
+        return self
 
 
 class ExportOperation(OperationBase):
     kind: Literal["io.export"]
     target_ref: ExportTargetRef
-    path: str
+    path: str | None = None
+    file_ref: HostFileRef | None = None
     format: Literal["step", "stp", "stl", "iges", "igs", "f3d"]
+    overwrite: bool = False
+
+    @model_validator(mode="after")
+    def _validate_file_request(self) -> "ExportOperation":
+        if (self.path is None) == (self.file_ref is None):
+            raise ValueError("io.export requires exactly one of path or file_ref")
+        return self
 
 
 class SheetMetalOperation(OperationBase):
