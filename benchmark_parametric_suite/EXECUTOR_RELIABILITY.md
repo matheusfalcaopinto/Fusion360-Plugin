@@ -24,7 +24,7 @@ Este documento registra dois comportamentos distintos:
 Binário que contém o preâmbulo do executor:
 
 ```text
-C:\Users\mathe\AppData\Local\Autodesk\webdeploy\production\257040cabc1dffce734a8079453b19b0ffe2b735\Applications\Fusion\NaFusion10.dll
+<local-fusion-install>/Applications/Fusion/NaFusion10.dll
 ```
 
 Inventário observado:
@@ -43,7 +43,7 @@ Inventário observado:
 Strings imediatamente adjacentes identificam a origem interna como:
 
 ```text
-R:\Core\Fusion\Server\Fusion\MCP\ToolSupport\Script.cpp
+<autodesk-internal-source>/Fusion/MCP/ToolSupport/Script.cpp
 ```
 
 ### Logs do Fusion
@@ -51,17 +51,16 @@ R:\Core\Fusion\Server\Fusion\MCP\ToolSupport\Script.cpp
 Os números de linha abaixo referem-se aos arquivos locais:
 
 ```text
-C:\Users\mathe\AppData\Local\Autodesk\Autodesk Fusion 360\STS2ERSCR2QS2JH4\logs\AppLogFile20260714T003252.log
-C:\Users\mathe\AppData\Local\Autodesk\Autodesk Fusion 360\STS2ERSCR2QS2JH4\logs\AppLogFile20260713T145412.log
+<local-fusion-profile>/logs/<fusion-log>.log
 ```
 
 O primeiro log registra `Version : 2704.1.23` na linha 46. Esses logs são
 evidência diagnóstica da máquina e não fazem parte do repositório.
 
-### Artefatos rastreados no repositório
+### Artefatos de diagnóstico
 
 - `benchmark_parametric_suite/tools/fusion_python_reset/FusionPythonReset.py`
-- `benchmark_parametric_suite/cases/b07_packaging_machine/reference_result.json`
+- resultados runtime em `outputs/reference-runs/<run_id>/` (não rastreados)
 - `harness/packages/fusion_mcp_adapter/real_client.py`
 - `harness/packages/agent_core/fast_path.py`
 
@@ -273,19 +272,17 @@ Python e pode estar indisponível durante a quarentena.
 
 Na execução `ref_20260714T053257Z`, caso `b07_packaging_machine`:
 
-- o payload do request 12, sessão `8117125482084897280`, contém um script
+- o payload de uma chamada observada contém um script
   guarded com exatamente `37.976` caracteres e `37.976` bytes UTF-8;
 - o script contém uma definição `_fusion_agent_user_run` e uma definição
   pública `run`, cujo final chama `_fusion_agent_user_run`;
 - `MCP:Script.cpp:112` registra o payload na linha 25614 do log;
-- `MCP:Script.cpp:152` registra o arquivo temporário
-  `script-3088ede7-73e8-4bad-a812-4bcd08609aad.py` na linha 25615;
+- `MCP:Script.cpp:152` registra um arquivo temporário na linha 25615;
 - o runner registra início e execução Python nas linhas 25616–25620;
 - a telemetria Autodesk retorna `success=true` em apenas 4 ms na linha 25621;
-- o harness registra uma chamada mutável e um único dispatch em
-  `reference_result.json`, linhas 1653–1679; e
-- baseline e readback têm exatamente o mesmo fingerprint
-  `2dcca78bfdb7c2c4f7dc19d061d10cf14aa2b0430bb5abaf897c3454e7167068`,
+- o harness registra uma chamada mutável e um único dispatch no resultado
+  runtime privado; e
+- baseline e readback têm exatamente o mesmo fingerprint redigido,
   com um componente raiz e zero parâmetros, corpos, features, occurrences e
   sketches; ver linhas 1431–1442 e 1632–1643.
 

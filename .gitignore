@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+/.pytest-root-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -17,6 +18,8 @@ coverage.xml
 htmlcov/
 build/
 dist/
+.dependency-wheelhouse/
+.quality-wheelhouse/
 *.egg-info/
 
 # Runtime logs, traces, and local artifacts

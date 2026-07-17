@@ -9,12 +9,18 @@ import pytest
 from pydantic import ValidationError
 
 from agent_core.repair_loop import RepairLoop
+from agent_core.executor import ExecutionContext
 from cad_spec.models import AcceptanceTestSpec, CadSpec
 from fusion_mcp_adapter.tool_result import PUBLIC_DOWNSTREAM_ERROR_MESSAGE
 from telemetry.journal import SessionJournal
 from verifier import geometry
 from verifier.geometry import GeometryVerifier
-from verifier.result_models import DecisionReasonCode, DecisionStatus, FailureCode
+from verifier.result_models import (
+    DecisionReasonCode,
+    DecisionStatus,
+    FailureCode,
+    VerificationIssue,
+)
 
 
 class EvidenceFacade:
@@ -214,6 +220,15 @@ def _spec(export_path: Path, screenshot_path: Path) -> CadSpec:
     )
 
 
+def test_acceptance_fixture_exactly_matches_assertion_registry(tmp_path: Path) -> None:
+    fixture_types = [
+        acceptance["type"] for acceptance in _acceptance_tests(tmp_path / "part.step")
+    ]
+
+    assert len(fixture_types) == len(set(fixture_types))
+    assert set(fixture_types) == set(geometry.ASSERTION_REGISTRY)
+
+
 def _physical_properties_spec() -> CadSpec:
     return CadSpec.model_validate(
         {
@@ -382,7 +397,15 @@ async def test_verifier_dispatches_every_registered_assertion_with_complete_evid
     export_path.write_text("STEP", encoding="utf-8")
     screenshot_path.write_bytes(b"PNG!")
     spec = _spec(export_path, screenshot_path)
-    facade = EvidenceFacade(_passing_state(screenshot_path))
+    state = _passing_state(screenshot_path)
+    state["exports"] = {
+        str(export_path): {
+            "path": str(export_path),
+            "format": "step",
+            "bytes": export_path.stat().st_size,
+        }
+    }
+    facade = EvidenceFacade(state)
 
     result = await GeometryVerifier(facade).verify(spec)  # type: ignore[arg-type]
 
@@ -419,6 +442,13 @@ async def test_boolean_in_registry_numeric_evidence_is_incomplete_and_never_repa
     export_path.write_text("STEP", encoding="utf-8")
     screenshot_path.write_bytes(b"PNG!")
     state = _passing_state(screenshot_path)
+    state["exports"] = {
+        str(export_path): {
+            "path": str(export_path),
+            "format": "step",
+            "bytes": export_path.stat().st_size,
+        }
+    }
     _set_nested(state, path, boolean_value)
     mutation_probe = _MutationProbe()
     repair_loop = RepairLoop(
@@ -449,17 +479,78 @@ class _MutationProbe:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def activate_component(self, _target: str) -> bool:
+    async def activate_component_bound(self, *_args: Any) -> bool:
         self.calls += 1
         return True
 
-    async def replay_features(self, *_args: Any) -> bool:
+    async def replay_features_bound(self, *_args: Any) -> bool:
         self.calls += 1
         return True
 
-    async def replay_exports(self, *_args: Any) -> bool:
+    async def replay_exports_bound(self, *_args: Any) -> bool:
         self.calls += 1
         return True
+
+
+@pytest.mark.asyncio
+async def test_export_repair_never_creates_unbound_host_directories(
+    tmp_path: Path,
+) -> None:
+    unbound_parent = tmp_path / "unbound" / "nested"
+    issue = VerificationIssue(
+        code=FailureCode.EXPORT_FAILED,
+        message="missing export",
+        details={"missing": [str(unbound_parent / "part.step")]},
+    )
+    executor = _MutationProbe()
+    repair = RepairLoop(object(), executor=executor)  # type: ignore[arg-type]
+    spec = CadSpec.model_validate(
+        {
+            "intent": "Authority must own export directory creation",
+            "parameters": [],
+            "components": [{"name": "fixture", "features": []}],
+            "acceptance_tests": [{"type": "body_count", "target": 0}],
+        }
+    )
+
+    applied = await repair._repair_replay_exports(spec, issue, ExecutionContext())
+
+    assert applied is True
+    assert executor.calls == 1
+    assert unbound_parent.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_repair_refuses_legacy_unbound_mutation_methods(tmp_path: Path) -> None:
+    class _UnboundOnlyExecutor:
+        calls = 0
+
+        async def replay_exports(self, *_args: Any) -> bool:
+            self.calls += 1
+            return True
+
+    executor = _UnboundOnlyExecutor()
+    repair = RepairLoop(object(), executor=executor)  # type: ignore[arg-type]
+    spec = CadSpec.model_validate(
+        {
+            "intent": "Legacy mutation methods cannot bypass authority",
+            "parameters": [],
+            "components": [{"name": "fixture", "features": []}],
+            "acceptance_tests": [{"type": "body_count", "target": 0}],
+        }
+    )
+    issue = VerificationIssue(
+        code=FailureCode.EXPORT_FAILED,
+        message="missing export",
+        details={"missing": [str(tmp_path / "part.step")]},
+    )
+
+    applied = await repair._repair_replay_exports(
+        spec, issue, ExecutionContext(mode="real")
+    )
+
+    assert applied is False
+    assert executor.calls == 0
 
 
 @pytest.mark.asyncio
@@ -701,6 +792,70 @@ async def test_legacy_auxiliary_success_remains_a_passing_control(
 
 
 @pytest.mark.asyncio
+async def test_feature_health_requires_explicit_complete_health_evidence() -> None:
+    spec = CadSpec.model_validate(
+        {
+            "intent": "Require explicit feature health evidence",
+            "parameters": [],
+            "components": [
+                {
+                    "name": "fixture_component",
+                    "features": [
+                        {
+                            "name": "fixture_feature",
+                            "type": "extrude_rectangle",
+                            "inputs": {
+                                "width": "10 mm",
+                                "height": "5 mm",
+                                "distance": "2 mm",
+                            },
+                        }
+                    ],
+                }
+            ],
+            "acceptance_tests": [{"type": "feature_health"}],
+        }
+    )
+    state = _minimal_passing_state()
+    state["features"] = {"fixture_feature": {"name": "fixture_feature"}}
+
+    result = await GeometryVerifier(EvidenceFacade(state)).verify(spec)  # type: ignore[arg-type]
+
+    assert result.status is DecisionStatus.INCOMPLETE
+    assert result.passed is False
+    assert result.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert result.issues[0].code is FailureCode.INCOMPLETE_INSPECTION
+
+
+@pytest.mark.asyncio
+async def test_export_exists_never_reads_an_unbound_host_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unbound = tmp_path / "private.step"
+    unbound.write_text("private", encoding="utf-8")
+    spec = CadSpec.model_validate(
+        {
+            "intent": "Do not turn verification into a host filesystem oracle",
+            "parameters": [],
+            "components": [{"name": "fixture_component", "features": []}],
+            "acceptance_tests": [{"type": "export_exists", "target": [str(unbound)]}],
+        }
+    )
+
+    def forbidden_path(_value: object) -> object:
+        raise AssertionError("unbound host path reached")
+
+    monkeypatch.setattr(geometry, "Path", forbidden_path)
+    result = await GeometryVerifier(EvidenceFacade(_minimal_passing_state())).verify(
+        spec
+    )  # type: ignore[arg-type]
+
+    assert result.status is DecisionStatus.INCOMPLETE
+    assert result.passed is False
+    assert result.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+
+
+@pytest.mark.asyncio
 async def test_verifier_reports_each_failed_contract_without_false_success(
     tmp_path: Path,
 ) -> None:
@@ -726,6 +881,7 @@ async def test_verifier_reports_each_failed_contract_without_false_success(
         "joints": {},
         "occurrences": {},
         "screenshots": {},
+        "exports": {},
     }
     facade = EvidenceFacade(
         state,

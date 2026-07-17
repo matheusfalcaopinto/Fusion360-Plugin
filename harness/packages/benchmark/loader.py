@@ -25,13 +25,13 @@ def load_benchmark_suite(path: Path | str) -> BenchmarkSuite:
     if path_is_dir(suite_path):
         suite_path = suite_path / "benchmark_suite_v2.json"
     if not path_exists(suite_path):
-        raise FileNotFoundError(f"benchmark suite does not exist: {suite_path}")
+        raise FileNotFoundError("benchmark suite does not exist")
     if suite_path.suffix.lower() != ".json":
         raise BenchmarkSuiteError("benchmark_suite.v2 must be a JSON file")
     try:
         payload = json.loads(read_text(suite_path))
     except json.JSONDecodeError as exc:
-        raise BenchmarkSuiteError(f"invalid benchmark JSON: {exc}") from exc
+        raise BenchmarkSuiteError("invalid benchmark JSON") from exc
     if not isinstance(payload, dict):
         raise BenchmarkSuiteError("benchmark suite root must be an object")
     if payload.get("schema_version") != "benchmark_suite.v2":
@@ -40,7 +40,7 @@ def load_benchmark_suite(path: Path | str) -> BenchmarkSuite:
     try:
         suite = BenchmarkSuite.model_validate(payload)
     except ValidationError as exc:
-        raise BenchmarkSuiteError(str(exc)) from exc
+        raise BenchmarkSuiteError("benchmark suite semantic validation failed") from exc
     for case in suite.cases:
         validate_case_registry(case)
     return suite
@@ -74,9 +74,7 @@ def _reject_embedded_code(value: Any, path: str = "$") -> None:
                 or normalized.endswith("_script")
                 or normalized.endswith("_code")
             ):
-                raise BenchmarkSuiteError(
-                    f"embedded executable field is forbidden at {path}.{key}"
-                )
+                raise BenchmarkSuiteError("embedded executable field is forbidden")
             _reject_embedded_code(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):

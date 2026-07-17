@@ -90,6 +90,15 @@ def _passing_phase() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str
         "passed": True,
         "failed_checks": [],
         "coverage": {"mandatory": 3, "passed": 3, "failed": 0, "unverified": 0},
+        "evidence_envelope": {
+            "producer": "reference_oracle",
+            "provenance": "code_owned_oracle",
+            "document_identity_sha256": "a" * 64,
+            "complete": True,
+            "counts_exact": True,
+            "truncated": False,
+            "stop_reason": "completed",
+        },
     }
     images = [
         {"direction": direction, "sha256": f"sha-{direction}"}
@@ -107,11 +116,8 @@ def _passing_case_result(*, has_eco: bool = False) -> dict[str, Any]:
         "cleanup": {
             "closed_without_save": True,
             "restored": True,
+            "identity_restored": True,
             "inventory_restored": True,
-            "active_document_id": "doc-original",
-            "original_document_id": "doc-original",
-            "open_document_ids": ["doc-original"],
-            "baseline_open_document_ids": ["doc-original"],
         },
         "elapsed_ms": 10,
     }
@@ -622,17 +628,20 @@ def test_runner_ignores_stale_case_result_from_an_older_run(
     tmp_path: Path,
 ) -> None:
     runner = _reference_runner_module()
-    cases_root = tmp_path / "cases"
-    result_path = cases_root / "stale_case" / "reference_result.json"
+    artifact_run_root = tmp_path / "ref_current"
+    result_path = artifact_run_root / "cases" / "stale_case" / "reference_result.json"
     result_path.parent.mkdir(parents=True)
     result_path.write_text(
         json.dumps({"run_id": "ref_older", "oracle": {"passed": True}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(runner, "CASES_ROOT", cases_root)
-
-    assert runner._load_current_case_result("stale_case", "ref_current") is None
-    assert runner._load_current_case_result("stale_case", "ref_older") == {
+    assert (
+        runner._load_current_case_result("stale_case", "ref_current", artifact_run_root)
+        is None
+    )
+    assert runner._load_current_case_result(
+        "stale_case", "ref_older", artifact_run_root
+    ) == {
         "run_id": "ref_older",
         "oracle": {"passed": True},
     }
@@ -649,8 +658,9 @@ def test_runner_restoration_failure_is_recorded_best_effort() -> None:
             raise AssertionError("inventory read must not follow failed identity read")
 
     suite_result = {
-        "original_document_id": "doc-original",
-        "original_open_document_ids": ["doc-original"],
+        "run_id": "ref_restoration",
+        "_original_document_id": "doc-original",
+        "_original_open_document_ids": ["doc-original"],
     }
     restored = asyncio.run(
         runner._capture_suite_restoration(BrokenLifecycle(), suite_result)
@@ -658,7 +668,8 @@ def test_runner_restoration_failure_is_recorded_best_effort() -> None:
 
     assert restored is False
     assert suite_result["restored"] is False
-    assert suite_result["restoration_error"] == ("RuntimeError: endpoint unavailable")
+    assert suite_result["restoration_error"]["code"] == "RESTORATION_READBACK_FAILED"
+    assert "endpoint unavailable" not in json.dumps(suite_result["restoration_error"])
 
 
 def test_capture_images_fits_then_keeps_directional_capture(
@@ -708,6 +719,7 @@ def test_capture_images_fits_then_keeps_directional_capture(
         runner._capture_images(
             runtime,
             case_root,
+            tmp_path,
             "camera_case",
             "reference_initial",
         )
@@ -763,6 +775,13 @@ def test_partial_runner_writes_run_specific_result_without_overwriting_canonical
             return ["doc-original"]
 
     runtime = FakeRuntime()
+    identity = runner.RevisionIdentity(
+        expected_git_commit="a" * 40,
+        observed_git_commit="a" * 40,
+        expected_source_manifest_sha256="b" * 64,
+        observed_source_manifest_sha256="b" * 64,
+        tracked_state="clean",
+    )
 
     async def fake_run_case(*_: Any) -> dict[str, Any]:
         return _passing_case_result()
@@ -773,18 +792,23 @@ def test_partial_runner_writes_run_specific_result_without_overwriting_canonical
     monkeypatch.setattr(runner, "FusionAgentRuntime", lambda **_: runtime)
     monkeypatch.setattr(runner, "FusionRuntimeLifecycleBackend", FakeLifecycle)
     monkeypatch.setattr(runner, "_run_case", fake_run_case)
+    monkeypatch.setattr(
+        runner, "collect_workspace_revision", lambda *_a, **_k: identity
+    )
 
     asyncio.run(
         runner._main(
             ["partial_case"],
             git_commit="a" * 40,
+            source_manifest_sha256="b" * 64,
             nightly_run_identity="12345-2",
+            output_root=tmp_path,
         )
     )
 
     assert runtime.closed is True
     assert not (tmp_path / "reference_suite_result.json").exists()
-    partial_results = list(tmp_path.glob("reference_suite_result_ref_*.json"))
+    partial_results = list(tmp_path.glob("ref_*/reference_suite_result.json"))
     assert len(partial_results) == 1
     aggregate = _load_json(partial_results[0])
     assert aggregate["status"] == "passed"
@@ -793,7 +817,7 @@ def test_partial_runner_writes_run_specific_result_without_overwriting_canonical
     assert aggregate["nightly_run_identity"] == "12345-2"
     assert aggregate["restored"] is True
     assert aggregate["cases"][0]["passed"] is True
-    assert aggregate["result_file"] == partial_results[0].name
+    assert aggregate["result_file"] == "reference_suite_result.json"
 
 
 def test_failed_case_is_captured_and_restoration_is_attempted_before_reraise(
@@ -831,18 +855,32 @@ def test_failed_case_is_captured_and_restoration_is_attempted_before_reraise(
             return ["doc-original"]
 
     runtime = FakeRuntime()
+    identity = runner.RevisionIdentity(
+        observed_git_commit="a" * 40,
+        observed_source_manifest_sha256="b" * 64,
+        tracked_state="clean",
+        tracked_changes_sha256="c" * 64,
+    )
 
     async def fake_run_case(
         _runtime: object,
         _lifecycle: object,
         case_id: str,
         run_id: str,
+        artifact_run_root: Path,
     ) -> dict[str, Any]:
         result = _passing_case_result()
         result["run_id"] = run_id
         result.pop("cleanup")
-        result["cleanup_error"] = "BenchmarkExecutionError: teardown failed"
-        (cases_root / case_id / "reference_result.json").write_text(
+        result["cleanup_error"] = {
+            "code": "REFERENCE_CLEANUP_FAILED",
+            "generic_message": "The benchmark operation failed.",
+            "correlation_id": "d" * 16,
+            "retryable": False,
+        }
+        result_path = artifact_run_root / "cases" / case_id / "reference_result.json"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
             json.dumps(result),
             encoding="utf-8",
         )
@@ -854,11 +892,16 @@ def test_failed_case_is_captured_and_restoration_is_attempted_before_reraise(
     monkeypatch.setattr(runner, "FusionAgentRuntime", lambda **_: runtime)
     monkeypatch.setattr(runner, "FusionRuntimeLifecycleBackend", FakeLifecycle)
     monkeypatch.setattr(runner, "_run_case", fake_run_case)
+    monkeypatch.setattr(
+        runner, "collect_workspace_revision", lambda *_a, **_k: identity
+    )
 
     with pytest.raises(RuntimeError, match="case execution failed"):
-        asyncio.run(runner._main(["broken_case"]))
+        asyncio.run(runner._main(["broken_case"], output_root=tmp_path))
 
-    aggregate = _load_json(tmp_path / "reference_suite_result.json")
+    aggregate_paths = list(tmp_path.glob("ref_*/reference_suite_result.json"))
+    assert len(aggregate_paths) == 1
+    aggregate = _load_json(aggregate_paths[0])
     assert aggregate["status"] == "failed"
     assert aggregate["requested_case_ids"] == ["broken_case"]
     assert aggregate["failed_case_id"] == "broken_case"
@@ -866,9 +909,8 @@ def test_failed_case_is_captured_and_restoration_is_attempted_before_reraise(
     assert len(aggregate["cases"]) == 1
     assert aggregate["cases"][0]["passed"] is False
     assert aggregate["cases"][0]["cleanup_passed"] is False
-    assert aggregate["cases"][0]["error"] == (
-        "BenchmarkExecutionError: teardown failed"
-    )
+    assert aggregate["cases"][0]["error"]["code"] == "REFERENCE_CLEANUP_FAILED"
+    assert "teardown failed" not in json.dumps(aggregate)
     assert lifecycle_instances[0].active_reads == 2
     assert lifecycle_instances[0].inventory_reads == 2
     assert runtime.closed is True

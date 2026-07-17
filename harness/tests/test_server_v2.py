@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -112,13 +113,20 @@ async def test_mock_screenshot_is_real_image_content_without_structured_base64(
         {"mode": "mock", "query_type": "screenshot", "width": 32, "height": 24},
         runtime=runtime,
     )
-    result = server._as_call_tool_result("fusion_agent_native_read", response)
+    sentinel = "DOWNSTREAM_TEXT_AND_META_MUST_NOT_BE_PUBLIC"
+    response.content.append({"type": "text", "text": sentinel})
+    response.meta["native_diagnostic"] = sentinel
+    projector = server._tool_spec_map()["fusion_agent_native_read"].projector
+    assert callable(projector)
+    result = projector("fusion_agent_native_read", response)
 
     assert result.structuredContent["ok"] is True
     assert "base64Data" not in json.dumps(result.structuredContent)
     images = [block for block in result.content if block.type == "image"]
     assert len(images) == 1
     assert images[0].mimeType == "image/png"
+    assert result.meta is None
+    assert sentinel not in result.model_dump_json(by_alias=True)
     await runtime.close()
 
 
@@ -165,6 +173,7 @@ async def test_read_only_fast_execute_has_baseline_single_dispatch_and_readback(
         "fusion_agent_fast_execute",
         request,
         runtime=runtime,
+        profile="advanced",
         request_context=_security_context(),
     )
 
@@ -231,6 +240,7 @@ async def test_protected_payload_limit_is_public_and_preserved_in_sanitized_audi
             },
         },
         runtime=runtime,
+        profile="advanced",
         request_context=_security_context(fast_path="enabled"),
     )
 
@@ -263,6 +273,7 @@ async def test_flags_and_route_lock_fail_closed(monkeypatch, tmp_path) -> None:
         "fusion_agent_fast_execute",
         {"mode": "mock", "change_class": "additive"},
         runtime=runtime,
+        profile="advanced",
         request_context=_security_context(),
     )
     assert blocked.payload["reason"] == "fast_path_read_only"
@@ -320,6 +331,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(
             },
         },
         runtime=runtime,
+        profile="advanced",
         request_context=request_context,
     )
     assert applied.payload["status"] == "applied_verified"
@@ -344,6 +356,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(
             },
         },
         runtime=runtime,
+        profile="advanced",
         request_context=request_context,
     )
 
@@ -368,6 +381,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(
             },
         },
         runtime=runtime,
+        profile="advanced",
         request_context=request_context,
     )
     assert redone.payload["status"] == "recovered_verified"
@@ -381,6 +395,7 @@ async def test_recovery_is_explicit_latest_operation_and_state_verified(
             "verification": {"queries": [query], "assertions": []},
         },
         runtime=runtime,
+        profile="advanced",
         request_context=request_context,
     )
     assert second_redo.payload["reason"] == "recovery_action_not_available"
@@ -440,6 +455,7 @@ async def test_recovery_blocks_same_count_drift_outside_target_queries(
             },
         },
         runtime=runtime,
+        profile="advanced",
         request_context=request_context,
     )
     assert applied.payload["status"] == "applied_verified"
@@ -526,16 +542,42 @@ async def test_server_runs_and_pages_strict_mock_benchmark(
             "seed": 7,
         },
         runtime=runtime,
+        profile="benchmark",
     )
     page = await server.execute_tool(
         "fusion_agent_read_benchmark_report",
         {"run_id": result["run_id"], "view": "trials", "offset": 1, "limit": 2},
         runtime=runtime,
+        profile="benchmark",
     )
 
     assert result["schema_version"] == "benchmark_report.v2"
-    assert result["trial_count"] == 28
+    assert result["trial_count"] == 26
     assert result["summary"]["gates"]["all_required"] is True
-    assert page["total"] == 28
+    assert page["total"] == 26
     assert len(page["items"]) == 2
     await runtime.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        r"C:escape.json",
+        r"D:escape.json",
+        r"\escape.json",
+        r"\\server\share\escape.json",
+        r"\\?\C:\escape.json",
+        "/absolute/escape.json",
+    ],
+)
+def test_output_helper_rejects_every_absolute_or_drive_relative_form(
+    value: str,
+) -> None:
+    with pytest.raises(ValueError, match="relative"):
+        server._safe_relative_path(Path("outputs"), value)
+
+
+def test_output_helper_keeps_legitimate_nested_relative_path() -> None:
+    assert server._safe_relative_path(Path("outputs"), "sessions/result.json") == Path(
+        "outputs/sessions/result.json"
+    )

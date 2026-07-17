@@ -59,6 +59,27 @@ ASSERTION_REGISTRY = MappingProxyType(
 )
 
 
+def unknown_assertion_types(spec: CadSpec) -> tuple[str, ...]:
+    """Return assertion types that have no verifier dispatch entry."""
+
+    return tuple(
+        sorted(
+            {
+                acceptance.type
+                for acceptance in spec.acceptance_tests
+                if acceptance.type not in ASSERTION_REGISTRY
+            }
+        )
+    )
+
+
+def require_registered_assertions(spec: CadSpec) -> None:
+    """Reject an incomplete assertion graph before any executor dispatch."""
+
+    if unknown_assertion_types(spec):
+        raise ValueError("unsupported acceptance assertion type")
+
+
 # Only fields consumed numerically by the legacy assertion registry appear here.
 # Semantic booleans elsewhere in the inspection payload remain valid state.
 _REGISTRY_NUMERIC_EVIDENCE = MappingProxyType(
@@ -155,7 +176,7 @@ class GeometryVerifier:
         """Run all acceptance tests in the spec."""
 
         assertion_ids = [acceptance.type for acceptance in spec.acceptance_tests]
-        unknown = sorted(set(assertion_ids) - set(ASSERTION_REGISTRY))
+        unknown = list(unknown_assertion_types(spec))
         if unknown:
             return VerificationResult(
                 passed=False,
@@ -740,10 +761,32 @@ class GeometryVerifier:
                         )
                     )
             elif check_type == "feature_health":
+                features = state.get("features")
+                missing_health = (
+                    not isinstance(features, dict)
+                    or not features
+                    or any(
+                        not isinstance(feature, dict)
+                        or not isinstance(feature.get("health"), str)
+                        or not str(feature["health"]).strip()
+                        for feature in features.values()
+                    )
+                )
+                if missing_health:
+                    return VerificationResult.incomplete_result(
+                        evidence=evidence,
+                        issues=[
+                            VerificationIssue(
+                                code=FailureCode.INCOMPLETE_INSPECTION,
+                                message="feature health evidence is incomplete",
+                                details={"assertion": check_type},
+                            )
+                        ],
+                    )
                 bad = [
                     feature
-                    for feature in state.get("features", {}).values()
-                    if feature.get("health", "ok") not in {"ok", "healthy"}
+                    for feature in features.values()
+                    if str(feature["health"]).casefold() not in {"ok", "healthy"}
                 ]
                 if bad:
                     issues.append(
@@ -754,18 +797,52 @@ class GeometryVerifier:
                         )
                     )
             elif check_type == "export_exists":
+                exports = state.get("exports")
+                if not isinstance(exports, dict):
+                    return VerificationResult.incomplete_result(
+                        evidence=evidence,
+                        issues=[
+                            VerificationIssue(
+                                code=FailureCode.INCOMPLETE_INSPECTION,
+                                message="bound export evidence is unavailable",
+                                details={"assertion": check_type},
+                            )
+                        ],
+                    )
                 paths = acceptance.target or []
-                missing = [
+                invalid_records = [
                     path
                     for path in paths
-                    if not Path(path).exists() or Path(path).stat().st_size == 0
+                    if path in exports
+                    and (
+                        not isinstance(exports[path], dict)
+                        or exports[path].get("path") != path
+                        or isinstance(exports[path].get("bytes"), bool)
+                        or not isinstance(exports[path].get("bytes"), int)
+                        or exports[path].get("bytes", 0) <= 0
+                    )
                 ]
+                if invalid_records:
+                    return VerificationResult.incomplete_result(
+                        evidence=evidence,
+                        issues=[
+                            VerificationIssue(
+                                code=FailureCode.INCOMPLETE_INSPECTION,
+                                message="bound export evidence is incomplete",
+                                details={
+                                    "assertion": check_type,
+                                    "invalid_record_count": len(invalid_records),
+                                },
+                            )
+                        ],
+                    )
+                missing = [path for path in paths if path not in exports]
                 if missing:
                     issues.append(
                         VerificationIssue(
                             code=FailureCode.EXPORT_FAILED,
                             message="expected export files are missing or empty",
-                            details={"missing": missing},
+                            details={"missing_count": len(missing)},
                         )
                     )
             else:  # pragma: no cover - registry/dispatcher drift guard
@@ -818,9 +895,7 @@ def _evidence_envelope(
     }
     document_identity = payload.get("document_identity")
     if not isinstance(document_identity, str) or not document_identity:
-        document_identity = state.get("document_identity") or state.get(
-            "active_document_name"
-        )
+        document_identity = state.get("document_identity")
     return EvidenceEnvelope(
         producer=str(payload.get("producer") or "fusion_facade.inspect_design"),
         provenance=safe_provenance,
@@ -844,6 +919,8 @@ def _inspection_is_complete(evidence: EvidenceEnvelope) -> bool:
         and evidence.counts_exact
         and not evidence.truncated
         and evidence.stop_reason in (None, "", "complete")
+        and isinstance(evidence.document_identity, str)
+        and bool(evidence.document_identity.strip())
     )
 
 

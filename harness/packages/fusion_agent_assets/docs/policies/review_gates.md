@@ -9,10 +9,10 @@ Required gates for V1.5 assemblies:
 - Execute geometry through facade operations only.
 - Set component metadata.
 - Create or persist joint contracts.
-- Capture required viewport screenshots.
 - Analyze interference.
 - Measure physical properties.
-- Verify required components, bodies, occurrences, joints, metadata, screenshots, and positive mass/volume.
+- Verify required components, bodies, occurrences, joints, metadata, typed
+  inspection evidence, and positive mass/volume.
 
 Fail-closed conditions:
 
@@ -20,5 +20,6 @@ Fail-closed conditions:
 - Joint creation or persisted joint contract cannot be inspected.
 - Interference analysis fails or reports unapproved interference.
 - Physical properties are missing or non-positive.
-- Screenshot capture fails or writes an empty file.
+- A plan attempts real capture/export instead of returning
+  `HOST_OUTPUT_DISABLED` before provider dispatch.
 - Raw Fusion MCP tools are exposed outside an allowlisted facade operation.

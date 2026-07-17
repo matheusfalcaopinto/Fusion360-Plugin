@@ -21,7 +21,6 @@ from cad_spec.models import (
     DocumentPolicy,
     FeatureSpec,
     JointSpec,
-    OutputSpec,
     ParameterSpec,
 )
 from memory.schemas import MemoryRecord
@@ -220,19 +219,11 @@ def _spacer_plate_assembly_spec(prompt: str) -> CadSpec:
             for index in range(1, 5)
         ],
     ]
-    outputs = [
-        OutputSpec(
-            name="spacer_plate_assembly_iso_capture",
-            path="assembly_samples/spacer_plate_assembly_iso.png",
-            view="isometric",
-            isolate_prefix="spacer_",
-        )
-    ]
     return CadSpec(
         intent="create_generic_spacer_plate_assembly",
         units="mm",
         assumptions=[
-            "fusion_mechanical_pro policy: final deliverable is component-first with metadata, joints, physical properties, interference check, and screenshot evidence.",
+            "fusion_mechanical_pro policy: final deliverable is component-first with metadata, joints, physical properties, interference analysis, and typed readback evidence.",
             "Spacer assembly uses custom fabricated plates and a repeated custom standoff component.",
         ],
         document_policy=DocumentPolicy(modify_existing=False, create_checkpoint=True),
@@ -317,7 +308,6 @@ def _spacer_plate_assembly_spec(prompt: str) -> CadSpec:
             ),
         ],
         joints=joints,
-        outputs=outputs,
         acceptance_tests=[
             AcceptanceTestSpec(type="component_exists", target="spacer_plate_assembly"),
             AcceptanceTestSpec(type="named_bodies", target=body_names),
@@ -345,7 +335,6 @@ def _spacer_plate_assembly_spec(prompt: str) -> CadSpec:
             AcceptanceTestSpec(type="joint_contract"),
             AcceptanceTestSpec(type="interference_free"),
             AcceptanceTestSpec(type="physical_properties"),
-            AcceptanceTestSpec(type="screenshots_exist"),
             AcceptanceTestSpec(type="named_objects"),
             AcceptanceTestSpec(type="feature_health"),
         ],
@@ -381,14 +370,6 @@ def _hinge_assembly_spec(prompt: str) -> CadSpec:
             child="hinge_pin_component",
             axis="x",
         ),
-    ]
-    outputs = [
-        OutputSpec(
-            name="hinge_assembly_iso_capture",
-            path="assembly_samples/hinge_assembly_iso.png",
-            view="isometric",
-            isolate_prefix="hinge_",
-        )
     ]
     return CadSpec(
         intent="create_generic_hinge_assembly",
@@ -476,7 +457,6 @@ def _hinge_assembly_spec(prompt: str) -> CadSpec:
             ),
         ],
         joints=joints,
-        outputs=outputs,
         acceptance_tests=[
             AcceptanceTestSpec(type="component_exists", target="hinge_assembly"),
             AcceptanceTestSpec(type="named_bodies", target=body_names),
@@ -509,7 +489,6 @@ def _hinge_assembly_spec(prompt: str) -> CadSpec:
                 },
             ),
             AcceptanceTestSpec(type="physical_properties"),
-            AcceptanceTestSpec(type="screenshots_exist"),
             AcceptanceTestSpec(type="named_objects"),
             AcceptanceTestSpec(type="feature_health"),
         ],

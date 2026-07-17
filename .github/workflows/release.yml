@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      candidate_sha: ${{ steps.version.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -26,7 +27,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          python - <<'PY'
+          python -I -S -B - <<'PY'
           import ast, json, os, pathlib, re, tomllib
           tag = os.environ["GITHUB_REF_NAME"]
           version = tomllib.loads(pathlib.Path("harness/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
@@ -49,16 +50,35 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"version={version}\n")
           PY
+          candidate_sha="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          test "${#candidate_sha}" -eq 40
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+      - name: Require successful branch CI for candidate SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -I -S -B scripts/check-ci-release-gate.py
+          --repository "${{ github.repository }}"
+          --workflow ci.yml
+          --commit "${{ steps.version.outputs.candidate_sha }}"
+          --branch "codex/fusion-agent-0.4.1"
       - name: Require three consecutive real scheduled nightlies
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/check-nightly-release-gate.py --repository "${{ github.repository }}" --commit "${{ github.sha }}"
+        run: python -I -S -B scripts/check-nightly-release-gate.py --repository "${{ github.repository }}" --commit "${{ steps.version.outputs.candidate_sha }}"
+      - name: Verify wheel and dependency locks before installation
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root .
       - name: Install frozen release environment
         run: |
-          python -m pip install "uv==0.11.29"
-          python -m uv sync --frozen --project harness --extra test
+          python -I -S -B scripts/run-isolated-pip.py download --require-hashes --only-binary=:all: --dest .dependency-wheelhouse -r harness/requirements/test.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-index --find-links .dependency-wheelhouse --require-hashes --only-binary=:all: -r harness/requirements/test.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-deps wheels/fusion_agent_harness-0.4.1-py3-none-any.whl
+      - name: Verify installed wheel and exact dependency set before import
+        run: |
+          python -I -S -B scripts/preinstall_verify.py --plugin-root . --verify-installed --dependency-lock test.lock --dependency-wheelhouse .dependency-wheelhouse
+          python -I -S -B scripts/run-isolated-pip.py check
       - name: Run complete test suite
-        run: harness/.venv/bin/python -m pytest -q -p no:cacheprovider
+        run: python -B -m pytest -q -p no:cacheprovider
       - name: Compare candidate performance with reviewed baseline
         shell: bash
         env:
@@ -68,34 +88,35 @@ jobs:
           baseline_root="$(mktemp -d)"
           git archive --format=tar --output="$RUNNER_TEMP/fusion-agent-baseline.tar" "$BASELINE_SHA"
           tar -xf "$RUNNER_TEMP/fusion-agent-baseline.tar" -C "$baseline_root"
-          harness/.venv/bin/python scripts/measure-performance.py --source-root "$baseline_root" --git-commit "$BASELINE_SHA" --output "$RUNNER_TEMP/performance-baseline.json"
-          harness/.venv/bin/python scripts/measure-performance.py --source-root . --git-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/performance-candidate.json"
-          harness/.venv/bin/python scripts/check-performance-gate.py --baseline "$RUNNER_TEMP/performance-baseline.json" --candidate "$RUNNER_TEMP/performance-candidate.json" --candidate-commit "$GITHUB_SHA"
+          python -B scripts/measure-performance.py --source-root "$baseline_root" --git-commit "$BASELINE_SHA" --output "$RUNNER_TEMP/performance-baseline.json"
+          python -B scripts/measure-performance.py --source-root . --git-commit "${{ steps.version.outputs.candidate_sha }}" --output "$RUNNER_TEMP/performance-candidate.json"
+          python -B scripts/check-performance-gate.py --baseline "$RUNNER_TEMP/performance-baseline.json" --candidate "$RUNNER_TEMP/performance-candidate.json" --candidate-commit "${{ steps.version.outputs.candidate_sha }}"
       - name: Build twice from clean tracked source and compare
         shell: bash
         run: |
           mkdir -p /tmp/fusion-build-a /tmp/fusion-build-b
           git archive HEAD | tar -x -C /tmp/fusion-build-a
           git archive HEAD | tar -x -C /tmp/fusion-build-b
-          (cd /tmp/fusion-build-a && "$GITHUB_WORKSPACE/harness/.venv/bin/python" scripts/build-distribution.py)
-          (cd /tmp/fusion-build-b && "$GITHUB_WORKSPACE/harness/.venv/bin/python" scripts/build-distribution.py)
+          (cd /tmp/fusion-build-a && python -B scripts/build-distribution.py)
+          (cd /tmp/fusion-build-b && python -B scripts/build-distribution.py)
           cmp /tmp/fusion-build-a/wheels/*.whl /tmp/fusion-build-b/wheels/*.whl
           cmp /tmp/fusion-build-a/wheels/*.whl wheels/*.whl
-      - name: Verify wheel before installation
-        run: python scripts/preinstall_verify.py --plugin-root .
+      - name: Reverify rebuilt wheel
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root . --verify-installed --dependency-lock test.lock --dependency-wheelhouse .dependency-wheelhouse
       - name: Validate plugin bundle
-        run: harness/.venv/bin/python scripts/validate_plugin.py
+        run: python -I -B scripts/validate_plugin.py
       - name: Assemble immutable release assets
         shell: bash
         run: |
           mkdir -p release-assets
           cp wheels/*.whl release-assets/
           git archive --format=zip --output="release-assets/fusion-agent-codex-${{ steps.version.outputs.version }}.zip" HEAD
+          printf '%s\n' "${{ steps.version.outputs.candidate_sha }}" > release-assets/CANDIDATE_SHA
           cd release-assets
-          sha256sum *.whl *.zip > SHA256SUMS
+          sha256sum *.whl *.zip CANDIDATE_SHA > SHA256SUMS
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: fusion-agent-release-assets
+          name: fusion-agent-release-assets-${{ steps.version.outputs.candidate_sha }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -106,20 +127,42 @@ jobs:
     environment: fusion-agent-release
     permissions:
       contents: write
+      actions: read
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate-build.outputs.candidate_sha }}
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: fusion-agent-release-assets
+          name: fusion-agent-release-assets-${{ needs.validate-build.outputs.candidate_sha }}
           path: release-assets
       - name: Verify validated asset checksums
+        shell: bash
         working-directory: release-assets
-        run: sha256sum --check SHA256SUMS
+        env:
+          EXPECTED_SHA: ${{ needs.validate-build.outputs.candidate_sha }}
+        run: |
+          sha256sum --check SHA256SUMS
+          test "$(tr -d '\r\n' < CANDIDATE_SHA)" = "$EXPECTED_SHA"
       - name: Publish immutable GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${{ github.ref_name }}" release-assets/*
-          --repo "${{ github.repository }}"
-          --verify-tag
-          --generate-notes
-          --title "Fusion Agent Codex ${{ needs.validate-build.outputs.version }}"
+          EXPECTED_SHA: ${{ needs.validate-build.outputs.candidate_sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "$EXPECTED_SHA"
+          remote_refs="$(git ls-remote origin "refs/tags/${GITHUB_REF_NAME}" "refs/tags/${GITHUB_REF_NAME}^{}")"
+          remote_peeled="$(printf '%s\n' "$remote_refs" | awk '$2 ~ /\^\{\}$/ {print $1}')"
+          if [[ -z "$remote_peeled" ]]; then
+            remote_peeled="$(printf '%s\n' "$remote_refs" | awk '$2 !~ /\^\{\}$/ {print $1}')"
+          fi
+          test "$remote_peeled" = "$EXPECTED_SHA"
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "Fusion Agent Codex ${{ needs.validate-build.outputs.version }}"

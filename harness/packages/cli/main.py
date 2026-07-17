@@ -10,6 +10,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -61,16 +62,24 @@ def _mode(mock: bool, real: bool) -> str:
     return _default_mode("mock")
 
 
-async def _inspect(mode: str) -> dict[str, Any]:
-    async with SessionController() as controller:
+async def _inspect(
+    mode: str, *, runtime_configuration: Any | None = None
+) -> dict[str, Any]:
+    async with _controller_session(runtime_configuration) as controller:
         return await controller.inspect(mode=mode, options=SessionOptions(mode=mode))
 
 
 async def _run(
-    prompt: str, mode: str, project: str, max_repairs: int, dry_run: bool
+    prompt: str,
+    mode: str,
+    project: str,
+    max_repairs: int,
+    dry_run: bool,
+    *,
+    runtime_configuration: Any | None = None,
 ) -> dict[str, Any]:
-    _ensure_dry_run_allowed(dry_run)
-    async with SessionController() as controller:
+    _ensure_dry_run_allowed(dry_run, runtime_configuration=runtime_configuration)
+    async with _controller_session(runtime_configuration) as controller:
         result = await controller.run(
             prompt,
             project=project,
@@ -82,8 +91,14 @@ async def _run(
     return result.model_dump(mode="json")
 
 
-async def _verify(prompt: str, mode: str, project: str) -> dict[str, Any]:
-    async with SessionController() as controller:
+async def _verify(
+    prompt: str,
+    mode: str,
+    project: str,
+    *,
+    runtime_configuration: Any | None = None,
+) -> dict[str, Any]:
+    async with _controller_session(runtime_configuration) as controller:
         result = await controller.verify_active(
             prompt,
             project=project,
@@ -102,8 +117,10 @@ async def _capture(
     isolate_prefix: str | None,
     width: int,
     height: int,
+    *,
+    runtime_configuration: Any | None = None,
 ) -> dict[str, Any]:
-    async with SessionController() as controller:
+    async with _controller_session(runtime_configuration) as controller:
         result = await controller.capture_viewport(
             project=project,
             mode=mode,
@@ -120,8 +137,14 @@ async def _capture(
     return result.model_dump(mode="json")
 
 
-async def _benchmark_run(suite: str, mode: str, dry_run: bool) -> dict[str, Any]:
-    _ensure_dry_run_allowed(dry_run)
+async def _benchmark_run(
+    suite: str,
+    mode: str,
+    dry_run: bool,
+    *,
+    runtime_configuration: Any | None = None,
+) -> dict[str, Any]:
+    _ensure_dry_run_allowed(dry_run, runtime_configuration=runtime_configuration)
     runner = BenchmarkRunner()
     run = await runner.run_suite(
         suite,
@@ -215,8 +238,27 @@ def _startup_runtime_configuration() -> Any:
     return RuntimeConfiguration.from_environment()
 
 
-async def _tools_discover(mode: str) -> dict[str, Any]:
-    async with SessionController() as controller:
+@asynccontextmanager
+async def _controller_session(runtime_configuration: Any | None):
+    """Own one CLI controller built from a pre-event-loop configuration snapshot."""
+
+    if runtime_configuration is None:
+        async with SessionController() as controller:
+            yield controller
+        return
+    from fusion_agent_mcp.runtime import FusionAgentRuntime
+
+    runtime = FusionAgentRuntime(configuration=runtime_configuration)
+    try:
+        yield runtime.controller
+    finally:
+        await runtime.close()
+
+
+async def _tools_discover(
+    mode: str, *, runtime_configuration: Any | None = None
+) -> dict[str, Any]:
+    async with _controller_session(runtime_configuration) as controller:
         manifest = await controller.discover_tools(
             mode=mode, options=SessionOptions(mode=mode)
         )
@@ -486,8 +528,15 @@ def _default_mode(default: str = "mock") -> str:
     return default
 
 
-def _ensure_dry_run_allowed(dry_run: bool) -> None:
-    if dry_run and not _env_bool("FUSION_AGENT_ALLOW_DRY_RUN", True):
+def _ensure_dry_run_allowed(
+    dry_run: bool, *, runtime_configuration: Any | None = None
+) -> None:
+    allow_dry_run = (
+        bool(runtime_configuration.allow_dry_run)
+        if runtime_configuration is not None
+        else True
+    )
+    if dry_run and not allow_dry_run:
         raise ValueError(
             "Fusion Agent dry-run is disabled by FUSION_AGENT_ALLOW_DRY_RUN=0"
         )
@@ -583,7 +632,12 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     def inspect_command(mock: bool = False, real: bool = False) -> None:
         """Inspect the active design state."""
 
-        _print_json(asyncio.run(_inspect(_mode(mock, real))))
+        configuration = _startup_runtime_configuration()
+        _print_json(
+            asyncio.run(
+                _inspect(_mode(mock, real), runtime_configuration=configuration)
+            )
+        )
 
     @app.command("run")
     def run_command(
@@ -596,8 +650,18 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Run one modeling session."""
 
+        configuration = _startup_runtime_configuration()
         _print_json(
-            asyncio.run(_run(prompt, _mode(mock, real), project, max_repairs, dry_run))
+            asyncio.run(
+                _run(
+                    prompt,
+                    _mode(mock, real),
+                    project,
+                    max_repairs,
+                    dry_run,
+                    runtime_configuration=configuration,
+                )
+            )
         )
 
     @app.command("verify")
@@ -606,7 +670,17 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Verify the active design against a planned CadSpec without executing geometry."""
 
-        _print_json(asyncio.run(_verify(prompt, _mode(mock, real), project)))
+        configuration = _startup_runtime_configuration()
+        _print_json(
+            asyncio.run(
+                _verify(
+                    prompt,
+                    _mode(mock, real),
+                    project,
+                    runtime_configuration=configuration,
+                )
+            )
+        )
 
     @app.command("capture")
     def capture_command(
@@ -622,6 +696,7 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Capture the active Fusion viewport through the safe facade."""
 
+        configuration = _startup_runtime_configuration()
         _print_json(
             asyncio.run(
                 _capture(
@@ -633,6 +708,7 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
                     isolate_prefix,
                     width,
                     height,
+                    runtime_configuration=configuration,
                 )
             )
         )
@@ -643,7 +719,17 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     ) -> None:
         """Run a benchmark suite."""
 
-        _print_json(asyncio.run(_benchmark_run(suite, _mode(mock, real), dry_run)))
+        configuration = _startup_runtime_configuration()
+        _print_json(
+            asyncio.run(
+                _benchmark_run(
+                    suite,
+                    _mode(mock, real),
+                    dry_run,
+                    runtime_configuration=configuration,
+                )
+            )
+        )
 
     @benchmark_app.command("public")
     def benchmark_public_command(
@@ -677,7 +763,12 @@ if typer is not None:  # pragma: no cover - requires Typer dependency
     def tools_discover_command(mock: bool = False, real: bool = False) -> None:
         """Discover MCP tools and persist a manifest."""
 
-        _print_json(asyncio.run(_tools_discover(_mode(mock, real))))
+        configuration = _startup_runtime_configuration()
+        _print_json(
+            asyncio.run(
+                _tools_discover(_mode(mock, real), runtime_configuration=configuration)
+            )
+        )
 
     @tools_app.command("probe")
     def tools_probe_command(endpoint: str | None = None) -> None:
@@ -804,8 +895,17 @@ else:
 
         args = parser.parse_args()
         if args.command == "inspect":
-            _print_json(asyncio.run(_inspect(_mode(args.mock, args.real))))
+            configuration = _startup_runtime_configuration()
+            _print_json(
+                asyncio.run(
+                    _inspect(
+                        _mode(args.mock, args.real),
+                        runtime_configuration=configuration,
+                    )
+                )
+            )
         elif args.command == "run":
+            configuration = _startup_runtime_configuration()
             _print_json(
                 asyncio.run(
                     _run(
@@ -814,16 +914,24 @@ else:
                         args.project,
                         args.max_repairs,
                         args.dry_run,
+                        runtime_configuration=configuration,
                     )
                 )
             )
         elif args.command == "verify":
+            configuration = _startup_runtime_configuration()
             _print_json(
                 asyncio.run(
-                    _verify(args.prompt, _mode(args.mock, args.real), args.project)
+                    _verify(
+                        args.prompt,
+                        _mode(args.mock, args.real),
+                        args.project,
+                        runtime_configuration=configuration,
+                    )
                 )
             )
         elif args.command == "capture":
+            configuration = _startup_runtime_configuration()
             _print_json(
                 asyncio.run(
                     _capture(
@@ -835,14 +943,19 @@ else:
                         args.isolate_prefix,
                         args.width,
                         args.height,
+                        runtime_configuration=configuration,
                     )
                 )
             )
         elif args.command == "benchmark" and args.benchmark_command == "run":
+            configuration = _startup_runtime_configuration()
             _print_json(
                 asyncio.run(
                     _benchmark_run(
-                        args.suite, _mode(args.mock, args.real), args.dry_run
+                        args.suite,
+                        _mode(args.mock, args.real),
+                        args.dry_run,
+                        runtime_configuration=configuration,
                     )
                 )
             )
@@ -864,7 +977,15 @@ else:
                 )
             )
         elif args.command == "tools" and args.tools_command == "discover":
-            _print_json(asyncio.run(_tools_discover(_mode(args.mock, args.real))))
+            configuration = _startup_runtime_configuration()
+            _print_json(
+                asyncio.run(
+                    _tools_discover(
+                        _mode(args.mock, args.real),
+                        runtime_configuration=configuration,
+                    )
+                )
+            )
         elif args.command == "tools" and args.tools_command == "probe":
             _print_json(asyncio.run(_tools_probe(args.endpoint)))
         elif args.command == "tools" and args.tools_command == "propose-mapping":

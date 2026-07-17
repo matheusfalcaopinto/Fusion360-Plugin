@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 from pathlib import Path
 
@@ -15,10 +14,11 @@ from benchmark_parametric_ab.causal_benchmark import (
     CausalSuiteError,
     ExecutionObservation,
     OracleObservation,
+    current_trial_context,
     freeze_planner_submission,
     load_causal_suite,
 )
-from benchmark_parametric_ab.causal_benchmark.runner import LAYERS, ROUTE_LOCK_ENV
+from benchmark_parametric_ab.causal_benchmark.runner import LAYERS
 
 
 ROOT = Path(__file__).parents[1]
@@ -28,13 +28,14 @@ EXAMPLE = ROOT / "benchmark_parametric_ab" / "causal_suite.example.json"
 class RecordingExecutor:
     def __init__(self, *, wrong_route: bool = False) -> None:
         self.contexts = []
-        self.route_env_values: list[str | None] = []
+        self.route_context_values: list[str | None] = []
         self.wrong_route = wrong_route
 
     async def execute(self, context):
         self.contexts.append(context)
-        route = os.environ.get(ROUTE_LOCK_ENV)
-        self.route_env_values.append(route)
+        active = current_trial_context()
+        route = None if active is None else active.route_lock
+        self.route_context_values.append(route)
         duration = 10.0 if context.arm_id == "claude" else 20.0
         if context.layer == "native_e2e" and self.wrong_route:
             route = "wrong_route"
@@ -196,7 +197,9 @@ async def test_three_layers_are_counterbalanced_reproducible_and_use_fresh_trial
     assert len(first_ids) == 18
     assert first_ids.isdisjoint(second_ids)
     assert len(first_oracle.contexts) == 18
-    assert first.report.summary["gates"]["all_required"] is True
+    assert first.report.summary["gates"]["revision_exact"] is False
+    assert first.report.summary["gates"]["all_required"] is False
+    assert first.report.summary["scoreable"] is False
     environment = json.loads(first.environment_path.read_text(encoding="utf-8"))
     assert environment["arms"][1]["model"] == "gpt-5.6-sol"
     assert environment["arms"][1]["reasoning_profile"] == "ultra"
@@ -216,7 +219,6 @@ async def test_layer_contracts_share_replay_and_runner_but_lock_native_routes(
     tmp_path: Path,
 ) -> None:
     runner, executor, _ = _runner(tmp_path)
-    prior = os.environ.get(ROUTE_LOCK_ENV)
     await runner.run_suite(
         EXAMPLE,
         config=CausalRunConfig(repetitions=1, warmups=0, seed=4),
@@ -234,13 +236,13 @@ async def test_layer_contracts_share_replay_and_runner_but_lock_native_routes(
         "claude_fusion_connector",
         "codex_fusion_agent",
     }
-    native_env = [
+    native_context = [
         value
-        for context, value in zip(executor.contexts, executor.route_env_values)
+        for context, value in zip(executor.contexts, executor.route_context_values)
         if context.layer == "native_e2e"
     ]
-    assert set(native_env) == {"claude_fusion_connector", "codex_fusion_agent"}
-    assert os.environ.get(ROUTE_LOCK_ENV) == prior
+    assert set(native_context) == {"claude_fusion_connector", "codex_fusion_agent"}
+    assert current_trial_context() is None
 
 
 @pytest.mark.asyncio
@@ -259,18 +261,17 @@ async def test_invalid_suite_does_not_call_any_executor(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_native_route_mismatch_aborts_without_retry_and_restores_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv(ROUTE_LOCK_ENV, raising=False)
     executor = RecordingExecutor(wrong_route=True)
     runner, _, _ = _runner(tmp_path, executor)
-    with pytest.raises(CausalExecutionError, match="route-lock mismatch"):
+    with pytest.raises(CausalExecutionError, match="causal benchmark execution failed"):
         await runner.run_suite(
             EXAMPLE,
             config=CausalRunConfig(repetitions=1, warmups=0, seed=1),
             run_id="causal_routemismatch01",
         )
-    assert os.environ.get(ROUTE_LOCK_ENV) is None
+    assert current_trial_context() is None
     assert len([item for item in executor.contexts if item.layer == "native_e2e"]) == 1
     report = json.loads(
         (tmp_path / "causal_routemismatch01" / "report.json").read_text(
@@ -279,7 +280,8 @@ async def test_native_route_mismatch_aborts_without_retry_and_restores_environme
     )
     assert report["status"] == "aborted"
     assert len(report["trials"]) == 4
-    assert "route-lock mismatch" in report["error"]["message"]
+    assert report["error"]["code"] == "BENCHMARK_EXECUTION_FAILED"
+    assert "route-lock mismatch" not in json.dumps(report["error"])
 
 
 @pytest.mark.asyncio
@@ -292,7 +294,7 @@ async def test_missing_oracle_fails_before_any_dispatch_and_writes_aborted_repor
         executors={layer: executor for layer in LAYERS},
         oracles={},
     )
-    with pytest.raises(CausalExecutionError, match="missing independent oracles"):
+    with pytest.raises(CausalExecutionError, match="causal benchmark execution failed"):
         await runner.run_suite(EXAMPLE, run_id="causal_missingoracle01")
     assert executor.contexts == []
     report = json.loads(
@@ -302,6 +304,7 @@ async def test_missing_oracle_fails_before_any_dispatch_and_writes_aborted_repor
     )
     assert report["status"] == "aborted"
     assert report["trials"] == []
+    assert "missing independent oracles" not in json.dumps(report)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +12,12 @@ from agent_core.request_context import (
     bind_request_context,
     current_request_context,
 )
-from fusion_agent_mcp import server
+from fusion_agent_mcp import profiles, server
+from fusion_agent_mcp.runtime import (
+    FusionAgentRuntime,
+    RuntimeConfiguration,
+    _host_io_platform_status,
+)
 
 
 def _parent_context(
@@ -34,6 +42,17 @@ def _parent_context(
     )
 
 
+@pytest.mark.parametrize("mode", ("REAL", "production"))
+def test_request_context_rejects_noncanonical_mode(mode: str) -> None:
+    with pytest.raises(ValueError, match="mode must be 'mock' or 'real'"):
+        RequestContext(
+            request_id="request-invalid-mode",
+            profile="normal",
+            mode=mode,  # type: ignore[arg-type]
+            backend="autodesk_http",
+        )
+
+
 def _tool_spec(name: str, handler: server.Handler) -> server.ToolSpec:
     return server.ToolSpec(
         name=name,
@@ -43,6 +62,49 @@ def _tool_spec(name: str, handler: server.Handler) -> server.ToolSpec:
         handler=handler,
         profiles=("all",),
     )
+
+
+@pytest.mark.asyncio
+async def test_request_execution_never_rereads_environment_after_startup_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    configuration = RuntimeConfiguration.from_environment()
+    runtime = FusionAgentRuntime(
+        manifest_root=tmp_path / "manifests",
+        outputs_root=tmp_path / "outputs",
+        configuration=configuration,
+    )
+
+    async def handler(_: server.JsonDict) -> server.JsonDict:
+        active = current_request_context()
+        assert active is not None
+        return {"profile": active.profile, "mode": active.mode}
+
+    spec = server.ToolSpec(
+        name="fusion_agent_test_snapshot",
+        description="Startup snapshot regression tool.",
+        input_schema={"type": "object"},
+        output_schema=server._open_output_schema(),
+        handler=handler,
+        profiles=("normal",),
+    )
+    monkeypatch.setattr(server, "_tool_spec_map", lambda: {spec.name: spec})
+
+    def forbidden_getenv(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("request execution must not reread process environment")
+
+    monkeypatch.setattr(profiles.os, "getenv", forbidden_getenv)
+    try:
+        response = await server.execute_tool_response(
+            spec.name,
+            {"mode": "mock"},
+            runtime=runtime,
+        )
+    finally:
+        await runtime.close()
+
+    assert response.payload == {"profile": "normal", "mode": "mock"}
 
 
 @pytest.mark.asyncio
@@ -282,6 +344,10 @@ def test_public_runtime_diagnostics_exposes_only_safe_authority_summary() -> Non
             "authority_policy": {
                 "digest": "a" * 64,
                 "io_enabled": True,
+                "import_enabled": True,
+                "output_enabled": False,
+                "output_policy": "deny_io",
+                "overwrite_supported": False,
                 "root_ids": {
                     "import": ["imports"],
                     "export": ["exports"],
@@ -291,6 +357,11 @@ def test_public_runtime_diagnostics_exposes_only_safe_authority_summary() -> Non
                 "export_roots": [r"C:\private\exports"],
                 "secret": "must-not-escape",
             },
+            "host_io_platform": {
+                "import_staging": "sealed_windows_handle",
+                "output_staging": "deny_io",
+                "private": r"C:\private\stage",
+            },
         }
     )
 
@@ -299,12 +370,38 @@ def test_public_runtime_diagnostics_exposes_only_safe_authority_summary() -> Non
         "authority_policy": {
             "digest": "a" * 64,
             "io_enabled": True,
-            "root_ids": {
-                "import": ["imports"],
-                "export": ["exports"],
-            },
+            "import_enabled": True,
+            "output_enabled": False,
+            "output_policy": "deny_io",
+            "overwrite_supported": False,
+            "root_ids": {"import": ["imports"]},
+        },
+        "host_io_platform": {
+            "import_staging": "sealed_windows_handle",
+            "output_staging": "deny_io",
         },
     }
     serialized = str(public)
     assert "C:\\private" not in serialized
     assert "must-not-escape" not in serialized
+
+
+def test_host_io_platform_status_is_explicit_and_fail_closed() -> None:
+    status = _host_io_platform_status()
+
+    if os.name == "nt":
+        assert status == {
+            "import_staging": "sealed_windows_handle",
+            "output_staging": "deny_io",
+        }
+    elif os.name == "posix" and sys.platform.startswith("linux"):
+        assert status["import_staging"] in {
+            "sealed_memfd",
+            "fail_closed_unavailable",
+        }
+        assert status["output_staging"] == "deny_io"
+    else:
+        assert status == {
+            "import_staging": "fail_closed_unavailable",
+            "output_staging": "deny_io",
+        }

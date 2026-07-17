@@ -324,7 +324,7 @@ async def test_dispatch_timeout_is_never_retried_and_restoration_is_attempted(
 async def test_restore_failure_aborts_suite(tmp_path: Path) -> None:
     dispatcher = _Dispatcher()
     lifecycle = _Lifecycle(cleanup_safe=False)
-    with pytest.raises(PayloadProbeAbort, match="restoration failure"):
+    with pytest.raises(PayloadProbeAbort, match="RESTORATION_FAILED"):
         await _runner(tmp_path, dispatcher, lifecycle).run(
             ProbeRunConfig(run_id="payload_restore_001")
         )

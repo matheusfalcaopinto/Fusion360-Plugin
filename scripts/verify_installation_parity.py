@@ -6,6 +6,8 @@ import argparse
 import copy
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +18,8 @@ try:
     from scripts.bundle_integrity import (
         BundleIntegrityError,
         collect_source_files,
+        expected_version_from_checkout,
+        valid_codex_cachebuster_version,
         verify_wheel,
     )
 except (
@@ -24,15 +28,32 @@ except (
     from bundle_integrity import (  # type: ignore[no-redef]
         BundleIntegrityError,
         collect_source_files,
+        expected_version_from_checkout,
+        valid_codex_cachebuster_version,
         verify_wheel,
     )
 
 
 SECURITY_ANCHORS = (
+    ".gitattributes",
+    "LICENSE",
+    "harness/README.md",
+    "harness/pyproject.toml",
+    "harness/requirements/build.in",
+    "harness/requirements/build.lock",
+    "harness/requirements/faust.lock",
+    "harness/requirements/quality.lock",
+    "harness/requirements/runtime.lock",
+    "harness/requirements/test.lock",
+    "harness/source-files.txt",
+    "harness/uv.lock",
+    "scripts/build-distribution.py",
     "scripts/fusion_agent_codex_mcp_launcher.py",
     "scripts/preinstall_verify.py",
     "scripts/bundle_integrity.py",
     "scripts/configure_mcp.py",
+    "scripts/check-ci-release-gate.py",
+    "scripts/run-isolated-pip.py",
     "scripts/setup.ps1",
     "scripts/setup.sh",
     "scripts/validate_plugin.py",
@@ -63,6 +84,39 @@ class InstallationParityError(RuntimeError):
     """The installed/cache bundle is not the reviewed personal source."""
 
 
+def _path_is_reparse(path: Path) -> bool:
+    try:
+        junction_check = getattr(path, "is_junction", None)
+        return bool(
+            path.is_symlink()
+            or (callable(junction_check) and junction_check())
+            or getattr(path.lstat(), "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except OSError:
+        return True
+
+
+def _require_source_runtime(source: Path, runtime_python: Path | str) -> Path:
+    runtime = Path(os.path.abspath(runtime_python))
+    runtime_root = source / ".venv"
+    scripts_root = runtime_root / ("Scripts" if os.name == "nt" else "bin")
+    expected = scripts_root / ("python.exe" if os.name == "nt" else "python")
+    if (
+        os.path.normcase(str(runtime)) != os.path.normcase(str(expected))
+        or not runtime_root.is_dir()
+        or not scripts_root.is_dir()
+        or _path_is_reparse(runtime_root)
+        or _path_is_reparse(scripts_root)
+        or not runtime.is_file()
+        or (os.name == "nt" and _path_is_reparse(runtime))
+    ):
+        raise InstallationParityError(
+            "runtime Python must use the exact non-reparse personal-source .venv"
+        )
+    return runtime
+
+
 def verify_installation_parity(
     source_root: Path | str,
     cache_root: Path | str,
@@ -72,9 +126,9 @@ def verify_installation_parity(
 ) -> dict[str, Any]:
     source = Path(source_root).resolve(strict=True)
     cache = Path(cache_root).resolve(strict=True)
-    runtime = Path(runtime_python).resolve(strict=True)
-    if not source.is_dir() or not cache.is_dir() or not runtime.is_file():
+    if not source.is_dir() or not cache.is_dir():
         raise InstallationParityError("source, cache, and runtime Python must exist")
+    runtime = _require_source_runtime(source, runtime_python)
 
     source_manifest = _read_object(source / ".codex-plugin" / "plugin.json")
     cache_manifest = _read_object(cache / ".codex-plugin" / "plugin.json")
@@ -83,22 +137,39 @@ def verify_installation_parity(
             "cache plugin manifest differs from personal source"
         )
     version = str(source_manifest.get("version") or "")
-    if not version.startswith("0.4.1+codex."):
-        raise InstallationParityError("0.4.1 cachebuster version is missing")
+    expected_base_version = expected_version_from_checkout(source)
+    if not valid_codex_cachebuster_version(
+        version, expected_base_version=expected_base_version
+    ):
+        raise InstallationParityError(
+            "cachebuster version must match "
+            f"{expected_base_version}+codex.<14-digit valid UTC timestamp>"
+        )
 
     source_wheel = _single_wheel(source)
     cache_wheel = _single_wheel(cache)
     if source_wheel.read_bytes() != cache_wheel.read_bytes():
         raise InstallationParityError("cache wheel differs from personal source wheel")
-    base_version = version.split("+", 1)[0]
     report = verify_wheel(
         cache_wheel,
         plugin_root=source,
-        expected_version=base_version,
+        expected_version=expected_base_version,
         require_source_parity=True,
     )
+    backend = _verify_rewritten_mcp(
+        source / ".mcp.json",
+        cache / ".mcp.json",
+        source,
+        runtime,
+    )
     if verify_installed:
-        _verify_installed_with_runtime(runtime, source, cache_wheel)
+        dependency_lock = "faust.lock" if backend == "faust_stdio" else "runtime.lock"
+        _verify_installed_with_runtime(
+            runtime,
+            source,
+            cache_wheel,
+            dependency_lock=dependency_lock,
+        )
 
     source_files = collect_source_files(source)
     cache_files = collect_source_files(cache)
@@ -107,15 +178,9 @@ def verify_installation_parity(
             "cache first-party source differs from personal source"
         )
     for relative in SECURITY_ANCHORS:
-        if _bytes(source / relative) != _bytes(cache / relative):
+        if _contained_bytes(source, relative) != _contained_bytes(cache, relative):
             raise InstallationParityError(f"cache security anchor differs: {relative}")
     _verify_skill_tree(source / "skills", cache / "skills")
-    _verify_rewritten_mcp(
-        source / ".mcp.json",
-        cache / ".mcp.json",
-        source,
-        runtime,
-    )
 
     return {
         "ok": True,
@@ -133,19 +198,34 @@ def _verify_installed_with_runtime(
     runtime: Path,
     source: Path,
     wheel: Path,
+    *,
+    dependency_lock: str,
 ) -> None:
     """Run the stdlib verifier under the exact configured MCP interpreter."""
 
     verifier = (source / "scripts" / "preinstall_verify.py").resolve(strict=True)
+    runtime_parent = runtime.parent
+    environment_root = (
+        runtime_parent.parent
+        if runtime_parent.name.lower() in {"bin", "scripts"}
+        else runtime_parent
+    )
+    dependency_wheelhouse = environment_root / ".fusion-agent-wheelhouse"
     command = [
         str(runtime),
         "-I",
+        "-S",
+        "-B",
         str(verifier),
         "--plugin-root",
         str(source),
         "--wheel",
         str(wheel),
         "--verify-installed",
+        "--dependency-lock",
+        dependency_lock,
+        "--dependency-wheelhouse",
+        str(dependency_wheelhouse),
     ]
     try:
         completed = subprocess.run(
@@ -182,7 +262,7 @@ def _verify_rewritten_mcp(
     cache_path: Path,
     source: Path,
     runtime: Path,
-) -> None:
+) -> str:
     source_payload = _read_object(source_path)
     cache_payload = _read_object(cache_path)
     normalized_source = copy.deepcopy(source_payload)
@@ -214,11 +294,12 @@ def _verify_rewritten_mcp(
         raise InstallationParityError(".mcp.json has no fusion_agent server")
     _normalize_source_launcher(source_server)
     _normalize_cache_launcher(cache_server, source, runtime)
-    _verify_environment(cache_server)
+    backend = _verify_environment(cache_server)
     if normalized_source != normalized_cache:
         raise InstallationParityError(
             "cache .mcp.json differs outside approved command/args rewrites"
         )
+    return backend
 
 
 def _server_map(payload: dict[str, Any], label: str) -> dict[str, Any]:
@@ -235,12 +316,12 @@ def _normalize_source_launcher(server: dict[str, Any]) -> None:
         raise InstallationParityError(
             "personal source .mcp.json command is not portable Python"
         )
-    if arguments != [_LAUNCHER_ARGUMENT]:
+    if arguments != ["-I", "-B", _LAUNCHER_ARGUMENT]:
         raise InstallationParityError(
             "personal source .mcp.json launcher argument is invalid"
         )
     server["command"] = "<runtime-python>"
-    server["args"] = ["<personal-source-launcher>"]
+    server["args"] = ["-I", "-B", "<personal-source-launcher>"]
 
 
 def _normalize_cache_launcher(
@@ -249,26 +330,24 @@ def _normalize_cache_launcher(
     command_value = server.get("command")
     if not isinstance(command_value, str) or not Path(command_value).is_absolute():
         raise InstallationParityError("cache .mcp.json runtime Python is not absolute")
-    try:
-        command = Path(command_value).resolve(strict=True)
-    except OSError as exc:
-        raise InstallationParityError(
-            "cache .mcp.json runtime Python is unavailable"
-        ) from exc
-    if command != runtime:
+    command = Path(os.path.abspath(command_value))
+    if not command.is_file() or os.path.normcase(str(command)) != os.path.normcase(
+        str(runtime)
+    ):
         raise InstallationParityError("cache .mcp.json runtime Python mismatch")
     arguments = server.get("args")
     if (
         not isinstance(arguments, list)
-        or len(arguments) != 1
-        or not isinstance(arguments[0], str)
-        or not Path(arguments[0]).is_absolute()
+        or len(arguments) != 3
+        or arguments[:2] != ["-I", "-B"]
+        or not isinstance(arguments[2], str)
+        or not Path(arguments[2]).is_absolute()
     ):
         raise InstallationParityError(
-            "cache .mcp.json must contain one absolute launcher argument"
+            "cache .mcp.json must contain -I, -B, and one absolute launcher argument"
         )
     try:
-        launcher = Path(arguments[0]).resolve(strict=True)
+        launcher = Path(arguments[2]).resolve(strict=True)
     except OSError as exc:
         raise InstallationParityError(
             "cache .mcp.json launcher is unavailable"
@@ -281,10 +360,10 @@ def _normalize_cache_launcher(
             "cache .mcp.json launcher escapes personal source"
         )
     server["command"] = "<runtime-python>"
-    server["args"] = ["<personal-source-launcher>"]
+    server["args"] = ["-I", "-B", "<personal-source-launcher>"]
 
 
-def _verify_environment(server: dict[str, Any]) -> None:
+def _verify_environment(server: dict[str, Any]) -> str:
     environment = server.get("env")
     if not isinstance(environment, dict) or not all(
         isinstance(key, str) and isinstance(value, str)
@@ -293,11 +372,13 @@ def _verify_environment(server: dict[str, Any]) -> None:
         raise InstallationParityError("cache .mcp.json env must map strings to strings")
     if environment.get("FUSION_AGENT_TOOL_PROFILE") != "normal":
         raise InstallationParityError("cache must install the normal tool profile")
-    if environment.get("FUSION_AGENT_BACKEND") not in {
+    backend = environment.get("FUSION_AGENT_BACKEND")
+    if not isinstance(backend, str) or backend not in {
         "autodesk_http",
         "faust_stdio",
     }:
         raise InstallationParityError("cache backend selection is invalid")
+    return backend
 
 
 def _verify_fusion_data(value: Any) -> None:
@@ -329,16 +410,8 @@ def _verify_fusion_data(value: Any) -> None:
 
 
 def _verify_skill_tree(source: Path, cache: Path) -> None:
-    source_files = {
-        path.relative_to(source).as_posix(): path.read_bytes()
-        for path in source.rglob("*")
-        if path.is_file()
-    }
-    cache_files = {
-        path.relative_to(cache).as_posix(): path.read_bytes()
-        for path in cache.rglob("*")
-        if path.is_file()
-    }
+    source_files = _regular_tree(source, "personal source skills")
+    cache_files = _regular_tree(cache, "cache skills")
     if source_files != cache_files:
         raise InstallationParityError("cache skills differ from personal source")
 
@@ -349,26 +422,70 @@ def _single_wheel(root: Path) -> Path:
         raise InstallationParityError(
             f"expected exactly one wheel in bundle, found {len(wheels)}"
         )
-    return wheels[0]
+    wheel = wheels[0]
+    if wheel.is_symlink():
+        raise InstallationParityError("bundled wheel must not be a symlink")
+    resolved = wheel.resolve(strict=True)
+    if root != resolved and root not in resolved.parents:
+        raise InstallationParityError("bundled wheel escapes its root")
+    return wheel
 
 
 def _read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise InstallationParityError(
+            f"required JSON must not be a symlink: {path.name}"
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_strict_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
         raise InstallationParityError(f"invalid required JSON: {path.name}") from exc
     if not isinstance(payload, dict):
         raise InstallationParityError(f"required JSON is not an object: {path.name}")
     return payload
 
 
-def _bytes(path: Path) -> bytes:
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _contained_bytes(root: Path, relative: str) -> bytes:
+    path = root / relative
+    if path.is_symlink():
+        raise InstallationParityError(
+            f"required bundle file must not be a symlink: {relative}"
+        )
     try:
-        return path.read_bytes()
+        resolved = path.resolve(strict=True)
     except OSError as exc:
         raise InstallationParityError(
             f"required bundle file is missing: {path.name}"
         ) from exc
+    if root != resolved and root not in resolved.parents:
+        raise InstallationParityError(
+            f"required bundle file escapes its root: {relative}"
+        )
+    return resolved.read_bytes()
+
+
+def _regular_tree(root: Path, label: str) -> dict[str, bytes]:
+    if root.is_symlink():
+        raise InstallationParityError(f"{label} root must not be a symlink")
+    files: dict[str, bytes] = {}
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise InstallationParityError(f"{label} contains a symlink")
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
 
 
 def main() -> int:

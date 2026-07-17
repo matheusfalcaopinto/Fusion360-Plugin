@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -63,7 +64,10 @@ class BenchmarkArtifactStore:
 
             trial_lines = "".join(
                 json.dumps(
-                    trial.model_dump(mode="json"), sort_keys=True, ensure_ascii=False
+                    _project_trial(trial.model_dump(mode="json")),
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    allow_nan=False,
                 )
                 + "\n"
                 for trial in report.trials
@@ -72,20 +76,22 @@ class BenchmarkArtifactStore:
             _atomic_write(
                 staging / "report.json",
                 json.dumps(
-                    report.model_dump(mode="json"),
+                    _project_report(report.model_dump(mode="json")),
                     indent=2,
                     sort_keys=True,
                     ensure_ascii=False,
+                    allow_nan=False,
                 ),
             )
             _atomic_write(staging / "summary.md", _summary_markdown(report))
             _atomic_write(
                 staging / "environment.json",
                 json.dumps(
-                    redact_sensitive(environment),
+                    _public_projection(environment),
                     indent=2,
                     sort_keys=True,
                     ensure_ascii=False,
+                    allow_nan=False,
                 ),
             )
             for trial_id, trace in sorted(traces.items()):
@@ -96,16 +102,18 @@ class BenchmarkArtifactStore:
                         indent=2,
                         sort_keys=True,
                         ensure_ascii=False,
+                        allow_nan=False,
                     ),
                 )
             for trial_id, oracle in sorted(oracles.items()):
                 _atomic_write(
                     oracle_dir / physical_artifact_name(_safe_trial_id(trial_id)),
                     json.dumps(
-                        redact_sensitive(oracle),
+                        _public_projection(oracle),
                         indent=2,
                         sort_keys=True,
                         ensure_ascii=False,
+                        allow_nan=False,
                     ),
                 )
             replace(staging, run_dir)
@@ -152,13 +160,12 @@ class BenchmarkArtifactStore:
                 page = payload[offset : offset + limit]
                 return {
                     "legacy": True,
-                    "path": str(path),
                     "offset": offset,
                     "limit": limit,
                     "total": len(payload),
-                    "items": page,
+                    "items": [_public_projection(item) for item in page],
                 }
-            return {"legacy": True, "path": str(path), "report": payload}
+            return {"legacy": True, "report": _public_projection(payload)}
 
         run_dir = self._run_dir(run_id)
         if not path_is_dir(run_dir):
@@ -286,8 +293,8 @@ def _summary_markdown(report: BenchmarkReport) -> str:
             [
                 "## Abort",
                 "",
-                f"- Type: `{report.error.get('type', 'unknown')}`",
-                f"- Message: {report.error.get('message', '')}",
+                f"- Code: `{report.error.get('code', 'BENCHMARK_EXECUTION_FAILED')}`",
+                f"- Message: {report.error.get('generic_message', 'The benchmark run failed.')}",
                 "",
             ]
         )
@@ -307,6 +314,12 @@ def _sanitize_trace(trace: dict[str, Any]) -> dict[str, Any]:
                 "observation",
                 "script",
                 "content",
+                "error",
+                "exception",
+                "message",
+                "argv",
+                "command",
+                "path",
             )
         ):
             value = trace.pop(key)
@@ -318,7 +331,155 @@ def _sanitize_trace(trace: dict[str, Any]) -> dict[str, Any]:
                 "type": type(value).__name__,
                 "size": len(serialized),
             }
-    return cast(dict[str, Any], redact_sensitive(trace))
+    return cast(dict[str, Any], _public_projection(redact_sensitive(trace)))
+
+
+def _public_projection(value: Any, *, depth: int = 0) -> Any:
+    """Bound public artifacts and remove provider-controlled error/identity data."""
+
+    if depth > 6:
+        return {"truncated": True}
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, child in list(sorted(value.items(), key=lambda item: str(item[0])))[
+            :128
+        ]:
+            normalized = str(key).lower().replace("-", "_")
+            if _is_sensitive_public_key(normalized):
+                projected[str(key)] = {"redacted": True}
+            else:
+                projected[str(key)] = _public_projection(child, depth=depth + 1)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [
+            _public_projection(child, depth=depth + 1) for child in list(value)[:256]
+        ]
+    if isinstance(value, str):
+        if _looks_sensitive_string(value):
+            return {"redacted": True}
+        return value[:2_048]
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("public benchmark artifact evidence must be finite")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return type(value).__name__
+
+
+def _project_trial(value: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(value)
+    prompt = projected.pop("prompt", None)
+    if isinstance(prompt, str):
+        projected["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    status = projected.get("status")
+    if not isinstance(status, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]{1,120}", status
+    ):
+        projected["status"] = "benchmark_status_redacted"
+    return cast(dict[str, Any], _public_projection(projected))
+
+
+def _project_report(value: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(value)
+    trials = projected.pop("trials", [])
+    public_error = _project_public_error(projected.pop("error", None))
+    projected["trials"] = [
+        _project_trial(item) for item in trials[:10_000] if isinstance(item, dict)
+    ]
+    result = cast(dict[str, Any], _public_projection(projected))
+    if public_error is not None:
+        result["error"] = public_error
+    return result
+
+
+def _project_public_error(value: Any) -> dict[str, Any] | None:
+    """Preserve only the fixed public error contract, never provider text."""
+
+    if not isinstance(value, dict):
+        return None
+    code = value.get("code")
+    message = value.get("generic_message")
+    correlation_id = value.get("correlation_id")
+    retryable = value.get("retryable")
+    if (
+        not isinstance(code, str)
+        or not re.fullmatch(r"[A-Z][A-Z0-9_]{2,79}", code)
+        or not isinstance(message, str)
+        or not re.fullmatch(r"[A-Za-z0-9 .,;:'()_-]{1,200}", message)
+        or not isinstance(correlation_id, str)
+        or not re.fullmatch(r"[0-9a-f]{16}", correlation_id)
+        or type(retryable) is not bool
+    ):
+        return None
+    return {
+        "code": code,
+        "generic_message": message,
+        "correlation_id": correlation_id,
+        "retryable": retryable,
+    }
+
+
+def _is_sensitive_public_key(normalized: str) -> bool:
+    """Classify secret/raw-data keys without confusing route names with paths."""
+
+    if normalized == "execution_paths":
+        return False
+    if normalized in {
+        "error",
+        "exception",
+        "message",
+        "token",
+        "secret",
+        "authorization",
+        "credential",
+        "document_id",
+        "entity_token",
+        "path",
+        "argv",
+        "command",
+        "script",
+        "content",
+        "stdout",
+        "stderr",
+    }:
+        return True
+    return normalized.endswith(
+        (
+            "_error",
+            "_exception",
+            "_message",
+            "_token",
+            "_secret",
+            "_authorization",
+            "_credential",
+            "_document_id",
+            "_entity_token",
+            "_path",
+            "_argv",
+            "_command",
+            "_script",
+            "_content",
+            "_stdout",
+            "_stderr",
+        )
+    )
+
+
+def _looks_sensitive_string(value: str) -> bool:
+    lowered = value.lower()
+    return bool(
+        re.search(r"(?:[a-z]:\\|/users/|/home/|data:urn:adsk|--[a-z])", lowered)
+        or any(
+            marker in lowered
+            for marker in (
+                "bearer ",
+                "token=",
+                "secret=",
+                "password=",
+                "authorization=",
+                "argv=",
+            )
+        )
+    )
 
 
 def _safe_trial_id(trial_id: str) -> str:

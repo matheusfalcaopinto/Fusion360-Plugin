@@ -16,7 +16,6 @@ from fusion_mcp_adapter.endpoint_policy import (
     EndpointDecision,
     EndpointPolicyError,
     open_url_no_redirects,
-    revalidate_resolution,
     validate_endpoint,
 )
 from fusion_mcp_adapter.real_client import RealMcpClient
@@ -64,6 +63,17 @@ async def test_hidden_tool_is_rejected_before_handler() -> None:
     assert caught.value.profile == "normal"
     assert "advanced" in caught.value.available_profiles
     assert "all" in caught.value.available_profiles
+
+
+@pytest.mark.asyncio
+async def test_direct_execute_helper_defaults_to_normal_profile() -> None:
+    with pytest.raises(ToolProfileError) as caught:
+        await server.execute_tool_response(
+            "fusion_agent_fast_execute",
+            {"script": "raise RuntimeError('must never run')"},
+        )
+
+    assert caught.value.profile == "normal"
 
 
 @pytest.mark.asyncio
@@ -257,6 +267,21 @@ def test_resources_and_prompts_publish_the_planned_surface() -> None:
     assert "Inputs (untrusted data)" in rendered.messages[0].content.text
 
 
+def test_direct_non_tool_helpers_default_to_normal_even_if_environment_says_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FUSION_AGENT_TOOL_PROFILE", "all")
+
+    assert "fusion-benchmark-case" not in {
+        prompt.name for prompt in mcp_surface.prompts()
+    }
+    with pytest.raises(mcp_surface.SurfaceProfileError):
+        mcp_surface.render_prompt(
+            "fusion-benchmark-case",
+            {"case_id": "b01"},
+        )
+
+
 @pytest.mark.asyncio
 async def test_faust_blocks_mutable_fast_path_before_runtime_handler(
     monkeypatch,
@@ -285,41 +310,54 @@ def test_endpoint_policy_is_loopback_only_by_default() -> None:
     with pytest.raises(EndpointPolicyError, match="query strings"):
         validate_endpoint("http://127.0.0.1:27182/mcp?access_token=secret")
 
-    with pytest.raises(EndpointPolicyError, match="non-loopback"):
+    with pytest.raises(EndpointPolicyError, match="literal IP"):
         validate_endpoint(
             "https://fusion.example.test/mcp",
             resolver=_resolver("203.0.113.10"),
         )
 
 
-def test_remote_policy_requires_https_allowlist_token_and_stable_dns() -> None:
+def test_remote_policy_requires_https_allowlist_and_token_for_literal_ip() -> None:
     with pytest.raises(EndpointPolicyError, match="HTTPS"):
         validate_endpoint(
-            "http://fusion.example.test/mcp",
+            "http://203.0.113.10/mcp",
             policy="allowlist",
-            allowlist="fusion.example.test",
+            allowlist="203.0.113.0/24",
             bearer_token="secret",
-            resolver=_resolver("203.0.113.10"),
         )
     with pytest.raises(EndpointPolicyError, match="BEARER"):
         validate_endpoint(
-            "https://fusion.example.test/mcp",
+            "https://203.0.113.10/mcp",
             policy="allowlist",
-            allowlist="fusion.example.test",
-            resolver=_resolver("203.0.113.10"),
+            allowlist="203.0.113.0/24",
         )
 
     decision = validate_endpoint(
-        "https://fusion.example.test/mcp",
+        "https://203.0.113.10/mcp",
         policy="allowlist",
-        allowlist="fusion.example.test",
+        allowlist="203.0.113.0/24",
         bearer_token="secret",
-        resolver=_resolver("203.0.113.10"),
     )
     assert decision.resolved_ips == ("203.0.113.10",)
-    revalidate_resolution(decision, resolver=_resolver("203.0.113.10"))
-    with pytest.raises(EndpointPolicyError, match="DNS resolution changed"):
-        revalidate_resolution(decision, resolver=_resolver("203.0.113.11"))
+
+
+def test_hostname_endpoint_fails_closed_without_resolving() -> None:
+    resolver_calls = 0
+
+    def unexpected_resolver(*_args):
+        nonlocal resolver_calls
+        resolver_calls += 1
+        raise AssertionError("DNS must not run")
+
+    with pytest.raises(EndpointPolicyError, match="literal IP"):
+        validate_endpoint(
+            "https://fusion.example.test/mcp",
+            policy="allowlist",
+            allowlist="fusion.example.test",
+            bearer_token="secret",
+            resolver=unexpected_resolver,
+        )
+    assert resolver_calls == 0
 
 
 @pytest.mark.asyncio
@@ -384,8 +422,21 @@ def test_urllib_redirect_handler_rejects_3xx_without_second_request(
             opened += 1
             return response
 
-    def build_opener(handler):  # noqa: ANN001
-        assert isinstance(handler, endpoint_policy.RejectHttpRedirectHandler)
+    def build_opener(*handlers):  # noqa: ANN001
+        assert any(
+            isinstance(item, endpoint_policy.urllib.request.ProxyHandler)
+            for item in handlers
+        )
+        proxy = next(
+            item
+            for item in handlers
+            if isinstance(item, endpoint_policy.urllib.request.ProxyHandler)
+        )
+        assert proxy.proxies == {}
+        assert any(
+            isinstance(item, endpoint_policy.RejectHttpRedirectHandler)
+            for item in handlers
+        )
         return FakeOpener()
 
     monkeypatch.setattr(endpoint_policy.urllib.request, "build_opener", build_opener)
@@ -506,9 +557,11 @@ async def test_real_mcp_http_factory_disables_redirects_and_revalidates_every_re
     assert captured["endpoint"] == decision.endpoint
     assert captured["httpx_client_factory"] == client._policy_httpx_client_factory
 
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
     http_client = client._policy_httpx_client_factory(timeout=httpx.Timeout(1))
     try:
         assert http_client.follow_redirects is False
+        assert http_client._trust_env is False
         hooks = http_client.event_hooks["request"]
         assert len(hooks) == 1
         events.clear()

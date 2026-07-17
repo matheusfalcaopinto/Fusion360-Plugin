@@ -240,7 +240,7 @@ async def test_marker_mismatch_blocks_route_but_still_closes_and_restores(
 
     with pytest.raises(
         BenchmarkExecutionError,
-        match="blocked before route dispatch.*fixture marker mismatch",
+        match="benchmark execution failed",
     ):
         await runner.run_suite(
             _suite(tmp_path / "suite.json"),
@@ -275,7 +275,7 @@ async def test_close_or_restore_failure_aborts_suite(
     setattr(backend, failure_field, False)
     runner = _real_runner(tmp_path, backend)
 
-    with pytest.raises(BenchmarkExecutionError, match=message):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             _suite(tmp_path / "suite.json"),
             config=BenchmarkRunConfig(
@@ -295,13 +295,42 @@ async def test_close_boolean_is_rejected_when_fixture_remains_in_list_open(
     backend.leave_fixture_open = True
     runner = _real_runner(tmp_path, backend)
 
-    with pytest.raises(BenchmarkExecutionError, match="not closed without save"):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             _suite(tmp_path / "suite.json"),
             config=BenchmarkRunConfig(mode="real", execution_paths=["safe_harness"]),
         )
 
     assert "list_open" in backend.calls
+
+
+@pytest.mark.asyncio
+async def test_teardown_exception_and_document_ids_are_not_retained() -> None:
+    private_canary = "PRIVATE_TOKEN=C:\\Users\\alice\\secret argv=--bearer-secret"
+
+    class ThrowingCleanupBackend(FakeRealBackend):
+        async def close_fixture_without_save(self, context, session) -> bool:
+            del context
+            self.calls.append("close")
+            self.open_document_ids.discard(session.fixture_document_id)
+            self.active_document_id = None
+            raise RuntimeError(private_canary)
+
+    backend = ThrowingCleanupBackend()
+    bridge = FusionRuntimeBenchmarkBridge(object(), backend=backend)
+    context = SimpleNamespace(
+        trial_id="teardown_projection_041",
+        execution_path="safe_harness",
+        fixture_marker="private-fixture-marker",
+    )
+    start = await bridge.prepare(context)
+
+    finish = await bridge.finalize(context, start, None)
+
+    serialized = json.dumps(finish.metadata, sort_keys=True)
+    assert private_canary not in serialized
+    assert "fixture:teardown_projection_041" not in serialized
+    assert finish.metadata == {"containment_codes": ["fixture_close_failed"]}
 
 
 @pytest.mark.asyncio
@@ -321,7 +350,7 @@ async def test_stock_runtime_fails_capability_preflight_before_dispatch(
 
     with pytest.raises(
         BenchmarkExecutionError,
-        match="REAL_BENCHMARK_CAPABILITY_MISSING:.*canonical_real_action:read_document_summary:safe_harness.*no real benchmark action",
+        match="benchmark execution failed",
     ):
         await runner.run_suite(
             _suite(tmp_path / "suite.json"),
@@ -513,6 +542,7 @@ async def test_server_injects_shared_runtime_real_bridge(
             "repetitions": 1,
         },
         runtime=runtime,
+        profile="benchmark",
     )
 
     assert result["trial_count"] == 2

@@ -3,6 +3,8 @@
     "fusion_agent": {
       "command": "python",
       "args": [
+        "-I",
+        "-B",
         "scripts/fusion_agent_codex_mcp_launcher.py"
       ],
       "env": {

@@ -41,7 +41,7 @@ SUITE = (
 def test_strict_v2_loader_has_required_cases_and_no_fallback(tmp_path: Path) -> None:
     suite = load_benchmark_suite(SUITE)
     assert suite.schema_version == "benchmark_suite.v2"
-    assert len(suite.cases) == 14
+    assert len(suite.cases) == 13
     assert {
         "persistent_cold_first_read",
         "api_documentation",
@@ -50,7 +50,6 @@ def test_strict_v2_loader_has_required_cases_and_no_fallback(tmp_path: Path) -> 
         "targeted_inspection_large",
         "bounded_global_inspection_large",
         "targeted_token_inspection_large",
-        "screenshot_verified",
         "additive_cube",
         "additive_plate_features",
         "scoped_parameter_update",
@@ -115,7 +114,7 @@ async def test_internal_mock_is_deterministic_counterbalanced_and_writes_all_art
         SUITE, config=config, run_id="bench_deterministic02"
     )
 
-    assert len(first.report.trials) == 14 * 2 * 3
+    assert len(first.report.trials) == 13 * 2 * 3
 
     def signature(run):
         return [
@@ -132,9 +131,9 @@ async def test_internal_mock_is_deterministic_counterbalanced_and_writes_all_art
 
     assert signature(first) == signature(second)
     assert first.report.summary == second.report.summary
-    assert first.report.summary["measured_trial_count"] == 56
-    assert first.report.summary["warmup_trial_count"] == 28
-    assert first.report.summary["paired"]["pair_count"] == 28
+    assert first.report.summary["measured_trial_count"] == 52
+    assert first.report.summary["warmup_trial_count"] == 26
+    assert first.report.summary["paired"]["pair_count"] == 26
     assert first.report.summary["paired"]["duration_delta_ms"]["p50"] < 0
     assert first.report.summary["paired"]["call_count_delta"]["p50"] < 0
     assert (
@@ -244,7 +243,7 @@ async def test_baseline_is_validated_before_dispatch_and_requires_comparable_con
             route_executors={"safe_harness": counting, "native_fast": counting},
             environment_metadata=metadata,
         )
-        with pytest.raises(BenchmarkExecutionError, match=expected):
+        with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
             await runner.run_suite(SUITE, config=config, run_id=run_id)
         assert counting.calls == 0
         aborted = json.loads(
@@ -421,9 +420,7 @@ async def test_aborted_trial_preserves_completed_evidence(tmp_path: Path) -> Non
         output_dir=tmp_path,
         route_executors={"safe_harness": executor},
     )
-    with pytest.raises(
-        BenchmarkExecutionError, match="intentional second-trial failure"
-    ):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             SUITE,
             config=BenchmarkRunConfig(execution_paths=["safe_harness"]),
@@ -433,6 +430,7 @@ async def test_aborted_trial_preserves_completed_evidence(tmp_path: Path) -> Non
     run_dir = tmp_path / "benchmarks" / "bench_abortpersist01"
     report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     assert report["status"] == "aborted"
+    assert "intentional second-trial failure" not in json.dumps(report)
     assert len(report["trials"]) == 1
     assert len(list((run_dir / "traces").glob("*.json"))) == 2
     assert not list((run_dir.parent).glob(".*.tmp"))
@@ -522,7 +520,7 @@ async def test_paginated_v2_reads_and_explicit_legacy_report(tmp_path: Path) -> 
     page = runner.read_report(
         run_id=run.report.run_id, view="trials", offset=2, limit=3
     )
-    assert page["total"] == 14
+    assert page["total"] == 13
     assert len(page["items"]) == 3
     report_page = runner.read_report(
         run_id=run.report.run_id, view="report", offset=0, limit=2
@@ -552,13 +550,13 @@ async def test_real_mutation_confirmation_and_executor_requirements_fail_before_
     tmp_path: Path,
 ) -> None:
     runner = BenchmarkRunner(output_dir=tmp_path)
-    with pytest.raises(BenchmarkExecutionError, match="confirm_real_benchmark"):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             SUITE,
             config=BenchmarkRunConfig(mode="real", repetitions=1),
             run_id="bench_realblocked01",
         )
-    with pytest.raises(BenchmarkExecutionError, match="injected route executors"):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             SUITE,
             config=BenchmarkRunConfig(
@@ -657,9 +655,7 @@ async def test_codex_e2e_fails_closed_without_independent_observer(
     driver = _FakeCodexDriver()
     runner = BenchmarkRunner(output_dir=tmp_path / "outputs", codex_driver=driver)
 
-    with pytest.raises(
-        BenchmarkExecutionError, match="codex_e2e mode=mock is unavailable"
-    ):
+    with pytest.raises(BenchmarkExecutionError, match="benchmark execution failed"):
         await runner.run_suite(
             _single_case_suite(tmp_path),
             config=BenchmarkRunConfig(

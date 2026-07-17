@@ -4,7 +4,17 @@ Esta pasta contém seis fixtures de complexidade progressiva para avaliar constr
 
 ## Estado das referências
 
-Execução canônica completa B02–B07: `ref_20260714T055207Z`, concluída em `2026-07-14T05:52:57Z`.
+Os resultados de `ref_20260714T055207Z` abaixo são apenas históricos. Eles foram
+invalidados para a 0.4.1 porque os artifacts antigos não eram vinculados ao digest
+da revisão e do documento e continham identificadores privados. Os JSONs raw foram
+removidos do source tree. Uma nova aprovação exige execução real sobre o SHA
+congelado, evidência document-bound, provenance completa, comparator elegível e os
+três nightlies consecutivos da release.
+
+Novos resultados são gravados exclusivamente em
+`outputs/reference-runs/<run_id>/`. A projeção pública nunca inclui document IDs,
+entity tokens, argv, paths locais, payloads downstream ou `audit_path` sem um
+artifact público allowlisted, limitado e acompanhado de SHA-256.
 
 | Caso | Artefato | Tempo | Fast Path | Oracle | Status |
 |---|---|---:|---|---:|---|
@@ -112,11 +122,11 @@ Cada trial real seguiu:
 ## Artefatos
 
 - [`suite_definition.json`](suite_definition.json): composição, política e resultados indexados.
-- [`reference_suite_result.json`](reference_suite_result.json): resultado agregado canônico de B02–B07.
+- `outputs/reference-runs/<run_id>/reference_suite_result.json`: resultado agregado sanitizado e não rastreado.
 - [`REPORT.md`](REPORT.md): relatório técnico e limitações.
 - [`COMPETITION_SOURCES.md`](COMPETITION_SOURCES.md): fontes públicas, critérios clean-room e posicionamento de dificuldade.
 - [`EXECUTOR_RELIABILITY.md`](EXECUTOR_RELIABILITY.md): confiabilidade do executor Python nativo e limites conhecidos.
 - [`run_reference_suite.py`](run_reference_suite.py): runner da referência.
 - `cases/<case_id>/definition.json`: contrato congelado.
 - `cases/<case_id>/eco_script.py` e `eco_oracle_script.py`: mudança e verificação independente dos casos compostos.
-- `cases/<case_id>/reference_result.json`: Fast Path, oracles, imagens e cleanup; a existência do arquivo não implica aprovação.
+- `outputs/reference-runs/<run_id>/cases/<case_id>/reference_result.json`: projeção pública por caso; a existência do arquivo não implica aprovação.

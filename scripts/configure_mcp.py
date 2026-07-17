@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -24,6 +25,40 @@ SENSITIVE_QUERY_NAMES = {
 }
 
 
+def _path_is_reparse(path: Path) -> bool:
+    try:
+        junction_check = getattr(path, "is_junction", None)
+        return bool(
+            path.is_symlink()
+            or (callable(junction_check) and junction_check())
+            or getattr(path.lstat(), "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except OSError:
+        return True
+
+
+def _require_contained_runtime(plugin_root: Path, python: Path) -> Path:
+    runtime_root = plugin_root / ".venv"
+    scripts_root = runtime_root / ("Scripts" if os.name == "nt" else "bin")
+    expected = scripts_root / ("python.exe" if os.name == "nt" else "python")
+    candidate = Path(os.path.abspath(python))
+    if os.path.normcase(str(candidate)) != os.path.normcase(str(expected)):
+        raise ValueError("installed MCP runtime must be contained by the plugin .venv")
+    if (
+        not runtime_root.is_dir()
+        or not scripts_root.is_dir()
+        or _path_is_reparse(runtime_root)
+        or _path_is_reparse(scripts_root)
+        or not candidate.is_file()
+        or (os.name == "nt" and _path_is_reparse(candidate))
+    ):
+        raise ValueError(
+            "installed MCP runtime must use the exact non-reparse plugin .venv"
+        )
+    return candidate
+
+
 def configure(
     plugin_root: Path,
     python: Path,
@@ -36,17 +71,15 @@ def configure(
     require_contained_runtime: bool = False,
 ) -> Path:
     plugin_root = plugin_root.resolve()
-    python = python.resolve()
+    python = Path(os.path.abspath(python))
     config_path = plugin_root / ".mcp.json"
     launcher = (
         plugin_root / "scripts" / "fusion_agent_codex_mcp_launcher.py"
     ).resolve()
     if not python.is_file():
         raise FileNotFoundError(f"Python interpreter does not exist: {python}")
-    if require_contained_runtime and not python.is_relative_to(
-        (plugin_root / ".venv").resolve()
-    ):
-        raise ValueError("installed MCP runtime must be contained by the plugin .venv")
+    if require_contained_runtime:
+        python = _require_contained_runtime(plugin_root, python)
     if not launcher.is_file():
         raise FileNotFoundError(f"Fusion Agent launcher does not exist: {launcher}")
     tool_profile = tool_profile.strip().lower()
@@ -60,7 +93,7 @@ def configure(
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     server = payload.setdefault("mcpServers", {}).setdefault("fusion_agent", {})
     server["command"] = str(python)
-    server["args"] = [str(launcher)]
+    server["args"] = ["-I", "-B", str(launcher)]
     environment = server.setdefault("env", {})
     environment["FUSION_AGENT_TOOL_PROFILE"] = tool_profile
     environment["FUSION_AGENT_BACKEND"] = backend

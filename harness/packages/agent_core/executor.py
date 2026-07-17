@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable, cast
@@ -16,16 +15,77 @@ from agent_core.authority import (
     AuthorityDeniedError,
     AuthorityPolicy,
     BoundOperation,
+    CadTargetBinding,
+    HostOutputDisabledError,
     LegacyOutputOperation,
+    REAL_HOST_OUTPUT_DENIED_MESSAGE,
 )
+from agent_core.request_context import ExecutionMode
 from cad_spec.models import CadSpec, FeatureSpec
 from fusion_tool_facade.facade import FusionFacade
+
+
+LEGACY_REAL_EXECUTION_DENIED_MESSAGE = (
+    "CadSpec v1 cannot execute against a real provider because its operations "
+    "do not carry document and entity bindings; normalize the complete graph "
+    "to CadSpec v2 and execute it through CapabilityExecutor."
+)
+
+
+def require_legacy_execution_allowed(*, mode: str, dry_run: bool) -> None:
+    """Fail closed before a deprecated v1 graph can reach a real provider.
+
+    CadSpec v1 remains parseable and can still drive deterministic mock or
+    dry-run compatibility flows during its deprecation window.  Every
+    non-mock, non-dry-run route is provider-bearing in the session controller,
+    so unknown/future mode strings must be rejected as well as ``real``.
+    """
+
+    if not dry_run and mode != "mock":
+        raise AuthorityDeniedError(LEGACY_REAL_EXECUTION_DENIED_MESSAGE)
+
+
+def preflight_legacy_execution(
+    spec: CadSpec,
+    *,
+    mode: str,
+    dry_run: bool,
+    output_dir: Path,
+) -> None:
+    """Validate the whole local v1 graph, then deny any provider-bearing route."""
+
+    if dry_run or mode == "mock":
+        return
+
+    requests_host_output = False
+    for component in spec.components:
+        for feature in component.features:
+            inputs = feature.merged_inputs()
+            if feature.type == "export":
+                requests_host_output = True
+                target = str(inputs.get("target", "design"))
+                format_name = str(inputs.get("format", "step")).lower()
+                _safe_export_path(
+                    output_dir,
+                    inputs.get("path") or f"{target}.{format_name}",
+                    format_name,
+                )
+            elif feature.type == "capture_viewport":
+                requests_host_output = True
+                _safe_capture_path(output_dir, inputs["path"])
+    for output in spec.outputs:
+        requests_host_output = True
+        _safe_capture_path(output_dir, output.path)
+
+    if requests_host_output:
+        raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
+    require_legacy_execution_allowed(mode=mode, dry_run=dry_run)
 
 
 class ExecutionContext(BaseModel):
     """Execution context passed to the executor."""
 
-    mode: str = "mock"
+    mode: ExecutionMode = "mock"
     project: str = "default"
     output_dir: Path = Path("outputs")
     dry_run: bool = False
@@ -105,6 +165,19 @@ class Executor:
     ) -> ExecutionResult:
         """Run the spec as small facade transactions."""
 
+        preflight_legacy_execution(
+            spec,
+            mode=context.mode,
+            dry_run=context.dry_run,
+            output_dir=context.output_dir,
+        )
+
+        # The verifier registry is the authority for legacy assertion types.
+        # Validate it before even a read-only provider preflight so an unknown
+        # assertion can never follow earlier valid operations into Fusion.
+        from verifier.geometry import require_registered_assertions
+
+        require_registered_assertions(spec)
         result = ExecutionResult(success=True)
         if context.dry_run:
             result.transactions.append({"operation": "dry_run", "status": "ok"})
@@ -134,7 +207,7 @@ class Executor:
         if not self.facade:
             raise RuntimeError("executor requires a facade when dry_run is false")
 
-        authority = self._prepare_legacy_authority(spec, context)
+        authority = await self._prepare_legacy_authority(spec, context)
 
         try:
             await self.facade.inspect_design()
@@ -183,11 +256,17 @@ class Executor:
     async def replay_features(self, spec: CadSpec, context: ExecutionContext) -> bool:
         """Replay feature execution only, without parameter/component recreation."""
 
+        preflight_legacy_execution(
+            spec,
+            mode=context.mode,
+            dry_run=context.dry_run,
+            output_dir=context.output_dir,
+        )
         if context.dry_run or not self.facade:
             return False
         if not spec.components:
             return False
-        authority = self._prepare_legacy_authority(spec, context)
+        authority = await self._prepare_legacy_authority(spec, context)
         try:
             for component_index, component in enumerate(spec.components):
                 await self.activate_component(component.name)
@@ -207,9 +286,15 @@ class Executor:
     async def replay_exports(self, spec: CadSpec, context: ExecutionContext) -> bool:
         """Replay only export features."""
 
+        preflight_legacy_execution(
+            spec,
+            mode=context.mode,
+            dry_run=context.dry_run,
+            output_dir=context.output_dir,
+        )
         if context.dry_run or not self.facade:
             return False
-        authority = self._prepare_legacy_authority(
+        authority = await self._prepare_legacy_authority(
             spec, context, included_kinds={"legacy.export"}
         )
         replayed = False
@@ -258,11 +343,13 @@ class Executor:
     ) -> dict[str, Any]:
         """Dispatch one direct legacy capture through the shared host authority."""
 
+        if context.mode != "mock":
+            raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
         if not self.facade:
             raise RuntimeError("executor requires a facade for viewport capture")
         facade = self.facade
         canonical_path = _safe_capture_path(context.output_dir, path)
-        authority = self._prepare_operations(
+        authority = await self._prepare_operations(
             (
                 LegacyOutputOperation(
                     id="direct-capture",
@@ -276,7 +363,9 @@ class Executor:
             context,
         )
 
-        async def dispatch(bound_path: Path) -> dict[str, Any]:
+        async def dispatch(
+            bound: BoundOperation | None, bound_path: Path
+        ) -> dict[str, Any]:
             return await facade.capture_viewport(
                 name=name,
                 path=bound_path,
@@ -284,11 +373,18 @@ class Executor:
                 isolate_prefix=isolate_prefix,
                 width=width,
                 height=height,
+                operation_id="direct-capture" if bound is not None else None,
+                document_binding=(
+                    _bound_legacy_target_payload(bound) if bound is not None else None
+                ),
+                host_path_binding=(
+                    _bound_legacy_host_payload(bound) if bound is not None else None
+                ),
             )
 
         try:
             if authority is None:
-                return await dispatch(canonical_path)
+                return await dispatch(None, canonical_path)
             return cast(
                 dict[str, Any],
                 await self._dispatch_authorized_output(
@@ -324,7 +420,7 @@ class Executor:
                 authority_id=_feature_authority_id(component_index, feature_index),
             )
 
-    def _prepare_legacy_authority(
+    async def _prepare_legacy_authority(
         self,
         spec: CadSpec,
         context: ExecutionContext,
@@ -383,35 +479,92 @@ class Executor:
                         target_identity=output.name,
                     )
                 )
-        return self._prepare_operations(tuple(operations), context)
+        return await self._prepare_operations(tuple(operations), context)
 
-    def _prepare_operations(
+    async def _prepare_operations(
         self,
         operations: tuple[LegacyOutputOperation, ...],
         context: ExecutionContext,
     ) -> _PreparedLegacyAuthority | None:
-        if context.mode != "real" or not operations:
+        if not operations or context.mode == "mock":
             return None
-        graph = self.authority_broker.prepare_legacy_output_graph(
-            operations,
-            session_id=context.session_id or f"legacy-{uuid.uuid4().hex}",
-            provider=self.authority_provider,
+        raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
+
+    def _preflight_legacy_host_io_operations(
+        self, operations: tuple[LegacyOutputOperation, ...]
+    ) -> None:
+        """Reject unsupported output semantics before live Fusion binding reads."""
+
+        if self.facade is None:
+            raise AuthorityDeniedError(
+                "legacy host output requires a live Fusion facade"
+            )
+        require_secure_host_io = getattr(
+            self.facade, "require_secure_host_io_platform", None
         )
-        return _PreparedLegacyAuthority(
-            broker=self.authority_broker,
-            by_id={bound.operation.id: bound for bound in graph.operations},
-        )
+        if not callable(require_secure_host_io):
+            raise AuthorityDeniedError(
+                "legacy host output backend cannot preflight secure host I/O"
+            )
+        for operation in operations:
+            require_secure_host_io("export", overwrite=operation.overwrite)
+
+    async def _resolve_legacy_output_bindings(
+        self, operations: tuple[LegacyOutputOperation, ...]
+    ) -> dict[str, tuple[CadTargetBinding, ...]]:
+        if self.facade is None:
+            raise AuthorityDeniedError(
+                "legacy host output requires a live Fusion facade"
+            )
+        raw_document: dict[str, Any] | None = None
+        if any(operation.kind == "legacy.capture" for operation in operations):
+            resolve_document = getattr(self.facade, "resolve_document_binding", None)
+            if not callable(resolve_document):
+                raise AuthorityDeniedError(
+                    "legacy host output backend cannot bind the active document"
+                )
+            document_payload = await resolve_document()
+            value = document_payload.get("binding")
+            if not isinstance(value, dict):
+                raise AuthorityDeniedError("legacy document binding is incomplete")
+            raw_document = value
+        bindings: dict[str, tuple[CadTargetBinding, ...]] = {}
+        for operation in operations:
+            raw_binding = raw_document
+            if operation.kind == "legacy.export":
+                resolve_export = getattr(
+                    self.facade, "resolve_export_target_binding", None
+                )
+                if not callable(resolve_export):
+                    raise AuthorityDeniedError(
+                        "legacy export backend cannot bind the target entity"
+                    )
+                export_payload = await resolve_export(
+                    operation.target_identity, operation.format
+                )
+                value = export_payload.get("binding")
+                if not isinstance(value, dict):
+                    raise AuthorityDeniedError(
+                        "legacy export target binding is incomplete"
+                    )
+                raw_binding = value
+            if raw_binding is None:
+                raise AuthorityDeniedError("legacy output target binding is incomplete")
+            bindings[operation.id] = (
+                _legacy_output_live_binding(operation, raw_binding),
+            )
+        return bindings
 
     async def _dispatch_authorized_output(
         self,
         authority: _PreparedLegacyAuthority,
         operation_id: str,
         expected_path: Path,
-        dispatch: Callable[[Path], Awaitable[Any]],
+        dispatch: Callable[[BoundOperation, Path], Awaitable[Any]],
     ) -> Any:
         bound, canonical_path = authority.claim_path(operation_id, expected_path)
         try:
-            payload = await dispatch(canonical_path)
+            payload = await dispatch(bound, canonical_path)
             authority.complete(operation_id, bound)
         except BaseException:
             if operation_id not in authority.finalized:
@@ -847,10 +1000,33 @@ class Executor:
                         "legacy export has no operation identity"
                     )
 
-                async def dispatch(bound_path: Path) -> Any:
+                async def dispatch(
+                    bound: BoundOperation | None, bound_path: Path
+                ) -> Any:
+                    operation_id = authority_id if bound is not None else None
+                    target_binding = (
+                        _bound_legacy_target_payload(bound)
+                        if bound is not None
+                        else None
+                    )
+                    host_path_binding = (
+                        _bound_legacy_host_payload(bound) if bound is not None else None
+                    )
                     if fmt == "stl":
-                        return await facade.export_stl(target, bound_path)
-                    return await facade.export_step(target, bound_path)
+                        return await facade.export_stl(
+                            target,
+                            bound_path,
+                            operation_id=operation_id,
+                            target_binding=target_binding,
+                            host_path_binding=host_path_binding,
+                        )
+                    return await facade.export_step(
+                        target,
+                        bound_path,
+                        operation_id=operation_id,
+                        target_binding=target_binding,
+                        host_path_binding=host_path_binding,
+                    )
 
                 await self._dispatch_authorized_output(
                     authority, authority_id, path, dispatch
@@ -864,7 +1040,7 @@ class Executor:
         elif feature.type == "capture_viewport":
             path = _safe_capture_path(context.output_dir, inputs["path"])
 
-            async def dispatch(bound_path: Path) -> Any:
+            async def dispatch(bound: BoundOperation | None, bound_path: Path) -> Any:
                 return await facade.capture_viewport(
                     name=feature.name,
                     path=bound_path,
@@ -872,6 +1048,15 @@ class Executor:
                     isolate_prefix=inputs.get("isolate_prefix"),
                     width=int(inputs.get("width", 1600)),
                     height=int(inputs.get("height", 1100)),
+                    operation_id=authority_id if bound is not None else None,
+                    document_binding=(
+                        _bound_legacy_target_payload(bound)
+                        if bound is not None
+                        else None
+                    ),
+                    host_path_binding=(
+                        _bound_legacy_host_payload(bound) if bound is not None else None
+                    ),
                 )
 
             if authority is not None:
@@ -883,7 +1068,7 @@ class Executor:
                     authority, authority_id, path, dispatch
                 )
             else:
-                await dispatch(path)
+                await dispatch(None, path)
             result.exports.append(str(path))
             result.created_objects.append(feature.name)
         else:
@@ -972,7 +1157,9 @@ class Executor:
         for output_index, output in enumerate(spec.outputs):
             path = _safe_capture_path(context.output_dir, output.path)
 
-            async def dispatch(bound_path: Path) -> Any:
+            operation_id = _output_authority_id(output_index)
+
+            async def dispatch(bound: BoundOperation | None, bound_path: Path) -> Any:
                 return await facade.capture_viewport(
                     name=output.name,
                     path=bound_path,
@@ -980,17 +1167,26 @@ class Executor:
                     isolate_prefix=output.isolate_prefix,
                     width=output.width,
                     height=output.height,
+                    operation_id=operation_id if bound is not None else None,
+                    document_binding=(
+                        _bound_legacy_target_payload(bound)
+                        if bound is not None
+                        else None
+                    ),
+                    host_path_binding=(
+                        _bound_legacy_host_payload(bound) if bound is not None else None
+                    ),
                 )
 
             if authority is not None:
                 await self._dispatch_authorized_output(
                     authority,
-                    _output_authority_id(output_index),
+                    operation_id,
                     path,
                     dispatch,
                 )
             else:
-                await dispatch(path)
+                await dispatch(None, path)
             result.exports.append(str(path))
             result.created_objects.append(output.name)
             result.transactions.append(
@@ -1045,6 +1241,58 @@ def _safe_capture_path(output_dir: Path, raw_path: str | Path) -> Path:
     if path.suffix.lower() != ".png":
         raise ValueError("legacy viewport capture path must use the .png extension")
     return path
+
+
+def _legacy_output_live_binding(
+    operation: LegacyOutputOperation, raw_binding: dict[str, Any]
+) -> CadTargetBinding:
+    reference_kind = str(raw_binding.get("reference_kind") or "")
+    requested_ref = str(raw_binding.get("requested_ref") or "")
+    document_identity = str(raw_binding.get("document_identity") or "")
+    entity_identity = str(raw_binding.get("entity_identity") or "")
+    source_fingerprint = str(raw_binding.get("fingerprint") or "")
+    if not all(
+        len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+        for value in (document_identity, entity_identity, source_fingerprint)
+    ):
+        raise AuthorityDeniedError("legacy output live identity proof is invalid")
+    expected_kind = (
+        "export_target" if operation.kind == "legacy.export" else "active_document"
+    )
+    expected_ref = (
+        operation.target_identity
+        if operation.kind == "legacy.export"
+        else "active_document"
+    )
+    if reference_kind != expected_kind or requested_ref != expected_ref:
+        raise AuthorityDeniedError("legacy output live identity does not match request")
+    return CadTargetBinding(
+        reference_kind=reference_kind,
+        requested_ref=requested_ref,
+        document_identity=document_identity,
+        entity_identity=entity_identity,
+        fingerprint=source_fingerprint,
+    )
+
+
+def _bound_legacy_target_payload(bound: BoundOperation) -> dict[str, str]:
+    if len(bound.target_bindings) != 1:
+        raise AuthorityDeniedError("legacy output target proof is incomplete")
+    return cast(dict[str, str], asdict(bound.target_bindings[0]))
+
+
+def _bound_legacy_host_payload(bound: BoundOperation) -> dict[str, Any]:
+    binding = bound.host_path
+    if binding is None:
+        raise AuthorityDeniedError("legacy output host path proof is incomplete")
+    return {
+        "direction": binding.direction,
+        "canonical_root": binding.canonical_root,
+        "canonical_path": binding.canonical_path,
+        "existed_at_issue": binding.existed_at_issue,
+        "overwrite": binding.overwrite,
+        "resource_fingerprint": binding.resource_fingerprint,
+    }
 
 
 def _legacy_overwrite(inputs: dict[str, Any]) -> bool:

@@ -14,6 +14,8 @@ from .runner import (
     CausalRunResult,
     IndependentOracle,
     LayerExecutor,
+    current_trial_context,
+    route_context,
 )
 from .submission import freeze_planner_submission
 
@@ -29,7 +31,9 @@ __all__ = [
     "LayerExecutor",
     "OracleObservation",
     "TrialContext",
+    "current_trial_context",
     "load_causal_suite",
     "suite_fingerprint",
+    "route_context",
     "freeze_planner_submission",
 ]

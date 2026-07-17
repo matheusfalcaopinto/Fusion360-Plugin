@@ -57,29 +57,21 @@ def discover_codex_executable(env: dict[str, str] | None = None) -> Path:
                 )
             )
 
-    errors: list[str] = []
     for candidate in candidates:
         try:
             resolved = candidate.resolve(strict=True)
-        except (FileNotFoundError, OSError) as exc:
-            errors.append(f"{candidate}: {exc}")
+        except (FileNotFoundError, OSError):
             continue
         if not resolved.is_file():
-            errors.append(f"{resolved}: not a file")
             continue
         if resolved.name.lower() not in {"codex", "codex.exe"}:
-            errors.append(f"{resolved}: unexpected executable name")
             continue
         # WindowsApps aliases can exist but fail when launched from the desktop
         # sandbox. Prefer the concrete LocalAppData binary when one is present.
         if "windowsapps" in {part.lower() for part in resolved.parts}:
-            errors.append(f"{resolved}: WindowsApps alias rejected")
             continue
         return resolved
-    detail = "; ".join(errors) if errors else "no candidates"
-    raise CodexExecutableError(
-        f"unable to locate a concrete Codex executable ({detail})"
-    )
+    raise CodexExecutableError("unable to locate a concrete Codex executable")
 
 
 class CodexE2EDriver:
@@ -177,7 +169,6 @@ class CodexE2EDriver:
             stdout, stderr = await process.communicate()
         duration_ms = (time.perf_counter() - started) * 1000
         stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
         events = _jsonl_events(stdout_text)
         observation_payload = _find_observation(events)
         measured_tokens = _token_count(events)
@@ -201,8 +192,6 @@ class CodexE2EDriver:
             observation_payload["token_count"] = measured_tokens
         observation = ExecutionObservation.model_validate(observation_payload)
         trace = {
-            "executable": str(self.codex_bin),
-            "argv_without_prompt": command[:-1],
             "prompt_sha256": hashlib.sha256(command[-1].encode("utf-8")).hexdigest(),
             "returncode": process.returncode,
             "timed_out": timed_out,
@@ -210,7 +199,6 @@ class CodexE2EDriver:
             "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
             "stdout_bytes": len(stdout),
             "stderr_bytes": len(stderr),
-            "stderr_excerpt": stderr_text[:500],
             "event_count": len(events),
             "token_count": measured_tokens,
         }
@@ -234,13 +222,11 @@ def _validate_codex_executable(path: Path) -> Path:
     try:
         resolved = path.expanduser().resolve(strict=True)
     except (FileNotFoundError, OSError) as exc:
-        raise CodexExecutableError(f"Codex executable does not exist: {path}") from exc
+        raise CodexExecutableError("Codex executable does not exist") from exc
     if not resolved.is_file() or resolved.name.lower() not in {"codex", "codex.exe"}:
-        raise CodexExecutableError(f"invalid Codex executable: {resolved}")
+        raise CodexExecutableError("invalid Codex executable")
     if "windowsapps" in {part.lower() for part in resolved.parts}:
-        raise CodexExecutableError(
-            f"WindowsApps Codex alias is not allowed: {resolved}"
-        )
+        raise CodexExecutableError("WindowsApps Codex alias is not allowed")
     return resolved
 
 

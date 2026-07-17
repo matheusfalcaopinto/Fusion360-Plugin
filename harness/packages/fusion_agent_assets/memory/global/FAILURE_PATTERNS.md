@@ -50,10 +50,12 @@ Repair: keep `fusion_mcp_tools_latest_real.json` and
 Symptom: a screenshot path is returned but the file is missing, empty, or only
 mentioned in the Fusion journal.
 
-Detection: captured file does not exist locally or has zero bytes.
+Detection: a real session requested capture/export, or a mock/dry-run receipt
+does not reference an existing non-empty local file.
 
-Repair: fail the capture with `evidence_quality=failed` or `empty_file`, then
-use programmatic snapshot evidence.
+Repair: real mode returns `HOST_OUTPUT_DISABLED` with zero dispatch. In
+mock/dry-run, fail the receipt with `evidence_quality=failed` or `empty_file`,
+then use programmatic snapshot evidence.
 
 ## VISIBLE_REGRESSION_AFTER_BATCH
 

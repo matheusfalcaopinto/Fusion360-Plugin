@@ -9,7 +9,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -37,18 +51,30 @@ def _global_bbox(bodies):
 
 
 def _bbox_matches(box, minimum, maximum, tolerance=0.4):
-    return all(_close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)) and all(
-        _close(box["max"][axis], maximum[axis], tolerance) for axis in range(3)
-    )
+    return all(
+        _close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)
+    ) and all(_close(box["max"][axis], maximum[axis], tolerance) for axis in range(3))
 
 
 def _identity_transform(occurrence):
     values = list(occurrence.transform2.asArray())
     expected = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ]
     return len(values) == 16 and all(
         _close(values[index], expected[index], 0.000001) for index in range(16)
@@ -78,7 +104,10 @@ def _interference_summary(design, occurrence_one, occurrence_two):
     results = design.analyzeInterference(interference_input)
     if results is None:
         return {"available": False, "count": None, "volume_mm3": None}
-    volume_mm3 = sum(results.item(index).interferenceBody.volume * 1000.0 for index in range(results.count))
+    volume_mm3 = sum(
+        results.item(index).interferenceBody.volume * 1000.0
+        for index in range(results.count)
+    )
     return {"available": True, "count": results.count, "volume_mm3": volume_mm3}
 
 
@@ -92,9 +121,13 @@ def _joint_graph(joints, expected_nodes):
         occurrence_two = joint.occurrenceTwo
         name_one = None if occurrence_one is None else occurrence_one.component.name
         name_two = None if occurrence_two is None else occurrence_two.component.name
-        endpoints[joint.name] = sorted([name for name in [name_one, name_two] if name is not None])
+        endpoints[joint.name] = sorted(
+            [name for name in [name_one, name_two] if name is not None]
+        )
         if name_one not in adjacency or name_two not in adjacency:
-            invalid_endpoints.append({"joint": joint.name, "one": name_one, "two": name_two})
+            invalid_endpoints.append(
+                {"joint": joint.name, "one": name_one, "two": name_two}
+            )
         elif name_one == name_two:
             self_edges.append(joint.name)
         else:
@@ -124,17 +157,21 @@ def run(_context: str):
     if document is None or design is None:
         raise RuntimeError("B07 ECO oracle requires an active Fusion design")
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+            }
+        )
 
     check(
         "document.identity_preserved",
@@ -178,9 +215,13 @@ def run(_context: str):
         observed = parameters.get(name, {})
         expression_ok = True
         if expected[1] is not None:
-            expression_ok = str(observed.get("expression") or "").replace(" ", "") == expected[1].replace(" ", "")
+            expression_ok = str(observed.get("expression") or "").replace(
+                " ", ""
+            ) == expected[1].replace(" ", "")
         if not _close(observed.get("value"), expected[0], 0.0001) or not expression_ok:
-            parameter_failures.append({"name": name, "expected": expected, "observed": observed})
+            parameter_failures.append(
+                {"name": name, "expected": expected, "observed": observed}
+            )
     check(
         "parameters.eco_and_dependency_propagation",
         len(parameters) == 59 and not parameter_failures,
@@ -188,7 +229,9 @@ def run(_context: str):
         {"count": len(parameters), "failures": parameter_failures},
     )
 
-    child_components = [component for component in _items(design.allComponents) if component != root]
+    child_components = [
+        component for component in _items(design.allComponents) if component != root
+    ]
     occurrences = _items(root.allOccurrences)
     bodies = []
     body_by_name = {}
@@ -201,87 +244,126 @@ def run(_context: str):
         feature_count += component.features.count
         sketch_count += component.sketches.count
         if len(component_bodies) != 1:
-            errors.append({"component": component.name, "body_count": len(component_bodies)})
+            errors.append(
+                {"component": component.name, "body_count": len(component_bodies)}
+            )
             continue
         body = component_bodies[0]
         bodies.append(body)
         body_by_name[body.name] = body
-        if not body.isValid or not body.isSolid or body.lumps.count != 1 or not body.isVisible:
-            errors.append({
-                "component": component.name,
-                "body": body.name,
-                "valid": body.isValid,
-                "solid": body.isSolid,
-                "lumps": body.lumps.count,
-                "visible": body.isVisible,
-            })
+        if (
+            not body.isValid
+            or not body.isSolid
+            or body.lumps.count != 1
+            or not body.isVisible
+        ):
+            errors.append(
+                {
+                    "component": component.name,
+                    "body": body.name,
+                    "valid": body.isValid,
+                    "solid": body.isSolid,
+                    "lumps": body.lumps.count,
+                    "visible": body.isVisible,
+                }
+            )
         for feature in _items(component.features):
             if not feature.isValid or feature.errorOrWarningMessage:
-                errors.append({
-                    "component": component.name,
-                    "feature": feature.name,
-                    "valid": feature.isValid,
-                    "message": feature.errorOrWarningMessage,
-                })
+                errors.append(
+                    {
+                        "component": component.name,
+                        "feature": feature.name,
+                        "valid": feature.isValid,
+                        "message": feature.errorOrWarningMessage,
+                    }
+                )
         for sketch in _items(component.sketches):
             if (
                 not sketch.isValid
                 or not sketch.isFullyConstrained
-                or sketch.healthState != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+                or sketch.healthState
+                != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
                 or sketch.errorOrWarningMessage
             ):
-                sketch_errors.append({
+                sketch_errors.append(
+                    {
+                        "component": component.name,
+                        "sketch": sketch.name,
+                        "valid": sketch.isValid,
+                        "fully_constrained": sketch.isFullyConstrained,
+                        "health": sketch.healthState,
+                        "message": sketch.errorOrWarningMessage,
+                    }
+                )
+    expected_component_names = {
+        f"CMP{index:02d}_{suffix}"
+        for index, suffix in [
+            (1, "Base_Left_Rail"),
+            (2, "Base_Right_Rail"),
+            (3, "Base_Front_Crossbar"),
+            (4, "Base_Rear_Crossbar"),
+            (5, "Post_Front_Left"),
+            (6, "Post_Front_Right"),
+            (7, "Post_Rear_Left"),
+            (8, "Post_Rear_Right"),
+            (9, "Top_Front_Crossbar"),
+            (10, "Top_Rear_Crossbar"),
+            (11, "Top_Left_Rail"),
+            (12, "Top_Right_Rail"),
+            (13, "Panel_Left"),
+            (14, "Panel_Right"),
+            (15, "Panel_Rear"),
+            (16, "Access_Door"),
+            (17, "Door_Hinge_Lower"),
+            (18, "Door_Hinge_Upper"),
+            (19, "Conveyor_Belt"),
+            (20, "Roller_Infeed"),
+            (21, "Roller_Quarter"),
+            (22, "Roller_Three_Quarter"),
+            (23, "Roller_Outfeed"),
+            (24, "Drive_Motor"),
+            (25, "Hopper"),
+            (26, "Feed_Throat"),
+            (27, "Control_Cabinet"),
+            (28, "Conveyor_Rail_Left"),
+            (29, "Conveyor_Rail_Right"),
+            (30, "Conveyor_Support_Front_Left"),
+            (31, "Conveyor_Support_Front_Right"),
+            (32, "Conveyor_Support_Rear_Left"),
+            (33, "Conveyor_Support_Rear_Right"),
+            (34, "Hopper_Support_Crossbar"),
+        ]
+    }
+    expected_body_owners = {
+        component_name: f"B{index:02d}_{component_name.split('_', 1)[1]}"
+        for index, component_name in enumerate(
+            sorted(expected_component_names), start=1
+        )
+    }
+    ownership_errors = []
+    for component in child_components:
+        component_bodies = _items(component.bRepBodies)
+        if (
+            len(component_bodies) == 1
+            and expected_body_owners.get(component.name) != component_bodies[0].name
+        ):
+            ownership_errors.append(
+                {
                     "component": component.name,
-                    "sketch": sketch.name,
-                    "valid": sketch.isValid,
-                    "fully_constrained": sketch.isFullyConstrained,
-                    "health": sketch.healthState,
-                    "message": sketch.errorOrWarningMessage,
-                })
-    expected_component_names = {f"CMP{index:02d}_{suffix}" for index, suffix in [
-        (1, "Base_Left_Rail"),
-        (2, "Base_Right_Rail"),
-        (3, "Base_Front_Crossbar"),
-        (4, "Base_Rear_Crossbar"),
-        (5, "Post_Front_Left"),
-        (6, "Post_Front_Right"),
-        (7, "Post_Rear_Left"),
-        (8, "Post_Rear_Right"),
-        (9, "Top_Front_Crossbar"),
-        (10, "Top_Rear_Crossbar"),
-        (11, "Top_Left_Rail"),
-        (12, "Top_Right_Rail"),
-        (13, "Panel_Left"),
-        (14, "Panel_Right"),
-        (15, "Panel_Rear"),
-        (16, "Access_Door"),
-        (17, "Door_Hinge_Lower"),
-        (18, "Door_Hinge_Upper"),
-        (19, "Conveyor_Belt"),
-        (20, "Roller_Infeed"),
-        (21, "Roller_Quarter"),
-        (22, "Roller_Three_Quarter"),
-        (23, "Roller_Outfeed"),
-        (24, "Drive_Motor"),
-        (25, "Hopper"),
-        (26, "Feed_Throat"),
-        (27, "Control_Cabinet"),
-        (28, "Conveyor_Rail_Left"),
-        (29, "Conveyor_Rail_Right"),
-        (30, "Conveyor_Support_Front_Left"),
-        (31, "Conveyor_Support_Front_Right"),
-        (32, "Conveyor_Support_Rear_Left"),
-        (33, "Conveyor_Support_Rear_Right"),
-        (34, "Hopper_Support_Crossbar"),
-    ]}
+                    "expected_body": expected_body_owners.get(component.name),
+                    "observed_body": component_bodies[0].name,
+                }
+            )
     check(
         "assembly.counts_health_identity_after_eco",
         len(child_components) == 34
-        and {component.name for component in child_components} == expected_component_names
+        and {component.name for component in child_components}
+        == expected_component_names
         and len(occurrences) == 34
         and all(_identity_transform(occurrence) for occurrence in occurrences)
         and len(bodies) == 34
         and len(body_by_name) == 34
+        and not ownership_errors
         and feature_count == 34
         and sketch_count == 35
         and root.bRepBodies.count == 0
@@ -307,6 +389,7 @@ def run(_context: str):
                 if not _identity_transform(occurrence)
             ],
             "errors": errors,
+            "ownership_errors": ownership_errors,
             "sketch_errors": sketch_errors,
         },
     )
@@ -315,7 +398,9 @@ def run(_context: str):
         global_box = _global_bbox(bodies)
         check(
             "geometry.eco_global_machine_bbox",
-            _bbox_matches(global_box, [-380.0, -310.0, 0.0], [380.0, 310.0, 500.0], 0.5),
+            _bbox_matches(
+                global_box, [-380.0, -310.0, 0.0], [380.0, 310.0, 500.0], 0.5
+            ),
             {"min": [-380.0, -310.0, 0.0], "max": [380.0, 310.0, 500.0]},
             global_box,
         )
@@ -349,20 +434,32 @@ def run(_context: str):
         "geometry.eco_frame_enclosure_and_left_door_anchor",
         not frame_failures and enclosure_contact,
         {"boxes": frame_and_enclosure_expected, "left_anchor_preserved": True},
-        {"failures": frame_failures, "boxes": frame_boxes, "contact": enclosure_contact},
+        {
+            "failures": frame_failures,
+            "boxes": frame_boxes,
+            "contact": enclosure_contact,
+        },
     )
 
     process_expected = {
         "B19_Conveyor_Belt": ([-200.0, -310.0, 220.0], [200.0, 310.0, 228.0]),
         "B20_Roller_Infeed": ([-220.0, -310.0, 180.0], [220.0, -270.0, 220.0]),
-        "B21_Roller_Quarter": ([-220.0, -123.333333, 180.0], [220.0, -83.333333, 220.0]),
-        "B22_Roller_Three_Quarter": ([-220.0, 83.333333, 180.0], [220.0, 123.333333, 220.0]),
+        "B21_Roller_Quarter": (
+            [-220.0, -123.333333, 180.0],
+            [220.0, -83.333333, 220.0],
+        ),
+        "B22_Roller_Three_Quarter": (
+            [-220.0, 83.333333, 180.0],
+            [220.0, 123.333333, 220.0],
+        ),
         "B23_Roller_Outfeed": ([-220.0, 270.0, 180.0], [220.0, 310.0, 220.0]),
         "B24_Drive_Motor": ([240.0, 270.0, 180.0], [320.0, 310.0, 220.0]),
         "B25_Hopper": ([-180.0, -10.0, 320.0], [180.0, 210.0, 470.0]),
         "B26_Feed_Throat": ([-50.0, 60.0, 228.0], [50.0, 140.0, 320.0]),
     }
-    process_failures, process_boxes = _box_set_matches(body_by_name, process_expected, 0.5)
+    process_failures, process_boxes = _box_set_matches(
+        body_by_name, process_expected, 0.5
+    )
     belt_box = process_boxes.get("B19_Conveyor_Belt")
     roller_boxes = [
         process_boxes.get("B20_Roller_Infeed"),
@@ -375,7 +472,10 @@ def run(_context: str):
     throat_box = process_boxes.get("B26_Feed_Throat")
     tangency_and_feed = (
         belt_box is not None
-        and all(box is not None and _close(box["max"][2], belt_box["min"][2], 0.2) for box in roller_boxes)
+        and all(
+            box is not None and _close(box["max"][2], belt_box["min"][2], 0.2)
+            for box in roller_boxes
+        )
         and motor_box is not None
         and _close(motor_box["min"][0] - roller_boxes[3]["max"][0], 20.0, 0.2)
         and all(
@@ -402,13 +502,19 @@ def run(_context: str):
             "feed_continuity": True,
             "solid_metering_reservoir": True,
         },
-        {"failures": process_failures, "boxes": process_boxes, "continuity": tangency_and_feed},
+        {
+            "failures": process_failures,
+            "boxes": process_boxes,
+            "continuity": tangency_and_feed,
+        },
     )
 
     cabinet_expected = {
         "B27_Control_Cabinet": ([278.0, -90.0, 30.0], [348.0, 90.0, 210.0]),
     }
-    cabinet_failures, cabinet_boxes = _box_set_matches(body_by_name, cabinet_expected, 0.4)
+    cabinet_failures, cabinet_boxes = _box_set_matches(
+        body_by_name, cabinet_expected, 0.4
+    )
     cabinet_box = cabinet_boxes.get("B27_Control_Cabinet")
     right_panel_box = frame_boxes.get("B14_Panel_Right")
     cabinet_contact = (
@@ -426,13 +532,27 @@ def run(_context: str):
     conveyor_support_expected = {
         "B28_Conveyor_Rail_Left": ([-240.0, -310.0, 160.0], [-220.0, 310.0, 240.0]),
         "B29_Conveyor_Rail_Right": ([220.0, -310.0, 160.0], [240.0, 310.0, 240.0]),
-        "B30_Conveyor_Support_Front_Left": ([-240.0, -250.0, 30.0], [-220.0, -220.0, 160.0]),
-        "B31_Conveyor_Support_Front_Right": ([220.0, -250.0, 30.0], [240.0, -220.0, 160.0]),
-        "B32_Conveyor_Support_Rear_Left": ([-240.0, 220.0, 30.0], [-220.0, 250.0, 160.0]),
-        "B33_Conveyor_Support_Rear_Right": ([220.0, 220.0, 30.0], [240.0, 250.0, 160.0]),
+        "B30_Conveyor_Support_Front_Left": (
+            [-240.0, -250.0, 30.0],
+            [-220.0, -220.0, 160.0],
+        ),
+        "B31_Conveyor_Support_Front_Right": (
+            [220.0, -250.0, 30.0],
+            [240.0, -220.0, 160.0],
+        ),
+        "B32_Conveyor_Support_Rear_Left": (
+            [-240.0, 220.0, 30.0],
+            [-220.0, 250.0, 160.0],
+        ),
+        "B33_Conveyor_Support_Rear_Right": (
+            [220.0, 220.0, 30.0],
+            [240.0, 250.0, 160.0],
+        ),
         "B34_Hopper_Support_Crossbar": ([-350.0, 190.0, 470.0], [350.0, 210.0, 500.0]),
     }
-    support_failures, support_boxes = _box_set_matches(body_by_name, conveyor_support_expected, 0.4)
+    support_failures, support_boxes = _box_set_matches(
+        body_by_name, conveyor_support_expected, 0.4
+    )
     left_rail_box = support_boxes.get("B28_Conveyor_Rail_Left")
     right_rail_box = support_boxes.get("B29_Conveyor_Rail_Right")
     hopper_support_box = support_boxes.get("B34_Hopper_Support_Crossbar")
@@ -463,12 +583,15 @@ def run(_context: str):
         "geometry.eco_conveyor_and_hopper_support_propagation",
         not support_failures and support_contact,
         {"boxes": conveyor_support_expected, "support_contacts_preserved": True},
-        {"failures": support_failures, "boxes": support_boxes, "contact": support_contact},
+        {
+            "failures": support_failures,
+            "boxes": support_boxes,
+            "contact": support_contact,
+        },
     )
 
     occurrence_by_component = {
-        occurrence.component.name: occurrence
-        for occurrence in occurrences
+        occurrence.component.name: occurrence for occurrence in occurrences
     }
     critical_pairs = {
         "door_belt": ("CMP16_Access_Door", "CMP19_Conveyor_Belt"),
@@ -528,23 +651,46 @@ def run(_context: str):
         "J18_Conveyor_Frame": ("CMP19_Conveyor_Belt", "CMP03_Base_Front_Crossbar"),
         "J19_Roller_Infeed": ("CMP20_Roller_Infeed", "CMP19_Conveyor_Belt"),
         "J20_Roller_Quarter": ("CMP21_Roller_Quarter", "CMP19_Conveyor_Belt"),
-        "J21_Roller_Three_Quarter": ("CMP22_Roller_Three_Quarter", "CMP19_Conveyor_Belt"),
+        "J21_Roller_Three_Quarter": (
+            "CMP22_Roller_Three_Quarter",
+            "CMP19_Conveyor_Belt",
+        ),
         "J22_Roller_Outfeed": ("CMP23_Roller_Outfeed", "CMP19_Conveyor_Belt"),
         "J23_Drive_Motor": ("CMP24_Drive_Motor", "CMP23_Roller_Outfeed"),
         "J24_Hopper_Throat": ("CMP25_Hopper", "CMP26_Feed_Throat"),
         "J25_Throat_Belt": ("CMP26_Feed_Throat", "CMP19_Conveyor_Belt"),
         "J26_Control_Cabinet": ("CMP27_Control_Cabinet", "CMP14_Panel_Right"),
-        "J27_Rail_Left_Front_Support": ("CMP28_Conveyor_Rail_Left", "CMP30_Conveyor_Support_Front_Left"),
-        "J28_Rail_Right_Front_Support": ("CMP29_Conveyor_Rail_Right", "CMP31_Conveyor_Support_Front_Right"),
-        "J29_Front_Left_Support_Frame": ("CMP30_Conveyor_Support_Front_Left", "CMP03_Base_Front_Crossbar"),
-        "J30_Front_Right_Support_Frame": ("CMP31_Conveyor_Support_Front_Right", "CMP03_Base_Front_Crossbar"),
-        "J31_Rear_Left_Support_Rail": ("CMP32_Conveyor_Support_Rear_Left", "CMP28_Conveyor_Rail_Left"),
-        "J32_Rear_Right_Support_Rail": ("CMP33_Conveyor_Support_Rear_Right", "CMP29_Conveyor_Rail_Right"),
-        "J33_Hopper_Support_Frame": ("CMP34_Hopper_Support_Crossbar", "CMP11_Top_Left_Rail"),
+        "J27_Rail_Left_Front_Support": (
+            "CMP28_Conveyor_Rail_Left",
+            "CMP30_Conveyor_Support_Front_Left",
+        ),
+        "J28_Rail_Right_Front_Support": (
+            "CMP29_Conveyor_Rail_Right",
+            "CMP31_Conveyor_Support_Front_Right",
+        ),
+        "J29_Front_Left_Support_Frame": (
+            "CMP30_Conveyor_Support_Front_Left",
+            "CMP03_Base_Front_Crossbar",
+        ),
+        "J30_Front_Right_Support_Frame": (
+            "CMP31_Conveyor_Support_Front_Right",
+            "CMP03_Base_Front_Crossbar",
+        ),
+        "J31_Rear_Left_Support_Rail": (
+            "CMP32_Conveyor_Support_Rear_Left",
+            "CMP28_Conveyor_Rail_Left",
+        ),
+        "J32_Rear_Right_Support_Rail": (
+            "CMP33_Conveyor_Support_Rear_Right",
+            "CMP29_Conveyor_Rail_Right",
+        ),
+        "J33_Hopper_Support_Frame": (
+            "CMP34_Hopper_Support_Crossbar",
+            "CMP11_Top_Left_Rail",
+        ),
     }
     expected_joint_endpoints = {
-        name: sorted(pair)
-        for name, pair in expected_joint_endpoints_raw.items()
+        name: sorted(pair) for name, pair in expected_joint_endpoints_raw.items()
     }
     revolute_names = {
         joint.name
@@ -607,6 +753,12 @@ def run(_context: str):
             "total_volume_mm3": sum(body.volume * 1000.0 for body in bodies),
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

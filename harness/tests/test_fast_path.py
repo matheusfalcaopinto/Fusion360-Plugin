@@ -4,11 +4,14 @@ import ast
 import base64
 import json
 import sys
+import types
 
 import pytest
 
 from agent_core.fast_path import (
     FastPathService,
+    GUARD_CONTROL_SCHEMA,
+    _RecoveryRecord,
     _ROOT_COMPONENT_BINDING,
     _component_query_id,
     _guard_script,
@@ -28,6 +31,7 @@ from fusion_mcp_adapter.execute_guard import (
     normalize_execute_script,
     protected_script_descriptor,
 )
+from fusion_mcp_adapter.tool_result import ToolResult
 
 
 READ_SCRIPT = """import adsk.core
@@ -43,6 +47,13 @@ def run(_context: str):
     root = target_components["root"]
     root.bRepBodies.add(None)
 """
+
+ACTIVE_COMMAND_CLEAR = {
+    "success": True,
+    "complete": True,
+    "activeCommandRead": True,
+    "activeCommand": None,
+}
 
 
 def test_linter_accepts_bounded_scripts_and_blocks_unsafe_operations() -> None:
@@ -120,6 +131,8 @@ def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_cod
         _guard_script(
             READ_SCRIPT,
             {"name": "D", "id": "data-id", "runtime_id": "data:data-id"},
+            guard_token="a" * 32,
+            guard_binding_digest="b" * 64,
         )
     )
     parsed = ast.parse(guarded)
@@ -146,6 +159,52 @@ def test_guarded_entrypoint_normalizes_fusion_streams_before_harness_or_user_cod
     assert guarded.index("del _fusion_agent_runtime_sys") < guarded.index(
         "return _fusion_agent_user_run(_context)"
     )
+
+
+def test_document_guard_emits_operation_bound_control_envelope(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    adsk_module = types.ModuleType("adsk")
+    core_module = types.ModuleType("adsk.core")
+    fusion_module = types.ModuleType("adsk.fusion")
+    document = types.SimpleNamespace(name="Other", dataFile=None)
+    application = types.SimpleNamespace(
+        activeCommand="", activeDocument=document, activeProduct=None
+    )
+
+    class Application:
+        @staticmethod
+        def get() -> object:
+            return application
+
+    core_module.Application = Application  # type: ignore[attr-defined]
+    adsk_module.core = core_module  # type: ignore[attr-defined]
+    adsk_module.fusion = fusion_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "adsk", adsk_module)
+    monkeypatch.setitem(sys.modules, "adsk.core", core_module)
+    monkeypatch.setitem(sys.modules, "adsk.fusion", fusion_module)
+    guarded = _guard_script(
+        READ_SCRIPT,
+        {"name": "Expected", "id": "", "runtime_id": ""},
+        guard_token="a" * 32,
+        guard_binding_digest="b" * 64,
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(guarded, "<guard-envelope-test>", "exec"), namespace)
+
+    returned = namespace["run"]("")  # type: ignore[operator]
+    emitted = json.loads(capsys.readouterr().out)
+
+    assert returned == emitted
+    assert emitted == {
+        "fusion_agent_guard": {
+            "schema": GUARD_CONTROL_SCHEMA,
+            "token": "a" * 32,
+            "binding_digest": "b" * 64,
+            "status": "rejected_before_apply",
+            "reason_code": "DOCUMENT_NAME_CHANGED",
+        }
+    }
 
 
 def test_stream_preamble_preserves_current_writer_and_collapses_old_writer_chain() -> (
@@ -532,7 +591,14 @@ def test_mutating_baseline_rejects_any_inexact_query_match_count() -> None:
             "counts_exact": True,
             "stop_reason": None,
             "results": [
-                {"query_id": "future_body", "matches": [], "match_count_exact": True},
+                {
+                    "query_id": "future_body",
+                    "matches": [],
+                    "ambiguous": False,
+                    "truncated": False,
+                    "match_count": 0,
+                    "match_count_exact": True,
+                },
                 {
                     "query_id": "component_binding",
                     "matches": [],
@@ -596,10 +662,10 @@ class FakeNative:
             if "fusion_agent_active_command" in arguments["object"]["script"]:
                 return {
                     "ok": True,
-                    "data": {"message": json.dumps({"activeCommand": None})},
+                    "data": {"message": json.dumps(ACTIVE_COMMAND_CLEAR)},
                 }
             self.inspections += 1
-            exists = self.inspections > 1
+            exists = self.mutating_calls > 0
             payload = {
                 "success": True,
                 "complete": True,
@@ -611,6 +677,8 @@ class FakeNative:
                     "components": 1,
                     "occurrences": 0,
                     "bodies": 1 if exists else 0,
+                    "state_fingerprint": "state-after" if exists else "state-before",
+                    "state_fingerprint_truncated": False,
                 },
                 "results": [
                     {
@@ -708,7 +776,7 @@ async def test_fast_execute_uses_one_mutation_between_baseline_and_readback() ->
     assert response.payload["status"] == "applied_verified"
     assert response.payload["script_sha256"]
     assert native.mutating_calls == 1
-    assert native.inspections == 2
+    assert native.inspections == 3
     assert response.payload["bindings"]["target_components"] == ["root"]
     assert response.payload["transport_mutating_dispatch_count"] == 1
     assert response.payload["declared_mutation_count"] == 1
@@ -814,7 +882,7 @@ async def test_fast_execute_never_verifies_from_partial_readback() -> None:
                 name == "fusion_mcp_execute"
                 and semantics == "read_only"
                 and "fusion_agent_active_command" not in arguments["object"]["script"]
-                and self.inspections == 2
+                and self.inspections == 3
             ):
                 payload = json.loads(result["data"]["message"])
                 # The requested assertion is still present and true, but the
@@ -884,7 +952,7 @@ async def test_fast_execute_blocks_truncated_additive_baseline_before_dispatch()
                 if "fusion_agent_active_command" in arguments["object"]["script"]:
                     return {
                         "ok": True,
-                        "data": {"message": json.dumps({"activeCommand": None})},
+                        "data": {"message": json.dumps(ACTIVE_COMMAND_CLEAR)},
                     }
                 self.inspections += 1
                 payload = {
@@ -1012,10 +1080,10 @@ async def test_scoped_update_is_bound_to_the_inspected_entity_token() -> None:
                 if "fusion_agent_active_command" in script:
                     return {
                         "ok": True,
-                        "data": {"message": json.dumps({"activeCommand": None})},
+                        "data": {"message": json.dumps(ACTIVE_COMMAND_CLEAR)},
                     }
                 self.inspections += 1
-                expression = "10 mm" if self.inspections == 1 else "12 mm"
+                expression = "12 mm" if self.mutations else "10 mm"
                 payload = {
                     "success": True,
                     "complete": True,
@@ -1027,7 +1095,14 @@ async def test_scoped_update_is_bound_to_the_inspected_entity_token() -> None:
                         "id": "data-file",
                         "runtime_id": "runtime",
                     },
-                    "summary": {"components": 1, "parameters": 1},
+                    "summary": {
+                        "components": 1,
+                        "parameters": 1,
+                        "state_fingerprint": "state-after"
+                        if self.mutations
+                        else "state-before",
+                        "state_fingerprint_truncated": False,
+                    },
                     "results": [
                         {
                             "query_id": "parameter_target",
@@ -1135,10 +1210,13 @@ async def test_active_command_blocks_before_mutation() -> None:
                     "data": {
                         "message": json.dumps(
                             {
+                                "success": True,
+                                "complete": True,
+                                "activeCommandRead": True,
                                 "activeCommand": {
                                     "id": "Extrude",
                                     "isDefaultCommand": False,
-                                }
+                                },
                             }
                         )
                     },
@@ -1193,7 +1271,17 @@ async def test_recovery_active_command_blocks_before_update_dispatch() -> None:
                 return {
                     "ok": True,
                     "data": {
-                        "message": json.dumps({"activeCommand": {"id": "Extrude"}})
+                        "message": json.dumps(
+                            {
+                                "success": True,
+                                "complete": True,
+                                "activeCommandRead": True,
+                                "activeCommand": {
+                                    "id": "Extrude",
+                                    "isDefaultCommand": False,
+                                },
+                            }
+                        )
                     },
                 }
             if name == "fusion_mcp_update":
@@ -1202,7 +1290,13 @@ async def test_recovery_active_command_blocks_before_update_dispatch() -> None:
 
     native = BusyRecoveryNative()
     service = FastPathService(native)
-    service._last_operation = {"operation_id": "op"}
+    service._recovery_records["op"] = _RecoveryRecord(
+        operation_id="op",
+        document={"id": "doc"},
+        state_fingerprint="state",
+        inspection_args={"queries": []},
+        after={},
+    )
 
     response = await service.recover_change(
         {
@@ -1245,11 +1339,11 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
                 if "fusion_agent_active_command" in arguments["object"]["script"]:
                     return {
                         "ok": True,
-                        "data": {"message": json.dumps({"activeCommand": None})},
+                        "data": {"message": json.dumps(ACTIVE_COMMAND_CLEAR)},
                     }
                 self.inspections += 1
                 runtime_id = (
-                    "doc-runtime-a" if self.inspections == 1 else "doc-runtime-b"
+                    "doc-runtime-a" if self.inspections <= 2 else "doc-runtime-b"
                 )
                 payload = {
                     "success": True,
@@ -1262,7 +1356,14 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
                         "id": "",
                         "runtime_id": runtime_id,
                     },
-                    "summary": {"components": 1, "bodies": 0},
+                    "summary": {
+                        "components": 1,
+                        "bodies": 0,
+                        "state_fingerprint": "state-after"
+                        if self.mutating_calls
+                        else "state-before",
+                        "state_fingerprint_truncated": False,
+                    },
                     "results": [
                         {
                             "query_id": "body_target",
@@ -1301,10 +1402,41 @@ async def test_document_runtime_identity_guard_blocks_switched_unsaved_document(
                     '_expected_runtime_id = "doc-runtime-a"'
                     in arguments["object"]["script"]
                 )
-                return {
-                    "ok": False,
-                    "error": "Fusion Agent document guard: runtime document changed",
+                assignments = {
+                    node.targets[0].id: ast.literal_eval(node.value)
+                    for node in ast.walk(ast.parse(arguments["object"]["script"]))
+                    if isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id
+                    in {
+                        "_fusion_agent_guard_token",
+                        "_fusion_agent_guard_binding_digest",
+                    }
                 }
+                control = {
+                    "fusion_agent_guard": {
+                        "schema": GUARD_CONTROL_SCHEMA,
+                        "token": assignments["_fusion_agent_guard_token"],
+                        "binding_digest": assignments[
+                            "_fusion_agent_guard_binding_digest"
+                        ],
+                        "status": "rejected_before_apply",
+                        "reason_code": "DOCUMENT_RUNTIME_ID_CHANGED",
+                    }
+                }
+                return ToolResult.from_mcp(
+                    {
+                        "content": [{"type": "text", "text": json.dumps(control)}],
+                        "_meta": {
+                            "fusion_agent_transport": {
+                                "dispatched": True,
+                                "mutation_outcome": "known",
+                                "post_dispatch_replay_suppressed": True,
+                            }
+                        },
+                    }
+                )
             raise AssertionError((name, arguments, semantics))
 
     native = SwitchedDocumentNative()
@@ -1381,7 +1513,7 @@ async def test_fast_execute_blocks_ineligible_or_ambiguous_targets_before_dispat
                 if "fusion_agent_active_command" in script:
                     return {
                         "ok": True,
-                        "data": {"message": json.dumps({"activeCommand": None})},
+                        "data": {"message": json.dumps(ACTIVE_COMMAND_CLEAR)},
                     }
                 match = {
                     "entity_type": "parameter",
@@ -1403,6 +1535,11 @@ async def test_fast_execute_blocks_ineligible_or_ambiguous_targets_before_dispat
                     "match_count_exact": True,
                     **result_overrides,
                 }
+                if result.get("ambiguous") is True and result.get("match_count") == 2:
+                    result["matches"] = [
+                        match,
+                        {**match, "entity_token": "parameter-width-token-duplicate"},
+                    ]
                 payload = {
                     "success": True,
                     "complete": True,
@@ -1410,7 +1547,12 @@ async def test_fast_execute_blocks_ineligible_or_ambiguous_targets_before_dispat
                     "counts_exact": True,
                     "stop_reason": None,
                     "document": {"name": "Untitled", "id": "trial-doc"},
-                    "summary": {"components": 1, "parameters": 1},
+                    "summary": {
+                        "components": 1,
+                        "parameters": 1,
+                        "state_fingerprint": "state-target-policy",
+                        "state_fingerprint_truncated": False,
+                    },
                     "results": [result],
                     "warnings": [],
                 }
@@ -1477,14 +1619,40 @@ def test_passing_assertions_without_requirement_coverage_are_not_contract_verifi
     None
 ):
     baseline = {
+        "complete": True,
+        "truncated": False,
+        "counts_exact": True,
+        "stop_reason": None,
         "document": {"id": "doc"},
         "summary": {"components": 1},
-        "results": [{"query_id": "target", "matches": []}],
+        "results": [
+            {
+                "query_id": "target",
+                "matches": [],
+                "ambiguous": False,
+                "truncated": False,
+                "match_count": 0,
+                "match_count_exact": True,
+            }
+        ],
     }
     after = {
+        "complete": True,
+        "truncated": False,
+        "counts_exact": True,
+        "stop_reason": None,
         "document": {"id": "doc"},
         "summary": {"components": 1},
-        "results": [{"query_id": "target", "matches": [{"name": "Body1"}]}],
+        "results": [
+            {
+                "query_id": "target",
+                "matches": [{"name": "Body1"}],
+                "ambiguous": False,
+                "truncated": False,
+                "match_count": 1,
+                "match_count_exact": True,
+            }
+        ],
     }
     result = evaluate_verification(
         baseline,
@@ -1511,14 +1679,40 @@ def test_passing_assertions_without_requirement_coverage_are_not_contract_verifi
 
 def test_independent_oracle_label_cannot_self_elevate_contract_assertions() -> None:
     baseline = {
+        "complete": True,
+        "truncated": False,
+        "counts_exact": True,
+        "stop_reason": None,
         "document": {"id": "doc"},
         "summary": {"components": 1},
-        "results": [{"query_id": "target", "matches": []}],
+        "results": [
+            {
+                "query_id": "target",
+                "matches": [],
+                "ambiguous": False,
+                "truncated": False,
+                "match_count": 0,
+                "match_count_exact": True,
+            }
+        ],
     }
     after = {
+        "complete": True,
+        "truncated": False,
+        "counts_exact": True,
+        "stop_reason": None,
         "document": {"id": "doc"},
         "summary": {"components": 1},
-        "results": [{"query_id": "target", "matches": [{"name": "Body1"}]}],
+        "results": [
+            {
+                "query_id": "target",
+                "matches": [{"name": "Body1"}],
+                "ambiguous": False,
+                "truncated": False,
+                "match_count": 1,
+                "match_count_exact": True,
+            }
+        ],
     }
     result = evaluate_verification(
         baseline,

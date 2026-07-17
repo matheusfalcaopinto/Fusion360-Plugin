@@ -1,5 +1,12 @@
 # Relatório técnico da suite paramétrica B02–B07
 
+> **Registro histórico invalidado para 0.4.1.** Os resultados raw citados neste
+> relatório foram removidos porque não eram vinculados à revisão e à identidade
+> exata da fixture e expunham identificadores privados. Eles não são evidência de
+> release nem resultado scoreable. A revalidação 0.4.1 grava somente projeções
+> públicas em `outputs/reference-runs/<run_id>/` e exige provenance completa,
+> oracle document-bound e comparator elegível.
+
 Data: 14 de julho de 2026
 Run canônico completo B02–B07: `ref_20260714T055207Z`
 Conclusão UTC: `2026-07-14T05:52:57Z`
@@ -34,7 +41,7 @@ B02 exige um único sólido/lump de 120 × 80 × 35 mm, cavidade superior aberta
 
 ### Evidência real
 
-Fonte: [`cases/b02_vented_enclosure/reference_result.json`](cases/b02_vented_enclosure/reference_result.json).
+Fonte histórica removida: `cases/b02_vented_enclosure/reference_result.json`.
 
 - Fast Path: `applied_verified`.
 - Oracle: `b02_vented_enclosure_geometry`.
@@ -60,7 +67,7 @@ Os riscos cobertos incluem assembly context incorreto, body no root, gap errado,
 
 ### Evidência real
 
-Fonte: [`cases/b03_split_pillow_block/reference_result.json`](cases/b03_split_pillow_block/reference_result.json).
+Fonte histórica removida: `cases/b03_split_pillow_block/reference_result.json`.
 
 - Fast Path: `applied_verified`.
 - Oracle: `b03_split_pillow_block_geometry`.
@@ -91,7 +98,7 @@ Os riscos são frames deslocados, seções de loft trocadas, passagem bloqueada,
 
 ### Evidência real
 
-Fonte: [`cases/b04_offset_duct_adapter/reference_result.json`](cases/b04_offset_duct_adapter/reference_result.json).
+Fonte histórica removida: `cases/b04_offset_duct_adapter/reference_result.json`.
 
 - Fast Path: `applied_verified`.
 - Oracle: `b04_offset_duct_adapter_geometry`.
@@ -141,7 +148,7 @@ A ECO `eco_b05_scale_and_repattern` altera:
 - `BaseBoltCount`: 12 → 16;
 - `MeridianCount`: 12 → 16.
 
-Fonte: [`cases/b05_spherical_lattice_radome/reference_result.json`](cases/b05_spherical_lattice_radome/reference_result.json), run `ref_20260714T055207Z`.
+Fonte histórica removida: `cases/b05_spherical_lattice_radome/reference_result.json`, run `ref_20260714T055207Z`.
 
 - Initial: `applied_verified`; oracle `b05_spherical_lattice_radome_geometry`; 11/11 pass.
 - ECO: `applied_verified`; oracle `b05_spherical_lattice_radome_eco`; 8/8 pass.
@@ -173,7 +180,7 @@ A ECO `eco_b06_extend_kinematic_chain` altera:
 
 ### Evidência canônica aprovada
 
-Fonte: [`cases/b06_robot_arm_assembly/reference_result.json`](cases/b06_robot_arm_assembly/reference_result.json).
+Fonte histórica removida: `cases/b06_robot_arm_assembly/reference_result.json`.
 
 - Run: `ref_20260714T055207Z`.
 - Initial: Fast Path `applied_verified`; oracle `b06_robot_arm_assembly_geometry` 8/8.
@@ -204,7 +211,7 @@ A ECO `eco_b07_widen_packaging_cell` altera:
 
 Frame, painéis, porta, conveyor, rollers, motor e hopper propagam a mudança; o envelope final alcança X=±380 mm.
 
-Fonte: [`cases/b07_packaging_machine/reference_result.json`](cases/b07_packaging_machine/reference_result.json), run `ref_20260714T055207Z`.
+Fonte histórica removida: `cases/b07_packaging_machine/reference_result.json`, run `ref_20260714T055207Z`.
 
 - Initial: Fast Path `applied_verified`; oracle `b07_packaging_machine_geometry` 13/13.
 - ECO: Fast Path `applied_verified`; oracle `b07_packaging_machine_eco` 10/10.

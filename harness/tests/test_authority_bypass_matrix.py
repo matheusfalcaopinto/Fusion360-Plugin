@@ -23,19 +23,28 @@ from cad_spec.v2 import CadSpecV2
 
 
 def _prepare_graph(broker: AuthorityBroker, spec: CadSpecV2, **kwargs):
-    targets = {
-        operation.id: (
-            CadTargetBinding(
-                reference_kind="export_target",
-                requested_ref=str(operation.target_ref),
-                document_identity="document:bypass-fixture",
-                entity_identity="entity:bypass-fixture",
-                fingerprint="b" * 64,
-            ),
-        )
-        for operation in spec.operations
-        if operation.kind == "io.export"
-    }
+    targets = {}
+    for operation in spec.operations:
+        if operation.kind == "io.export":
+            targets[operation.id] = (
+                CadTargetBinding(
+                    reference_kind="export_target",
+                    requested_ref=str(operation.target_ref),
+                    document_identity="d" * 64,
+                    entity_identity="e" * 64,
+                    fingerprint="b" * 64,
+                ),
+            )
+        elif not operation.kind.startswith("analysis."):
+            targets[operation.id] = (
+                CadTargetBinding(
+                    reference_kind="active_document",
+                    requested_ref="active_document",
+                    document_identity="d" * 64,
+                    entity_identity="e" * 64,
+                    fingerprint="f" * 64,
+                ),
+            )
     return broker.prepare_graph(spec, target_bindings_by_operation=targets, **kwargs)
 
 

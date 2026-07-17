@@ -19,6 +19,7 @@ from benchmark.provenance import RevisionIdentity, source_manifest_digest
 from benchmark.public import (
     AdapterExecution,
     AdapterPreflight,
+    BenchmarkEvidenceEnvelope,
     NormalizedPublicMetrics,
     PublicBenchmarkConfig,
     PublicBenchmarkRunner,
@@ -61,6 +62,7 @@ class _Adapter:
             ready=True,
             observed_revision=self.revision,
             revision_identity=self.identity,
+            environment={"fixture": "disposable", "provenance": "pinned"},
         )
 
     async def execute(self, _subject, _task, _config) -> AdapterExecution:  # noqa: ANN001
@@ -69,6 +71,14 @@ class _Adapter:
             state="completed",
             metrics=NormalizedPublicMetrics(task_success=True, oracle_passed=True),
             independent_oracle=True,
+            evidence_envelope=BenchmarkEvidenceEnvelope(
+                producer=_subject.id,
+                run_identity=f"test_run_{_subject.id}",
+                fixture_identity=_task.task_id,
+                oracle_producer="independent_test_oracle",
+                oracle_independent=True,
+                complete=True,
+            ),
             evidence={"oracle": "independent"},
         )
 
@@ -97,6 +107,47 @@ async def test_scoreable_requires_own_subject_and_same_task_comparator() -> None
     assert report.summary["scoreability"]["eligible_comparators"] == [
         "faust_fusion360_mcp"
     ]
+
+
+@pytest.mark.asyncio
+async def test_completed_results_without_typed_evidence_are_not_scoreable() -> None:
+    class IncompleteEvidenceAdapter(_Adapter):
+        async def preflight(self, _subject, _config) -> AdapterPreflight:  # noqa: ANN001
+            return AdapterPreflight(
+                ready=True,
+                observed_revision=self.revision,
+                revision_identity=self.identity,
+            )
+
+        async def execute(self, _subject, _task, _config) -> AdapterExecution:  # noqa: ANN001
+            self.execute_calls += 1
+            return AdapterExecution(
+                state="completed",
+                metrics=NormalizedPublicMetrics(task_success=True, oracle_passed=True),
+                independent_oracle=True,
+                evidence={},
+            )
+
+    own = IncompleteEvidenceAdapter(COMMIT, identity=_exact_workspace_identity())
+    comparator = IncompleteEvidenceAdapter("b44b667e440da070081795cfcbfaf75de2a44251")
+    report = await PublicBenchmarkRunner(
+        {
+            "fusion_agent_codex": own,
+            "faust_fusion360_mcp": comparator,
+        }
+    ).run(
+        MANIFEST,
+        config=PublicBenchmarkConfig(
+            mode="mock",
+            include_faults=False,
+            subject_ids=["fusion_agent_codex", "faust_fusion360_mcp"],
+        ),
+    )
+
+    assert all(item.state == "completed" for item in report.results)
+    assert report.summary["scoreable"] is False
+    assert report.summary["scoreability"]["own_subject_complete"] is False
+    assert report.summary["scoreability"]["eligible_comparators"] == []
 
 
 @pytest.mark.asyncio
@@ -131,10 +182,7 @@ async def test_explicit_workspace_revision_mismatch_blocks_before_execution() ->
 
     assert own.execute_calls == 0
     assert {item.state for item in report.results} == {"not_run"}
-    assert all(
-        item.reason and item.reason.startswith("revision_mismatch:")
-        for item in report.results
-    )
+    assert {item.reason for item in report.results} == {"revision_mismatch"}
 
 
 def test_source_manifest_digest_is_ordered_and_content_exact(tmp_path: Path) -> None:
@@ -188,9 +236,9 @@ async def test_benchmark_store_publishes_complete_run_beyond_320_characters(
     assert '"status": "completed"' in read_text(run.report_path)
     trace_root = run.report_path.parent / "traces"
     trace_names = [path.name for path in list_files(trace_root, suffix=".json")]
-    assert len(trace_names) == 14
+    assert len(trace_names) == 13
     assert all(len(name) <= 64 for name in trace_names)
-    assert runner.read_report(run_id="bench_longpath041", view="traces")["total"] == 14
+    assert runner.read_report(run_id="bench_longpath041", view="traces")["total"] == 13
 
 
 @pytest.mark.asyncio

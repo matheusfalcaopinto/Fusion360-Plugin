@@ -238,7 +238,7 @@ class PinnedPublicBenchmarkAdapter:
             definition.pin_kind in {"git", "pypi"}
             and observed_revision != definition.pin_value
         ):
-            return f"revision_mismatch:expected={definition.pin_value}:observed={observed_revision}"
+            return "revision_mismatch"
         return None
 
     @staticmethod

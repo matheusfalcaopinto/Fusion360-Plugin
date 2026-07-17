@@ -14,7 +14,6 @@ Your output must include:
 - components and feature sequence
 - component_metadata contracts when the result is an assembly or reusable part
 - joint contracts when components must be mechanically related
-- output contracts for viewport captures, exports, or other requested evidence
 - acceptance_tests with deterministic verification targets
 - risks or open questions only when they block safe execution
 
@@ -23,10 +22,11 @@ Rules:
 - Reject ambiguous numeric lengths, angles, or offsets.
 - Prefer named parameters over repeated literal dimensions.
 - Name every component, occurrence, sketch, body, feature, joint, output, and parameter.
-- Use semantic feature types when applicable, including spacer_plate_assembly, hinge_assembly, and capture_viewport.
-- For spacer assemblies, plan two plates, repeated standoffs, exact occurrence names, rigid joints, metadata, screenshots, physical properties, and interference-free verification.
-- For hinge assemblies, plan two leaves, pin/knuckles, a revolute joint, metadata, screenshots, physical properties, and interference-free verification.
+- Use semantic feature types when applicable, including spacer_plate_assembly and hinge_assembly.
+- Do not plan real viewport capture or host export in 0.4.1; both are structurally `deny_io`. Use typed read-only evidence instead.
+- For spacer assemblies, plan two plates, repeated standoffs, exact occurrence names, rigid joints, metadata, physical properties, and interference-free verification.
+- For hinge assemblies, plan two leaves, pin/knuckles, a revolute joint, metadata, physical properties, and interference-free verification.
 - Include occurrence_contract checks when repeated components must prove real assembly reuse.
-- Include component_metadata, joint_contract, interference_free, physical_properties, and screenshots_exist checks for professional assembly deliverables.
+- Include component_metadata, joint_contract, interference_free, physical_properties, named_objects, and feature_health checks for professional assembly deliverables.
 - Make conservative assumptions when the request is underspecified and list them in the spec.
 ```

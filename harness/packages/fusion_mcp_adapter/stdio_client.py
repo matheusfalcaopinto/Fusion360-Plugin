@@ -210,7 +210,7 @@ class StdioMcpClient:
             except asyncio.CancelledError:
                 if dispatched and call_options.semantics == CallSemantics.MUTATING:
                     return _with_transport(
-                        _unknown_mutation("stdio mutation cancelled after dispatch"),
+                        _unknown_mutation(),
                         call_options,
                         dispatched=True,
                         mutation_outcome="unknown",
@@ -219,13 +219,13 @@ class StdioMcpClient:
             except TimeoutError:
                 if dispatched and call_options.semantics == CallSemantics.MUTATING:
                     return _with_transport(
-                        _unknown_mutation("stdio mutation timed out after dispatch"),
+                        _unknown_mutation(),
                         call_options,
                         dispatched=True,
                         mutation_outcome="unknown",
                     )
                 return _with_transport(
-                    ToolResult.failure(ErrorCode.TIMEOUT, "stdio MCP read timed out"),
+                    ToolResult.public_failure(ErrorCode.TIMEOUT),
                     call_options,
                     dispatched=dispatched,
                     mutation_outcome="known",
@@ -234,15 +234,13 @@ class StdioMcpClient:
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 if dispatched and call_options.semantics == CallSemantics.MUTATING:
                     return _with_transport(
-                        _unknown_mutation(
-                            f"stdio connection lost after mutation dispatch: {exc}"
-                        ),
+                        _unknown_mutation(),
                         call_options,
                         dispatched=True,
                         mutation_outcome="unknown",
                     )
                 return _with_transport(
-                    ToolResult.failure(ErrorCode.CONNECTION_LOST, self._last_error),
+                    ToolResult.public_failure(ErrorCode.CONNECTION_LOST),
                     call_options,
                     dispatched=dispatched,
                     mutation_outcome="known",
@@ -266,10 +264,9 @@ class StdioMcpClient:
         await self.aclose(timeout_seconds=timeout_seconds)
 
 
-def _unknown_mutation(message: str) -> ToolResult:
-    return ToolResult.failure(
+def _unknown_mutation() -> ToolResult:
+    return ToolResult.public_failure(
         ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-        message,
         data={
             "dispatched": True,
             "may_have_applied": True,

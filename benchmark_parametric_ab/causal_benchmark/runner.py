@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import math
-import os
 import platform
 import random
 import re
@@ -14,10 +13,18 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+
+from benchmark.filesystem import (
+    atomic_write_text as filesystem_atomic_write_text,
+    mkdir_exclusive,
+    path_exists,
+)
+from benchmark.provenance import RevisionIdentity, collect_workspace_revision
 
 from .loader import load_causal_suite, suite_fingerprint
 from .models import (
@@ -27,18 +34,19 @@ from .models import (
     CausalSuite,
     ExecutionObservation,
     OracleObservation,
+    PublicBenchmarkError,
     TrialContext,
     TrialRecord,
 )
 
 
-ROUTE_LOCK_ENV = "FUSION_CAUSAL_ROUTE_LOCK"
-ARM_ENV = "FUSION_CAUSAL_ARM"
-TRIAL_ENV = "FUSION_CAUSAL_TRIAL_ID"
 LAYERS: tuple[CausalLayer, ...] = (
     "transport_replay",
     "planner_isolated",
     "native_e2e",
+)
+_TRIAL_CONTEXT: ContextVar[TrialContext | None] = ContextVar(
+    "fusion_causal_trial_context", default=None
 )
 _RUN_ID = re.compile(r"^causal_[A-Za-z0-9_-]{8,96}$")
 _SENSITIVE_TRACE_KEY_PARTS = (
@@ -54,6 +62,12 @@ _SENSITIVE_TRACE_KEY_PARTS = (
     "apikey",
     "mcp_session",
     "session_header",
+    "error",
+    "exception",
+    "message",
+    "argv",
+    "command",
+    "path",
 )
 
 
@@ -64,15 +78,13 @@ class CausalExecutionError(RuntimeError):
 class LayerExecutor(Protocol):
     """Injected adapter. The framework itself never invokes a model or Fusion."""
 
-    async def execute(self, context: TrialContext) -> ExecutionObservation:
-        ...
+    async def execute(self, context: TrialContext) -> ExecutionObservation: ...
 
 
 class IndependentOracle(Protocol):
     """Independent observer; deliberately receives no executor observation."""
 
-    async def observe(self, context: TrialContext) -> OracleObservation:
-        ...
+    async def observe(self, context: TrialContext) -> OracleObservation: ...
 
 
 @dataclass(frozen=True)
@@ -114,9 +126,9 @@ class CausalBenchmarkRunner:
         if not _RUN_ID.fullmatch(run_id):
             raise ValueError("run_id must match causal_[A-Za-z0-9_-]{8,96}")
         run_dir = self.output_dir / run_id
-        if run_dir.exists():
-            raise CausalExecutionError(f"immutable run directory already exists: {run_dir}")
-        run_dir.mkdir(parents=True)
+        if path_exists(run_dir):
+            raise CausalExecutionError("causal benchmark run directory already exists")
+        mkdir_exclusive(run_dir)
 
         started_at = _utc_now()
         trials: list[TrialRecord] = []
@@ -124,8 +136,23 @@ class CausalBenchmarkRunner:
         trials_path = run_dir / "trials.jsonl"
         environment_path = run_dir / "environment.json"
         fingerprint = suite_fingerprint(suite)
+        suite_source = Path(suite_path).resolve()
+        revision_identity = collect_workspace_revision(
+            suite_source.parent,
+            expected_git_commit=run_config.expected_git_commit,
+            expected_source_manifest_sha256=(
+                run_config.expected_source_manifest_sha256
+            ),
+        )
 
         try:
+            if (
+                run_config.expected_git_commit is not None
+                and not revision_identity.exact
+            ):
+                raise CausalExecutionError(
+                    "workspace revision mismatch or tracked-state drift"
+                )
             self._preflight(suite)
             arm_ids = [arm.id for arm in suite.arms]
             for case in suite.cases:
@@ -170,15 +197,28 @@ class CausalBenchmarkRunner:
                 started_at=started_at,
                 finished_at=_utc_now(),
                 config=run_config,
-                summary=_aggregate(trials, suite=suite, seed=run_config.seed),
+                revision_identity=revision_identity,
+                summary=_aggregate(
+                    trials,
+                    suite=suite,
+                    seed=run_config.seed,
+                    revision_identity=revision_identity,
+                ),
                 trials=trials,
             )
-            environment = _environment_payload(self.environment, suite=suite, config=run_config)
+            environment = _environment_payload(
+                self.environment,
+                suite=suite,
+                config=run_config,
+                revision_identity=revision_identity,
+            )
             _atomic_write_text(trials_path, _trials_jsonl(trials))
             _atomic_write_json(environment_path, environment)
             _atomic_write_json(report_path, report.model_dump(mode="json"))
             _atomic_write_text(run_dir / "summary.md", _summary_markdown(report, suite))
-            return CausalRunResult(report, run_dir, report_path, trials_path, environment_path)
+            return CausalRunResult(
+                report, run_dir, report_path, trials_path, environment_path
+            )
         except Exception as exc:
             aborted = CausalReport(
                 status="aborted",
@@ -188,33 +228,50 @@ class CausalBenchmarkRunner:
                 started_at=started_at,
                 finished_at=_utc_now(),
                 config=run_config,
-                summary=_aggregate(trials, suite=suite, seed=run_config.seed),
+                revision_identity=revision_identity,
+                summary=_aggregate(
+                    trials,
+                    suite=suite,
+                    seed=run_config.seed,
+                    revision_identity=revision_identity,
+                ),
                 trials=trials,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                error=_public_error(exc, run_id=run_id),
             )
             _atomic_write_json(
                 environment_path,
-                _environment_payload(self.environment, suite=suite, config=run_config),
+                _environment_payload(
+                    self.environment,
+                    suite=suite,
+                    config=run_config,
+                    revision_identity=revision_identity,
+                ),
             )
             _atomic_write_json(report_path, aborted.model_dump(mode="json"))
             if trials:
                 _atomic_write_text(trials_path, _trials_jsonl(trials))
-            if isinstance(exc, CausalExecutionError):
-                raise
-            raise CausalExecutionError(str(exc)) from exc
+            raise CausalExecutionError(
+                f"causal benchmark execution failed (run_id={run_id})"
+            ) from exc
 
     def _preflight(self, suite: CausalSuite) -> None:
         missing_layers = [layer for layer in LAYERS if layer not in self.executors]
         if missing_layers:
             raise CausalExecutionError(
-                "missing injected executors before dispatch: " + ", ".join(missing_layers)
+                "missing injected executors before dispatch: "
+                + ", ".join(missing_layers)
             )
         missing_oracles = sorted(
-            {case.oracle_id for case in suite.cases if case.oracle_id not in self.oracles}
+            {
+                case.oracle_id
+                for case in suite.cases
+                if case.oracle_id not in self.oracles
+            }
         )
         if missing_oracles:
             raise CausalExecutionError(
-                "missing independent oracles before dispatch: " + ", ".join(missing_oracles)
+                "missing independent oracles before dispatch: "
+                + ", ".join(missing_oracles)
             )
 
     async def _run_trial(self, context: TrialContext) -> TrialRecord:
@@ -222,7 +279,7 @@ class CausalBenchmarkRunner:
         observer = self.oracles[context.oracle_id]
         wall_start = time.perf_counter()
         try:
-            with _route_lock(context):
+            with route_context(context):
                 raw_execution = await asyncio.wait_for(
                     executor.execute(context), timeout=context.timeout_seconds
                 )
@@ -340,28 +397,23 @@ def _validate_execution_contract(
 
 
 @contextmanager
-def _route_lock(context: TrialContext):
-    if context.layer != "native_e2e":
-        yield
-        return
-    keys = (ROUTE_LOCK_ENV, ARM_ENV, TRIAL_ENV)
-    prior = {key: os.environ.get(key) for key in keys}
-    existing = prior[ROUTE_LOCK_ENV]
-    if existing is not None and existing != context.route_lock:
-        raise CausalExecutionError(
-            f"pre-existing route lock {existing!r} conflicts with {context.route_lock!r}"
-        )
-    os.environ[ROUTE_LOCK_ENV] = str(context.route_lock)
-    os.environ[ARM_ENV] = context.arm_id
-    os.environ[TRIAL_ENV] = context.trial_id
+def route_context(context: TrialContext):
+    """Bind one immutable trial to the current task without process globals."""
+
+    active = _TRIAL_CONTEXT.get()
+    if active is not None and active.trial_id != context.trial_id:
+        raise CausalExecutionError("nested causal trial context mismatch")
+    token = _TRIAL_CONTEXT.set(context)
     try:
         yield
     finally:
-        for key, value in prior.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        _TRIAL_CONTEXT.reset(token)
+
+
+def current_trial_context() -> TrialContext | None:
+    """Return the task-local causal trial, if one is active."""
+
+    return _TRIAL_CONTEXT.get()
 
 
 def _repetition_schedule(config: CausalRunConfig) -> list[tuple[bool, int]]:
@@ -389,7 +441,11 @@ def _balanced_order(
 
 
 def _aggregate(
-    trials: list[TrialRecord], *, suite: CausalSuite, seed: int
+    trials: list[TrialRecord],
+    *,
+    suite: CausalSuite,
+    seed: int,
+    revision_identity: RevisionIdentity,
 ) -> dict[str, Any]:
     measured = [trial for trial in trials if not trial.warmup]
     layer_summary: dict[str, Any] = {}
@@ -408,7 +464,9 @@ def _aggregate(
             ]
             arms[arm.id] = {
                 "trial_count": len(arm_trials),
-                "final_success_rate": _rate(trial.final_success for trial in arm_trials),
+                "final_success_rate": _rate(
+                    trial.final_success for trial in arm_trials
+                ),
                 "oracle_pass_rate": _rate(trial.oracle.passed for trial in arm_trials),
                 "duration_ms": _distribution(durations),
                 "planning_ms": _distribution(planning),
@@ -430,21 +488,36 @@ def _aggregate(
             first = min(pair, key=lambda item: item.order_index).arm_id
             order_counts["AB" if first == nominal_a else "BA"] += 1
     gates = {
-        "all_oracles_passed": bool(measured) and all(trial.oracle.passed for trial in measured),
-        "all_trials_succeeded": bool(measured) and all(trial.final_success for trial in measured),
-        "zero_duplicates": all(trial.execution.duplicate_count == 0 for trial in measured),
+        "all_oracles_passed": bool(measured)
+        and all(trial.oracle.passed for trial in measured),
+        "all_trials_succeeded": bool(measured)
+        and all(trial.final_success for trial in measured),
+        "zero_duplicates": all(
+            trial.execution.duplicate_count == 0 for trial in measured
+        ),
         "zero_saves": all(trial.execution.save_count == 0 for trial in measured),
-        "zero_outcome_unknown": all(not trial.execution.outcome_unknown for trial in measured),
-        "complete_pairs": bool(measured) and all(len(pair) == 2 for pair in pairs.values()),
+        "zero_outcome_unknown": all(
+            not trial.execution.outcome_unknown for trial in measured
+        ),
+        "complete_pairs": bool(measured)
+        and all(len(pair) == 2 for pair in pairs.values()),
+        "revision_exact": revision_identity.exact,
     }
     gates["all_required"] = all(gates.values())
     return {
         "measured_trial_count": len(measured),
         "warmup_trial_count": len(trials) - len(measured),
-        "arm_configuration": [arm.model_dump(mode="json") for arm in suite.arms],
+        "arm_configuration": [_public_arm(arm) for arm in suite.arms],
         "pair_order_counts": order_counts,
         "layers": layer_summary,
         "gates": gates,
+        "scoreable": gates["all_required"],
+        "scoreability": {
+            "same_fixture_case_matrix": gates["complete_pairs"],
+            "both_arms_complete": gates["complete_pairs"],
+            "independent_oracles_complete": gates["all_oracles_passed"],
+            "revision_exact": gates["revision_exact"],
+        },
     }
 
 
@@ -519,7 +592,9 @@ def _percentile(values: list[float], quantile: float) -> float | None:
     return ordered[lower] * (1 - fraction) + ordered[upper] * fraction
 
 
-def _bootstrap_ci(values: list[float], *, seed: int, samples: int = 2_000) -> dict[str, Any]:
+def _bootstrap_ci(
+    values: list[float], *, seed: int, samples: int = 2_000
+) -> dict[str, Any]:
     if not values:
         return {"low": None, "high": None, "samples": 0}
     if len(values) == 1:
@@ -538,12 +613,16 @@ def _bootstrap_ci(values: list[float], *, seed: int, samples: int = 2_000) -> di
 
 def _rate(values: Any) -> float | None:
     collected = list(values)
-    return sum(bool(value) for value in collected) / len(collected) if collected else None
+    return (
+        sum(bool(value) for value in collected) / len(collected) if collected else None
+    )
 
 
 def _as_execution(value: Any) -> ExecutionObservation:
     observation = (
-        value if isinstance(value, ExecutionObservation) else ExecutionObservation.model_validate(value)
+        value
+        if isinstance(value, ExecutionObservation)
+        else ExecutionObservation.model_validate(value)
     )
     return observation.model_copy(update={"trace": _redact_trace(observation.trace)})
 
@@ -571,14 +650,34 @@ def _redact_trace(value: Any, *, key: str | None = None) -> Any:
         return [_redact_trace(child) for child in value]
     if isinstance(value, bytes):
         return _redacted_descriptor(value)
+    if isinstance(value, str) and _looks_sensitive_string(value):
+        return _redacted_descriptor(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    return str(value)
+    return _redacted_descriptor(value)
 
 
 def _is_sensitive_trace_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_").replace(" ", "_")
     return any(part in normalized for part in _SENSITIVE_TRACE_KEY_PARTS)
+
+
+def _looks_sensitive_string(value: str) -> bool:
+    lowered = value.lower()
+    return bool(
+        re.search(r"(?:[a-z]:\\|/users/|/home/|data:urn:adsk|--[a-z])", lowered)
+        or any(
+            marker in lowered
+            for marker in (
+                "bearer ",
+                "token=",
+                "secret=",
+                "password=",
+                "authorization=",
+                "argv=",
+            )
+        )
+    )
 
 
 def _redacted_descriptor(value: Any) -> dict[str, Any]:
@@ -600,9 +699,14 @@ def _redacted_descriptor(value: Any) -> dict[str, Any]:
 
 
 def _as_oracle(value: Any) -> OracleObservation:
-    if isinstance(value, OracleObservation):
-        return value
-    return OracleObservation.model_validate(value)
+    observation = (
+        value
+        if isinstance(value, OracleObservation)
+        else OracleObservation.model_validate(value)
+    )
+    return observation.model_copy(
+        update={"message": "" if observation.passed else "oracle_failed"}
+    )
 
 
 def _fresh_run_id() -> str:
@@ -615,17 +719,37 @@ def _utc_now() -> str:
 
 
 def _environment_payload(
-    supplied: Mapping[str, Any], *, suite: CausalSuite, config: CausalRunConfig
+    supplied: Mapping[str, Any],
+    *,
+    suite: CausalSuite,
+    config: CausalRunConfig,
+    revision_identity: RevisionIdentity,
 ) -> dict[str, Any]:
+    protected = {
+        "python",
+        "platform",
+        "suite_id",
+        "arms",
+        "seed",
+        "repetitions",
+        "warmups",
+        "revision_identity",
+    }
+    extra = {
+        str(key): _redact_trace(value, key=str(key))
+        for key, value in supplied.items()
+        if str(key) not in protected
+    }
     return {
         "python": sys.version,
         "platform": platform.platform(),
         "suite_id": suite.suite_id,
-        "arms": [arm.model_dump(mode="json") for arm in suite.arms],
+        "arms": [_public_arm(arm) for arm in suite.arms],
         "seed": config.seed,
         "repetitions": config.repetitions,
         "warmups": config.warmups,
-        **dict(supplied),
+        "revision_identity": revision_identity.model_dump(mode="json"),
+        "extra": extra,
     }
 
 
@@ -653,18 +777,54 @@ def _summary_markdown(report: CausalReport, suite: CausalSuite) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _public_arm(arm: Any) -> dict[str, Any]:
+    """Project suite identity without retaining machine-local arm metadata."""
+
+    return {
+        "id": arm.id,
+        "label": arm.label,
+        "provider": arm.provider,
+        "model": arm.model,
+        "reasoning_profile": arm.reasoning_profile,
+        "system": arm.system,
+        "metadata": {
+            str(key): _redact_trace(value, key=str(key))
+            for key, value in arm.metadata.items()
+            if not str(key).startswith("_")
+        },
+    }
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
-    _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+    _atomic_write_text(
+        path,
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n",
+    )
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.replace(path)
+    filesystem_atomic_write_text(path, text)
 
 
 def _trials_jsonl(trials: list[TrialRecord]) -> str:
     return "".join(
-        json.dumps(item.model_dump(mode="json"), sort_keys=True) + "\n" for item in trials
+        json.dumps(item.model_dump(mode="json"), sort_keys=True, allow_nan=False) + "\n"
+        for item in trials
+    )
+
+
+def _public_error(exc: BaseException, *, run_id: str) -> PublicBenchmarkError:
+    material = f"{run_id}:{type(exc).__name__}".encode("utf-8")
+    return PublicBenchmarkError(
+        code="BENCHMARK_EXECUTION_FAILED",
+        generic_message="The benchmark run failed. Inspect private local diagnostics.",
+        correlation_id=hashlib.sha256(material).hexdigest()[:16],
+        retryable=False,
     )

@@ -19,6 +19,7 @@ from fusion_agent_mcp.profiles import TOOL_PROFILES, resolve_tool_profile
 
 RESOURCE_MIME_TYPE = "application/json"
 SurfaceKind = Literal["tool", "resource", "resource_template", "prompt"]
+ContentPolicy = Literal["structured_only", "validated_png"]
 SurfaceCallable = Callable[..., Any]
 
 _ALL_PROFILES = tuple(TOOL_PROFILES)
@@ -37,6 +38,7 @@ class SurfaceSpec:
     data_class: str
     capability_group: str = "orchestration"
     evidence_role: str = "structured"
+    content_policy: ContentPolicy = "structured_only"
     description: str = ""
     title: str | None = None
     uri: str | None = None
@@ -53,6 +55,10 @@ class SurfaceSpec:
     projector: SurfaceCallable | None = None
 
     def __post_init__(self) -> None:
+        if self.content_policy not in {"structured_only", "validated_png"}:
+            raise ValueError(
+                f"surface {self.name!r} declares an unknown content policy"
+            )
         if not self.profiles:
             raise ValueError(f"surface {self.name!r} must declare at least one profile")
         unknown = set(self.profiles) - set(TOOL_PROFILES)
@@ -69,14 +75,14 @@ class SurfaceSpec:
                 raise ValueError(
                     f"resource surface {self.name!r} must declare an exact path"
                 )
-        if self.kind == "tool" and (
+        if (
             self.input_schema is None
             or self.output_schema is None
             or self.handler is None
             or self.projector is None
         ):
             raise ValueError(
-                f"tool surface {self.name!r} must declare schemas, handler, and projector"
+                f"surface {self.name!r} must declare schemas, handler, and projector"
             )
         if self.kind == "prompt" and not self.prompt_workflow:
             raise ValueError(
@@ -100,8 +106,59 @@ class SurfaceProfileError(PermissionError):
         return f"{self.code}: requested {self.kind} is unavailable in this profile"
 
 
+_RESOURCE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "uri": {"type": "string", "pattern": r"^fusion-agent://"},
+    },
+    "required": ["uri"],
+    "additionalProperties": False,
+}
+_RESOURCE_OUTPUT_SCHEMA: dict[str, Any] = {"type": "object"}
+_PROMPT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "description": {"type": ["string", "null"]},
+        "messages": {"type": "array"},
+    },
+    "required": ["messages"],
+}
+
+
+async def _dispatch_declared_resource(
+    spec: SurfaceSpec,
+    uri: str,
+    *,
+    runtime: Any,
+    profile: str,
+    dispatcher: SurfaceCallable,
+) -> Any:
+    """Invoke only the dispatcher bound to an already-authorized entry."""
+
+    return await dispatcher(spec, uri, runtime=runtime, profile=profile)
+
+
+def _project_resource_result(spec: SurfaceSpec, payload: Any) -> dict[str, Any]:
+    """Keep resource projectors structural and independent of provider text."""
+
+    del spec
+    if not isinstance(payload, Mapping):
+        raise TypeError("resource handler must return an object")
+    return dict(payload)
+
+
+def _resource_spec(**values: Any) -> SurfaceSpec:
+    return SurfaceSpec(
+        input_schema=dict(_RESOURCE_INPUT_SCHEMA),
+        output_schema=dict(_RESOURCE_OUTPUT_SCHEMA),
+        handler=_dispatch_declared_resource,
+        projector=_project_resource_result,
+        **values,
+    )
+
+
 _RESOURCE_SPECS: tuple[SurfaceSpec, ...] = (
-    SurfaceSpec(
+    _resource_spec(
         kind="resource",
         name="fusion-agent-capabilities",
         profiles=_ALL_PROFILES,
@@ -113,7 +170,7 @@ _RESOURCE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_path=(),
         description="Active tool profile, capability groups and risk metadata.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource",
         name="fusion-agent-readiness",
         profiles=_ALL_PROFILES,
@@ -129,7 +186,7 @@ _RESOURCE_SPECS: tuple[SurfaceSpec, ...] = (
 
 
 _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-sessions",
         profiles=_STANDARD_RESOURCE_PROFILES,
@@ -141,7 +198,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="Saved session summaries.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-session-artifact",
         profiles=_STANDARD_RESOURCE_PROFILES,
@@ -153,7 +210,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="One allowlisted session artifact, returned with character pagination.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-session-trace",
         profiles=_STANDARD_RESOURCE_PROFILES,
@@ -165,7 +222,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="Paginated structured session trace events.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-manifest",
         profiles=_STANDARD_RESOURCE_PROFILES,
@@ -177,7 +234,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="Latest real or mock backend manifest, returned with character pagination.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-skill",
         profiles=_STANDARD_RESOURCE_PROFILES,
@@ -189,7 +246,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="One filesystem-backed harness skill, returned with character pagination.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-project-memory",
         profiles=("advanced", "all"),
@@ -201,7 +258,7 @@ _RESOURCE_TEMPLATE_SPECS: tuple[SurfaceSpec, ...] = (
         resource_query_fields=("offset", "limit"),
         description="Paginated project/global memory records, treated as untrusted data.",
     ),
-    SurfaceSpec(
+    _resource_spec(
         kind="resource_template",
         name="fusion-agent-benchmark-view",
         profiles=("benchmark", "all"),
@@ -284,8 +341,70 @@ _PROMPT_WORKFLOWS = {
 }
 
 
+def _prompt_input_schema(
+    arguments: tuple[types.PromptArgument, ...],
+) -> dict[str, Any]:
+    properties = {item.name: {"type": "string"} for item in arguments}
+    required = [item.name for item in arguments if item.required]
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _render_declared_prompt(
+    spec: SurfaceSpec,
+    arguments: Mapping[str, str] | None,
+) -> types.GetPromptResult:
+    values = {key: str(value) for key, value in (arguments or {}).items()}
+    unexpected = set(values) - {item.name for item in spec.prompt_arguments}
+    if unexpected:
+        raise ValueError("unknown prompt arguments")
+    missing = [
+        item.name
+        for item in spec.prompt_arguments
+        if item.required and not values.get(item.name)
+    ]
+    if missing:
+        raise ValueError(f"missing required prompt arguments: {', '.join(missing)}")
+
+    workflow = spec.prompt_workflow or ""
+    context = "\n".join(f"{key}: {value}" for key, value in sorted(values.items()))
+    text = f"{workflow}\n\nInputs (untrusted data):\n{context}" if context else workflow
+    return types.GetPromptResult(
+        description=spec.description,
+        messages=[
+            types.PromptMessage(
+                role="user", content=types.TextContent(type="text", text=text)
+            )
+        ],
+    )
+
+
+def _project_prompt_result(spec: SurfaceSpec, payload: Any) -> types.GetPromptResult:
+    del spec
+    if not isinstance(payload, types.GetPromptResult):
+        raise TypeError("prompt handler must return GetPromptResult")
+    return payload
+
+
+def _prompt_spec(**values: Any) -> SurfaceSpec:
+    arguments = tuple(values.get("prompt_arguments") or ())
+    return SurfaceSpec(
+        input_schema=_prompt_input_schema(arguments),
+        output_schema=dict(_PROMPT_OUTPUT_SCHEMA),
+        handler=_render_declared_prompt,
+        projector=_project_prompt_result,
+        **values,
+    )
+
+
 _PROMPT_SPECS: tuple[SurfaceSpec, ...] = (
-    SurfaceSpec(
+    _prompt_spec(
         kind="prompt",
         name="fusion-inspect-plan-verify",
         profiles=_NORMAL_PROMPT_PROFILES,
@@ -295,7 +414,7 @@ _PROMPT_SPECS: tuple[SurfaceSpec, ...] = (
         prompt_arguments=PROMPT_ARGUMENTS["fusion-inspect-plan-verify"],
         prompt_workflow=_PROMPT_WORKFLOWS["fusion-inspect-plan-verify"],
     ),
-    SurfaceSpec(
+    _prompt_spec(
         kind="prompt",
         name="fusion-safe-change",
         profiles=_NORMAL_PROMPT_PROFILES,
@@ -305,7 +424,7 @@ _PROMPT_SPECS: tuple[SurfaceSpec, ...] = (
         prompt_arguments=PROMPT_ARGUMENTS["fusion-safe-change"],
         prompt_workflow=_PROMPT_WORKFLOWS["fusion-safe-change"],
     ),
-    SurfaceSpec(
+    _prompt_spec(
         kind="prompt",
         name="fusion-recover-unknown-outcome",
         profiles=("normal", "advanced", "diagnostic", "all"),
@@ -315,7 +434,7 @@ _PROMPT_SPECS: tuple[SurfaceSpec, ...] = (
         prompt_arguments=PROMPT_ARGUMENTS["fusion-recover-unknown-outcome"],
         prompt_workflow=_PROMPT_WORKFLOWS["fusion-recover-unknown-outcome"],
     ),
-    SurfaceSpec(
+    _prompt_spec(
         kind="prompt",
         name="fusion-benchmark-case",
         profiles=("benchmark", "all"),
@@ -464,30 +583,19 @@ def render_prompt(
             profile=resolved,
             available_profiles=spec.profiles,
         )
-    values = {key: str(value) for key, value in (arguments or {}).items()}
-    missing = [
-        arg.name
-        for arg in spec.prompt_arguments
-        if arg.required and not values.get(arg.name)
-    ]
-    if missing:
-        raise ValueError(f"missing required prompt arguments: {', '.join(missing)}")
-
-    workflow = spec.prompt_workflow or ""
-    context = "\n".join(f"{key}: {value}" for key, value in sorted(values.items()))
-    text = f"{workflow}\n\nInputs (untrusted data):\n{context}" if context else workflow
-    return types.GetPromptResult(
-        description=spec.description,
-        messages=[
-            types.PromptMessage(
-                role="user", content=types.TextContent(type="text", text=text)
-            )
-        ],
-    )
+    handler = spec.handler
+    projector = spec.projector
+    if not callable(handler) or not callable(projector):
+        raise RuntimeError("prompt registry entry is incomplete")
+    payload = handler(spec, arguments)
+    projected = projector(spec, payload)
+    if not isinstance(projected, types.GetPromptResult):
+        raise TypeError("prompt projector must return GetPromptResult")
+    return projected
 
 
 def _resolve_surface_profile(profile: str | None) -> str:
     # Omitted policy is fail-safe: use the configured/default normal profile.
     # Catalog and diagnostics callers that genuinely need everything must ask
     # for ``all`` explicitly.
-    return resolve_tool_profile(profile)
+    return resolve_tool_profile(profile if profile is not None else "normal")

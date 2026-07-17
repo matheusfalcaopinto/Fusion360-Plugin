@@ -3,11 +3,11 @@
   "suite_id": "fusion_parametric_reference_b02_b07",
   "title": "Fusion parametric progressive reference and ECO suite",
   "language": "pt-BR",
-  "status": "reference_complete",
+  "status": "awaiting_0.4.1_revalidation",
   "purpose": "Avaliar planejamento, construção, integridade topológica, parametrização e verificação independente em seis casos Autodesk Fusion de complexidade crescente, incluindo mudanças de engenharia no mesmo documento.",
   "scope_note": "Referência canônica do Fusion Agent; não é comparação A/B Claude/Codex.",
   "runner": "run_reference_suite.py",
-  "aggregate_result": "reference_suite_result.json",
+  "aggregate_result": "outputs/reference-runs/<run_id>/reference_suite_result.json",
   "aggregate_result_scope": [
     "b02_vented_enclosure",
     "b03_split_pillow_block",
@@ -38,16 +38,16 @@
     "b07_packaging_machine"
   ],
   "reference_status": {
-    "approved_cases": [
+    "approved_cases": [],
+    "executed_invalid_cases": [],
+    "pending_cases": [
       "b02_vented_enclosure",
       "b03_split_pillow_block",
       "b04_offset_duct_adapter",
       "b05_spherical_lattice_radome",
       "b06_robot_arm_assembly",
       "b07_packaging_machine"
-    ],
-    "executed_invalid_cases": [],
-    "pending_cases": []
+    ]
   },
   "reference_run": {
     "scope": [
@@ -58,14 +58,10 @@
       "b06_robot_arm_assembly",
       "b07_packaging_machine"
     ],
-    "run_id": "ref_20260714T055207Z",
-    "completed_at_utc": "2026-07-14T05:52:57Z",
-    "restored": true,
-    "all_cases_completed_pass": true,
-    "original_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
-    "final_document_id": "data:urn:adsk.wipprod:dm.lineage:yVFMKF52SRKZsHPlp_Z9Rw",
-    "open_document_inventory_count": 8,
-    "original_and_final_open_document_ids_identical": true
+    "status": "invalidated_for_0.4.1_security_contract",
+    "reason_code": "LEGACY_RAW_EVIDENCE_NOT_REVISION_OR_DOCUMENT_BOUND",
+    "replacement_output": "outputs/reference-runs/<run_id>/reference_suite_result.json",
+    "public_identity_policy": "digest_and_boolean_status_only"
   },
   "documentation": {
     "competition_sources": "COMPETITION_SOURCES.md",
@@ -141,8 +137,8 @@
       "prompt": "cases/b02_vented_enclosure/prompt.txt",
       "build_script": "cases/b02_vented_enclosure/build_script.py",
       "oracle_script": "cases/b02_vented_enclosure/oracle_script.py",
-      "reference_result": "cases/b02_vented_enclosure/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b02_vented_enclosure/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "observed": {
         "run_id": "ref_20260714T055207Z",
         "elapsed_ms": 4536,
@@ -174,8 +170,8 @@
       "prompt": "cases/b03_split_pillow_block/prompt.txt",
       "build_script": "cases/b03_split_pillow_block/build_script.py",
       "oracle_script": "cases/b03_split_pillow_block/oracle_script.py",
-      "reference_result": "cases/b03_split_pillow_block/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b03_split_pillow_block/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "observed": {
         "run_id": "ref_20260714T055207Z",
         "elapsed_ms": 4215,
@@ -214,8 +210,8 @@
       "prompt": "cases/b04_offset_duct_adapter/prompt.txt",
       "build_script": "cases/b04_offset_duct_adapter/build_script.py",
       "oracle_script": "cases/b04_offset_duct_adapter/oracle_script.py",
-      "reference_result": "cases/b04_offset_duct_adapter/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b04_offset_duct_adapter/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "observed": {
         "run_id": "ref_20260714T055207Z",
         "elapsed_ms": 4663,
@@ -267,8 +263,8 @@
       "oracle_script": "cases/b05_spherical_lattice_radome/oracle_script.py",
       "eco_script": "cases/b05_spherical_lattice_radome/eco_script.py",
       "eco_oracle_script": "cases/b05_spherical_lattice_radome/eco_oracle_script.py",
-      "reference_result": "cases/b05_spherical_lattice_radome/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b05_spherical_lattice_radome/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "observed": {
         "run_id": "ref_20260714T055207Z",
         "elapsed_ms_total": 8024,
@@ -319,8 +315,8 @@
       "oracle_script": "cases/b06_robot_arm_assembly/oracle_script.py",
       "eco_script": "cases/b06_robot_arm_assembly/eco_script.py",
       "eco_oracle_script": "cases/b06_robot_arm_assembly/eco_oracle_script.py",
-      "reference_result": "cases/b06_robot_arm_assembly/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b06_robot_arm_assembly/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "observed": {
         "run_id": "ref_20260714T055207Z",
         "elapsed_ms_total": 9127,
@@ -370,11 +366,11 @@
       "oracle_script": "cases/b07_packaging_machine/oracle_script.py",
       "eco_script": "cases/b07_packaging_machine/eco_script.py",
       "eco_oracle_script": "cases/b07_packaging_machine/eco_oracle_script.py",
-      "reference_result": "cases/b07_packaging_machine/reference_result.json",
-      "reference_status": "completed_pass",
+      "reference_result": "outputs/reference-runs/<run_id>/cases/b07_packaging_machine/reference_result.json",
+      "reference_status": "pending_0.4.1_revalidation",
       "phases": {
-        "initial": {"status": "completed_pass"},
-        "eco": {"status": "completed_pass"}
+        "initial": {"status": "pending_0.4.1_revalidation"},
+        "eco": {"status": "pending_0.4.1_revalidation"}
       },
       "expected": {
         "parameters": 59,
@@ -464,9 +460,9 @@
     "screenshot_without_programmatic_oracle": "insufficient_evidence",
     "cleanup_failure": "invalid_trial_abort_suite",
     "phase_case_requires_initial_and_eco_oracles": "true",
-    "b04_visibility": "completed_pass_with_explicit_finish_limitation",
-    "b05_status": "completed_pass_initial_and_eco",
-    "b06_status": "completed_pass_initial_and_eco",
-    "b07_status": "completed_pass_initial_and_eco_with_declared_drive_coupling_scope_limit"
+    "b04_visibility": "pending_0.4.1_real_revalidation",
+    "b05_status": "pending_0.4.1_initial_and_eco_revalidation",
+    "b06_status": "pending_0.4.1_initial_and_eco_revalidation",
+    "b07_status": "pending_0.4.1_initial_and_eco_revalidation_with_declared_drive_coupling_scope_limit"
   }
 }

@@ -28,9 +28,6 @@ ALLOWED_SYNC_ENVIRONMENT_READS: dict[str, frozenset[str]] = {
     "harness/packages/agent_core/authority.py": frozenset(
         {"AuthorityPolicy.from_environment"}
     ),
-    "harness/packages/agent_core/session_controller.py": frozenset(
-        {"SessionController.__init__"}
-    ),
     "harness/packages/benchmark/artifacts.py": frozenset({"collect_environment"}),
     "harness/packages/benchmark/codex_driver.py": frozenset(
         {"CodexE2EDriver.__init__", "discover_codex_executable"}
@@ -48,9 +45,7 @@ ALLOWED_SYNC_ENVIRONMENT_READS: dict[str, frozenset[str]] = {
             "_startup_environment_snapshot",
         }
     ),
-    "harness/packages/fusion_mcp_adapter/backend.py": frozenset(
-        {"create_fusion_client", "selected_backend"}
-    ),
+    "harness/packages/fusion_mcp_adapter/backend.py": frozenset({"selected_backend"}),
     "harness/packages/fusion_mcp_adapter/endpoint_policy.py": frozenset(
         {"validate_endpoint"}
     ),

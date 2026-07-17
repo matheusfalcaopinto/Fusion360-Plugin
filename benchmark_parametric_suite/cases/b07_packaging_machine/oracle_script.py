@@ -9,7 +9,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -37,18 +51,30 @@ def _global_bbox(bodies):
 
 
 def _bbox_matches(box, minimum, maximum, tolerance=0.3):
-    return all(_close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)) and all(
-        _close(box["max"][axis], maximum[axis], tolerance) for axis in range(3)
-    )
+    return all(
+        _close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)
+    ) and all(_close(box["max"][axis], maximum[axis], tolerance) for axis in range(3))
 
 
 def _identity_transform(occurrence):
     values = list(occurrence.transform2.asArray())
     expected = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ]
     return len(values) == 16 and all(
         _close(values[index], expected[index], 0.000001) for index in range(16)
@@ -78,7 +104,10 @@ def _interference_summary(design, occurrence_one, occurrence_two):
     results = design.analyzeInterference(interference_input)
     if results is None:
         return {"available": False, "count": None, "volume_mm3": None}
-    volume_mm3 = sum(results.item(index).interferenceBody.volume * 1000.0 for index in range(results.count))
+    volume_mm3 = sum(
+        results.item(index).interferenceBody.volume * 1000.0
+        for index in range(results.count)
+    )
     return {"available": True, "count": results.count, "volume_mm3": volume_mm3}
 
 
@@ -92,9 +121,13 @@ def _joint_graph(joints, expected_nodes):
         occurrence_two = joint.occurrenceTwo
         name_one = None if occurrence_one is None else occurrence_one.component.name
         name_two = None if occurrence_two is None else occurrence_two.component.name
-        endpoints[joint.name] = sorted([name for name in [name_one, name_two] if name is not None])
+        endpoints[joint.name] = sorted(
+            [name for name in [name_one, name_two] if name is not None]
+        )
         if name_one not in adjacency or name_two not in adjacency:
-            invalid_endpoints.append({"joint": joint.name, "one": name_one, "two": name_two})
+            invalid_endpoints.append(
+                {"joint": joint.name, "one": name_one, "two": name_two}
+            )
         elif name_one == name_two:
             self_edges.append(joint.name)
         else:
@@ -124,17 +157,21 @@ def run(_context: str):
     if document is None or design is None:
         raise RuntimeError("B07 oracle requires an active Fusion design")
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+            }
+        )
 
     check(
         "document.marked_unsaved",
@@ -186,7 +223,9 @@ def run(_context: str):
     for name, expected_value in expected_parameters.items():
         actual = parameters.get(name, {}).get("value")
         if not _close(actual, expected_value, 0.0001):
-            parameter_failures.append({"name": name, "expected": expected_value, "actual": actual})
+            parameter_failures.append(
+                {"name": name, "expected": expected_value, "actual": actual}
+            )
     check(
         "parameters.initial_dependency_values",
         len(parameters) == 59 and not parameter_failures,
@@ -194,7 +233,9 @@ def run(_context: str):
         {"count": len(parameters), "failures": parameter_failures},
     )
 
-    child_components = [component for component in _items(design.allComponents) if component != root]
+    child_components = [
+        component for component in _items(design.allComponents) if component != root
+    ]
     component_by_name = {component.name: component for component in child_components}
     expected_component_names = {
         "CMP01_Base_Left_Rail",
@@ -255,6 +296,13 @@ def run(_context: str):
 
     bodies = []
     body_by_name = {}
+    expected_body_owners = {
+        component_name: f"B{index:02d}_{component_name.split('_', 1)[1]}"
+        for index, component_name in enumerate(
+            sorted(expected_component_names), start=1
+        )
+    }
+    ownership_errors = []
     topology_errors = []
     feature_errors = []
     sketch_errors = []
@@ -265,47 +313,70 @@ def run(_context: str):
         child_sketch_count += component.sketches.count
         child_feature_count += component.features.count
         if len(component_bodies) != 1:
-            topology_errors.append({"component": component.name, "bodies": len(component_bodies)})
+            topology_errors.append(
+                {"component": component.name, "bodies": len(component_bodies)}
+            )
             continue
         body = component_bodies[0]
         bodies.append(body)
         body_by_name[body.name] = body
-        if not body.isValid or not body.isSolid or body.lumps.count != 1 or not body.isVisible:
-            topology_errors.append({
-                "component": component.name,
-                "body": body.name,
-                "valid": body.isValid,
-                "solid": body.isSolid,
-                "lumps": body.lumps.count,
-                "visible": body.isVisible,
-            })
+        if expected_body_owners.get(component.name) != body.name:
+            ownership_errors.append(
+                {
+                    "component": component.name,
+                    "expected_body": expected_body_owners.get(component.name),
+                    "observed_body": body.name,
+                }
+            )
+        if (
+            not body.isValid
+            or not body.isSolid
+            or body.lumps.count != 1
+            or not body.isVisible
+        ):
+            topology_errors.append(
+                {
+                    "component": component.name,
+                    "body": body.name,
+                    "valid": body.isValid,
+                    "solid": body.isSolid,
+                    "lumps": body.lumps.count,
+                    "visible": body.isVisible,
+                }
+            )
         for feature in _items(component.features):
             if not feature.isValid or feature.errorOrWarningMessage:
-                feature_errors.append({
-                    "component": component.name,
-                    "feature": feature.name,
-                    "valid": feature.isValid,
-                    "message": feature.errorOrWarningMessage,
-                })
+                feature_errors.append(
+                    {
+                        "component": component.name,
+                        "feature": feature.name,
+                        "valid": feature.isValid,
+                        "message": feature.errorOrWarningMessage,
+                    }
+                )
         for sketch in _items(component.sketches):
             if (
                 not sketch.isValid
                 or not sketch.isFullyConstrained
-                or sketch.healthState != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+                or sketch.healthState
+                != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
                 or sketch.errorOrWarningMessage
             ):
-                sketch_errors.append({
-                    "component": component.name,
-                    "sketch": sketch.name,
-                    "valid": sketch.isValid,
-                    "fully_constrained": sketch.isFullyConstrained,
-                    "health": sketch.healthState,
-                    "message": sketch.errorOrWarningMessage,
-                })
+                sketch_errors.append(
+                    {
+                        "component": component.name,
+                        "sketch": sketch.name,
+                        "valid": sketch.isValid,
+                        "fully_constrained": sketch.isFullyConstrained,
+                        "health": sketch.healthState,
+                        "message": sketch.errorOrWarningMessage,
+                    }
+                )
     check(
         "topology.one_healthy_solid_per_component",
         len(bodies) == 34
         and len(body_by_name) == 34
+        and not ownership_errors
         and not topology_errors
         and not feature_errors
         and not sketch_errors
@@ -313,13 +384,19 @@ def run(_context: str):
         and child_sketch_count == 35
         and root.sketches.count == 1
         and root.sketches.item(0).name == "SK00_Machine_Envelope",
-        {"bodies": 34, "features": 34, "child_sketches": 35, "root_reference_sketches": 1},
+        {
+            "bodies": 34,
+            "features": 34,
+            "child_sketches": 35,
+            "root_reference_sketches": 1,
+        },
         {
             "bodies": sorted(body_by_name),
             "features": child_feature_count,
             "child_sketches": child_sketch_count,
             "root_sketches": root.sketches.count,
             "topology_errors": topology_errors,
+            "ownership_errors": ownership_errors,
             "feature_errors": feature_errors,
             "sketch_errors": sketch_errors,
         },
@@ -329,7 +406,9 @@ def run(_context: str):
         global_box = _global_bbox(bodies)
         check(
             "geometry.global_machine_bbox",
-            _bbox_matches(global_box, [-300.0, -310.0, 0.0], [300.0, 310.0, 500.0], 0.5),
+            _bbox_matches(
+                global_box, [-300.0, -310.0, 0.0], [300.0, 310.0, 500.0], 0.5
+            ),
             {"min": [-300.0, -310.0, 0.0], "max": [300.0, 310.0, 500.0]},
             global_box,
         )
@@ -366,7 +445,9 @@ def run(_context: str):
         "B17_Door_Hinge_Lower": ([-282.0, -225.0, 270.0], [-270.0, -213.0, 330.0]),
         "B18_Door_Hinge_Upper": ([-282.0, -225.0, 390.0], [-270.0, -213.0, 450.0]),
     }
-    enclosure_failures, enclosure_boxes = _box_set_matches(body_by_name, enclosure_expected, 0.3)
+    enclosure_failures, enclosure_boxes = _box_set_matches(
+        body_by_name, enclosure_expected, 0.3
+    )
     door_box = enclosure_boxes.get("B16_Access_Door")
     lower_hinge_box = enclosure_boxes.get("B17_Door_Hinge_Lower")
     hinge_door_contact = (
@@ -388,12 +469,20 @@ def run(_context: str):
     conveyor_expected = {
         "B19_Conveyor_Belt": ([-150.0, -310.0, 220.0], [150.0, 310.0, 228.0]),
         "B20_Roller_Infeed": ([-170.0, -310.0, 180.0], [170.0, -270.0, 220.0]),
-        "B21_Roller_Quarter": ([-170.0, -123.333333, 180.0], [170.0, -83.333333, 220.0]),
-        "B22_Roller_Three_Quarter": ([-170.0, 83.333333, 180.0], [170.0, 123.333333, 220.0]),
+        "B21_Roller_Quarter": (
+            [-170.0, -123.333333, 180.0],
+            [170.0, -83.333333, 220.0],
+        ),
+        "B22_Roller_Three_Quarter": (
+            [-170.0, 83.333333, 180.0],
+            [170.0, 123.333333, 220.0],
+        ),
         "B23_Roller_Outfeed": ([-170.0, 270.0, 180.0], [170.0, 310.0, 220.0]),
         "B24_Drive_Motor": ([190.0, 270.0, 180.0], [270.0, 310.0, 220.0]),
     }
-    conveyor_failures, conveyor_boxes = _box_set_matches(body_by_name, conveyor_expected, 0.4)
+    conveyor_failures, conveyor_boxes = _box_set_matches(
+        body_by_name, conveyor_expected, 0.4
+    )
     belt_box = conveyor_boxes.get("B19_Conveyor_Belt")
     roller_boxes = [
         conveyor_boxes.get("B20_Roller_Infeed"),
@@ -404,7 +493,10 @@ def run(_context: str):
     motor_box = conveyor_boxes.get("B24_Drive_Motor")
     tangency = (
         belt_box is not None
-        and all(box is not None and _close(box["max"][2], belt_box["min"][2], 0.2) for box in roller_boxes)
+        and all(
+            box is not None and _close(box["max"][2], belt_box["min"][2], 0.2)
+            for box in roller_boxes
+        )
         and _close(roller_boxes[0]["min"][1], belt_box["min"][1], 0.2)
         and _close(roller_boxes[3]["max"][1], belt_box["max"][1], 0.2)
         and motor_box is not None
@@ -474,7 +566,9 @@ def run(_context: str):
     cabinet_expected = {
         "B27_Control_Cabinet": ([198.0, -90.0, 30.0], [268.0, 90.0, 210.0]),
     }
-    cabinet_failures, cabinet_boxes = _box_set_matches(body_by_name, cabinet_expected, 0.3)
+    cabinet_failures, cabinet_boxes = _box_set_matches(
+        body_by_name, cabinet_expected, 0.3
+    )
     cabinet_box = cabinet_boxes.get("B27_Control_Cabinet")
     right_panel_box = enclosure_boxes.get("B14_Panel_Right")
     cabinet_contact = (
@@ -493,12 +587,26 @@ def run(_context: str):
     conveyor_support_expected = {
         "B28_Conveyor_Rail_Left": ([-190.0, -310.0, 160.0], [-170.0, 310.0, 240.0]),
         "B29_Conveyor_Rail_Right": ([170.0, -310.0, 160.0], [190.0, 310.0, 240.0]),
-        "B30_Conveyor_Support_Front_Left": ([-190.0, -250.0, 30.0], [-170.0, -220.0, 160.0]),
-        "B31_Conveyor_Support_Front_Right": ([170.0, -250.0, 30.0], [190.0, -220.0, 160.0]),
-        "B32_Conveyor_Support_Rear_Left": ([-190.0, 220.0, 30.0], [-170.0, 250.0, 160.0]),
-        "B33_Conveyor_Support_Rear_Right": ([170.0, 220.0, 30.0], [190.0, 250.0, 160.0]),
+        "B30_Conveyor_Support_Front_Left": (
+            [-190.0, -250.0, 30.0],
+            [-170.0, -220.0, 160.0],
+        ),
+        "B31_Conveyor_Support_Front_Right": (
+            [170.0, -250.0, 30.0],
+            [190.0, -220.0, 160.0],
+        ),
+        "B32_Conveyor_Support_Rear_Left": (
+            [-190.0, 220.0, 30.0],
+            [-170.0, 250.0, 160.0],
+        ),
+        "B33_Conveyor_Support_Rear_Right": (
+            [170.0, 220.0, 30.0],
+            [190.0, 250.0, 160.0],
+        ),
     }
-    support_failures, support_boxes = _box_set_matches(body_by_name, conveyor_support_expected, 0.4)
+    support_failures, support_boxes = _box_set_matches(
+        body_by_name, conveyor_support_expected, 0.4
+    )
     left_rail_box = support_boxes.get("B28_Conveyor_Rail_Left")
     right_rail_box = support_boxes.get("B29_Conveyor_Rail_Right")
     support_contact = (
@@ -529,12 +637,15 @@ def run(_context: str):
             "support_to_frame_and_rail_contact": True,
             "rail_to_roller_contact": True,
         },
-        {"failures": support_failures, "boxes": support_boxes, "contact": support_contact},
+        {
+            "failures": support_failures,
+            "boxes": support_boxes,
+            "contact": support_contact,
+        },
     )
 
     occurrence_by_component = {
-        occurrence.component.name: occurrence
-        for occurrence in occurrences
+        occurrence.component.name: occurrence for occurrence in occurrences
     }
     critical_pairs = {
         "door_belt": ("CMP16_Access_Door", "CMP19_Conveyor_Belt"),
@@ -574,7 +685,11 @@ def run(_context: str):
 
     joints = _items(root.asBuiltJoints)
     joint_data = [
-        {"name": joint.name, "valid": joint.isValid, "motion": joint.jointMotion.objectType}
+        {
+            "name": joint.name,
+            "valid": joint.isValid,
+            "motion": joint.jointMotion.objectType,
+        }
         for joint in joints
     ]
     expected_joint_endpoints_raw = {
@@ -598,23 +713,46 @@ def run(_context: str):
         "J18_Conveyor_Frame": ("CMP19_Conveyor_Belt", "CMP03_Base_Front_Crossbar"),
         "J19_Roller_Infeed": ("CMP20_Roller_Infeed", "CMP19_Conveyor_Belt"),
         "J20_Roller_Quarter": ("CMP21_Roller_Quarter", "CMP19_Conveyor_Belt"),
-        "J21_Roller_Three_Quarter": ("CMP22_Roller_Three_Quarter", "CMP19_Conveyor_Belt"),
+        "J21_Roller_Three_Quarter": (
+            "CMP22_Roller_Three_Quarter",
+            "CMP19_Conveyor_Belt",
+        ),
         "J22_Roller_Outfeed": ("CMP23_Roller_Outfeed", "CMP19_Conveyor_Belt"),
         "J23_Drive_Motor": ("CMP24_Drive_Motor", "CMP23_Roller_Outfeed"),
         "J24_Hopper_Throat": ("CMP25_Hopper", "CMP26_Feed_Throat"),
         "J25_Throat_Belt": ("CMP26_Feed_Throat", "CMP19_Conveyor_Belt"),
         "J26_Control_Cabinet": ("CMP27_Control_Cabinet", "CMP14_Panel_Right"),
-        "J27_Rail_Left_Front_Support": ("CMP28_Conveyor_Rail_Left", "CMP30_Conveyor_Support_Front_Left"),
-        "J28_Rail_Right_Front_Support": ("CMP29_Conveyor_Rail_Right", "CMP31_Conveyor_Support_Front_Right"),
-        "J29_Front_Left_Support_Frame": ("CMP30_Conveyor_Support_Front_Left", "CMP03_Base_Front_Crossbar"),
-        "J30_Front_Right_Support_Frame": ("CMP31_Conveyor_Support_Front_Right", "CMP03_Base_Front_Crossbar"),
-        "J31_Rear_Left_Support_Rail": ("CMP32_Conveyor_Support_Rear_Left", "CMP28_Conveyor_Rail_Left"),
-        "J32_Rear_Right_Support_Rail": ("CMP33_Conveyor_Support_Rear_Right", "CMP29_Conveyor_Rail_Right"),
-        "J33_Hopper_Support_Frame": ("CMP34_Hopper_Support_Crossbar", "CMP11_Top_Left_Rail"),
+        "J27_Rail_Left_Front_Support": (
+            "CMP28_Conveyor_Rail_Left",
+            "CMP30_Conveyor_Support_Front_Left",
+        ),
+        "J28_Rail_Right_Front_Support": (
+            "CMP29_Conveyor_Rail_Right",
+            "CMP31_Conveyor_Support_Front_Right",
+        ),
+        "J29_Front_Left_Support_Frame": (
+            "CMP30_Conveyor_Support_Front_Left",
+            "CMP03_Base_Front_Crossbar",
+        ),
+        "J30_Front_Right_Support_Frame": (
+            "CMP31_Conveyor_Support_Front_Right",
+            "CMP03_Base_Front_Crossbar",
+        ),
+        "J31_Rear_Left_Support_Rail": (
+            "CMP32_Conveyor_Support_Rear_Left",
+            "CMP28_Conveyor_Rail_Left",
+        ),
+        "J32_Rear_Right_Support_Rail": (
+            "CMP33_Conveyor_Support_Rear_Right",
+            "CMP29_Conveyor_Rail_Right",
+        ),
+        "J33_Hopper_Support_Frame": (
+            "CMP34_Hopper_Support_Crossbar",
+            "CMP11_Top_Left_Rail",
+        ),
     }
     expected_joint_endpoints = {
-        name: sorted(pair)
-        for name, pair in expected_joint_endpoints_raw.items()
+        name: sorted(pair) for name, pair in expected_joint_endpoints_raw.items()
     }
     expected_joint_names = set(expected_joint_endpoints)
     revolute_names = {
@@ -680,6 +818,12 @@ def run(_context: str):
             },
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

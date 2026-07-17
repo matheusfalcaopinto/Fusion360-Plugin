@@ -17,8 +17,11 @@ Current architecture:
 - Real Fusion support must remain behind the allowlisted facade and existing CRUD script bridge.
 - No raw Autodesk Fusion MCP tool surface may be exposed directly to the model.
 - CAD Spec requires explicit units and rejects ambiguous numeric dimensions.
-- Assemblies must use named components/occurrences, metadata contracts, joint contracts, screenshot outputs, physical property checks, and interference checks when requested.
-- Verification must fail closed when native joints, metadata, occurrences, screenshots, physical properties, or interference analysis cannot be proven.
+- Assemblies must use named components/occurrences, metadata contracts, joint
+  contracts, typed readback, physical property checks, and interference checks.
+- Verification must fail closed when native joints, metadata, occurrences,
+  physical properties, or interference analysis cannot be proven. Real
+  capture/export remains `deny_io` in 0.4.1.
 - Distribution uses a Python wheel plus a lightweight Codex plugin zip with the wheel bundled under `wheels/`.
 
 Implementation expectations:

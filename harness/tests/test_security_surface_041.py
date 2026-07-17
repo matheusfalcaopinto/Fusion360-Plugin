@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -107,11 +109,84 @@ def test_surface_registry_declares_every_public_kind_and_profile() -> None:
     assert all(spec.profiles for spec in specs)
     assert all(spec.risk in {"read", "write", "destructive"} for spec in specs)
     assert all(spec.data_class for spec in specs)
-    tool_specs = [spec for spec in specs if spec.kind == "tool"]
-    assert all(spec.input_schema for spec in tool_specs)
-    assert all(spec.output_schema for spec in tool_specs)
-    assert all(callable(spec.handler) for spec in tool_specs)
-    assert all(callable(spec.projector) for spec in tool_specs)
+    assert all(spec.input_schema for spec in specs)
+    assert all(spec.output_schema for spec in specs)
+    assert all(callable(spec.handler) for spec in specs)
+    assert all(callable(spec.projector) for spec in specs)
+
+
+@pytest.mark.asyncio
+async def test_resource_use_dispatches_through_authorized_surface_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    original = mcp_surface._RESOURCE_SPECS[0]
+
+    async def handler(spec, uri, **_kwargs):  # noqa: ANN001, ANN003
+        calls.append(f"{spec.name}:{uri}")
+        return {"registry_handler": True}
+
+    def projector(_spec, payload):  # noqa: ANN001, ANN201
+        return {"projected": payload["registry_handler"]}
+
+    replacement = replace(original, handler=handler, projector=projector)
+    monkeypatch.setattr(
+        mcp_surface,
+        "_RESOURCE_SPECS",
+        (replacement, *mcp_surface._RESOURCE_SPECS[1:]),
+    )
+
+    payload = await server._read_mcp_resource(
+        "fusion-agent://capabilities",
+        runtime=object(),
+        profile="normal",
+    )
+
+    assert calls == ["fusion-agent-capabilities:fusion-agent://capabilities"]
+    assert payload == {"projected": True}
+
+
+def test_prompt_use_dispatches_through_authorized_surface_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    original = mcp_surface._PROMPT_SPECS[0]
+
+    def handler(spec, arguments):  # noqa: ANN001, ANN201
+        calls.append(spec.name)
+        return {"arguments": dict(arguments or {})}
+
+    def projector(spec, payload):  # noqa: ANN001, ANN201
+        assert payload["arguments"]["request"] == "inspect"
+        return types.GetPromptResult(description=spec.description, messages=[])
+
+    replacement = replace(original, handler=handler, projector=projector)
+    monkeypatch.setattr(
+        mcp_surface,
+        "_PROMPT_SPECS",
+        (replacement, *mcp_surface._PROMPT_SPECS[1:]),
+    )
+
+    result = mcp_surface.render_prompt(
+        original.name,
+        {"request": "inspect"},
+        profile="normal",
+    )
+
+    assert calls == [original.name]
+    assert result.messages == []
+
+
+def test_surface_registry_declares_fail_closed_public_content_policy() -> None:
+    specs = {spec.name: spec for spec in server.surface_specs() if spec.kind == "tool"}
+
+    assert specs["fusion_agent_native_read"].content_policy == "validated_png"
+    assert specs["fusion_agent_fast_execute"].content_policy == "validated_png"
+    assert all(
+        spec.content_policy == "structured_only"
+        for name, spec in specs.items()
+        if name not in {"fusion_agent_native_read", "fusion_agent_fast_execute"}
+    )
 
 
 @pytest.mark.asyncio
@@ -439,6 +514,111 @@ def test_runtime_output_schema_validation_fails_closed_without_payload_echo() ->
     assert SENTINEL not in _serialized(response)
 
 
+def test_public_success_drops_downstream_text_and_meta() -> None:
+    response = server._as_call_tool_result(
+        "fusion_agent_native_read",
+        FastPathResponse(
+            {
+                "query_type": "projects",
+                "status": "read_succeeded",
+                "data": {},
+                "manifest_fingerprint": "manifest",
+                "duration_ms": 0,
+            },
+            content=[{"type": "text", "text": SENTINEL}],
+            meta={"native_diagnostic": SENTINEL},
+        ),
+    )
+
+    assert response.isError is False
+    assert response.meta is None
+    assert len(response.content) == 1
+    assert response.content[0].type == "text"
+    assert SENTINEL not in _serialized(response)
+
+
+def test_visual_projector_preserves_only_one_valid_png_for_screenshot() -> None:
+    png = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8"
+        b"\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xffr\x9cRg\x00\x00\x00\x00IEND\xaeB`\x82"
+    ).decode("ascii")
+    non_png = base64.b64encode(b"not a png").decode("ascii")
+    malformed_png = base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode("ascii")
+    projector = server._tool_spec_map()["fusion_agent_native_read"].projector
+    assert callable(projector)
+    response = projector(
+        "fusion_agent_native_read",
+        FastPathResponse(
+            {
+                "query_type": "screenshot",
+                "status": "read_succeeded",
+                "data": {"image_in_content": True, "mimeType": "image/png"},
+                "manifest_fingerprint": "manifest",
+                "duration_ms": 0,
+                "evidence_role": "supplemental_visual",
+            },
+            content=[
+                {"type": "text", "text": SENTINEL},
+                {"type": "image", "data": "not-base64", "mimeType": "image/png"},
+                {"type": "image", "data": non_png, "mimeType": "image/png"},
+                {"type": "image", "data": malformed_png, "mimeType": "image/png"},
+                {"type": "image", "data": png, "mimeType": "image/jpeg"},
+                {"type": "image", "data": png, "mimeType": "image/png"},
+                {"type": "image", "data": png, "mimeType": "image/png"},
+            ],
+            meta={"native_diagnostic": SENTINEL},
+        ),
+    )
+
+    images = [block for block in response.content if block.type == "image"]
+    assert len(images) == 1
+    assert images[0].data == png
+    assert response.meta is None
+    assert SENTINEL not in _serialized(response)
+
+
+def test_visual_png_policy_requires_the_expected_typed_payload() -> None:
+    assert server._visual_png_allowed(
+        "fusion_agent_native_read", {"query_type": "screenshot"}
+    )
+    assert not server._visual_png_allowed(
+        "fusion_agent_native_read", {"query_type": "projects"}
+    )
+    assert server._visual_png_allowed(
+        "fusion_agent_fast_execute", {"screenshot": {"image_in_content": True}}
+    )
+    assert not server._visual_png_allowed(
+        "fusion_agent_fast_execute", {"screenshot": None}
+    )
+    assert not server._visual_png_allowed("fusion_agent_readiness_report", {})
+
+
+def test_visual_projector_drops_png_for_non_screenshot_native_read() -> None:
+    png = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8"
+        b"\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xffr\x9cRg\x00\x00\x00\x00IEND\xaeB`\x82"
+    ).decode("ascii")
+    projector = server._tool_spec_map()["fusion_agent_native_read"].projector
+    assert callable(projector)
+    response = projector(
+        "fusion_agent_native_read",
+        FastPathResponse(
+            {
+                "query_type": "projects",
+                "status": "read_succeeded",
+                "data": {},
+                "manifest_fingerprint": "manifest",
+                "duration_ms": 0,
+            },
+            content=[{"type": "image", "data": png, "mimeType": "image/png"}],
+        ),
+    )
+
+    assert not any(block.type == "image" for block in response.content)
+
+
 def test_semantic_safe_change_failure_is_projected_as_public_error() -> None:
     response = server._as_call_tool_result(
         "fusion_agent_safe_change_apply",
@@ -484,6 +664,34 @@ async def test_probe_downstream_failure_never_exports_raw_diagnostics(
 
     assert SENTINEL not in _serialized(projected)
     assert "argv" not in _serialized(projected).lower()
+
+
+@pytest.mark.asyncio
+async def test_probe_success_never_reflects_configured_endpoint_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def probe(_endpoint: str | None, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "probes": [
+                {
+                    "endpoint": f"http://127.0.0.1/{SENTINEL}?token={SENTINEL}",
+                    "health_uri": f"http://127.0.0.1/{SENTINEL}/health",
+                    "health": {"ok": True, "status_code": 200},
+                    "tools_list": {"ok": True, "tool_count": 12},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(server, "_tools_probe", probe)
+    response = await server.execute_tool_response(
+        "fusion_agent_probe", {}, profile="diagnostic"
+    )
+    projected = server._as_call_tool_result("fusion_agent_probe", response)
+
+    assert SENTINEL not in _serialized(projected)
+    result = projected.structuredContent["result"]
+    assert result["probes"][0]["endpoint"] == "configured"
+    assert result["probes"][0]["health_uri"] == "configured"
 
 
 @pytest.mark.asyncio
@@ -553,6 +761,18 @@ async def test_run_session_artifacts_and_resource_reads_exclude_raw_errors(
         mode="real",
         dry_run=False,
         warnings=[],
+        readback={
+            "snapshot": {
+                "schema_version": "compact_snapshot.v2",
+                "complete": False,
+                "counts_exact": False,
+                "truncated": True,
+                "payload_capped": False,
+                "stop_reason": "downstream_unavailable",
+                "diagnostic": SENTINEL,
+                "path": rf"C:\\private\\{SENTINEL}",
+            }
+        },
         readback_error=f"readback argv {SENTINEL}",
     )
     for artifact in tmp_path.rglob("*"):
@@ -624,3 +844,77 @@ def test_normal_surface_remains_exact_and_has_no_script_input() -> None:
     assert len(tools) == 12
     assert all("script" not in tool.inputSchema.get("properties", {}) for tool in tools)
     assert all(tool.outputSchema for tool in tools)
+
+
+@pytest.mark.asyncio
+async def test_probe_policy_failure_does_not_echo_private_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_endpoint(*_args: Any, **_kwargs: Any) -> None:
+        raise server.EndpointPolicyError(
+            f"authorization=Bearer {SENTINEL} C:\\private\\fusion.exe"
+        )
+
+    monkeypatch.setattr(server, "validate_endpoint", reject_endpoint)
+    monkeypatch.setattr(
+        server,
+        "_runtime_configuration",
+        lambda: replace(
+            RuntimeConfiguration.from_environment(),
+            endpoint="http://127.0.0.1:8765/mcp",
+        ),
+    )
+
+    result = await server._probe_tool({})
+
+    assert result["ok"] is False
+    assert result["error_code"]
+    assert SENTINEL not in _serialized(result)
+    assert "fusion.exe" not in _serialized(result)
+
+
+@pytest.mark.asyncio
+async def test_planner_and_validator_failures_return_only_stable_public_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_plan(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError(f"argv --token={SENTINEL} C:\\private\\recipe.json")
+
+    def fail_parse(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError(f"spec token={SENTINEL} C:\\private\\design.json")
+
+    monkeypatch.setattr(server, "_plan_spec", fail_plan)
+    planned = await server._plan_spec_tool({"prompt": "make a bracket"})
+    monkeypatch.setattr(server, "parse_cad_spec", fail_parse)
+    validated = await server._validate_spec_tool({"spec_json": "{}"})
+
+    for payload in (planned, validated):
+        encoded = _serialized(payload)
+        assert SENTINEL not in encoded
+        assert "C:\\\\private" not in encoded
+        assert "ValueError" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_invalid_benchmark_listing_hides_path_and_parser_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    private_root = tmp_path / SENTINEL
+    private_root.mkdir()
+    suite_path = private_root / "suite.json"
+    suite_path.write_text("{}", encoding="utf-8")
+
+    def fail_suite(_path: Path) -> Any:
+        raise ValueError(f"invalid token={SENTINEL} C:\\private\\suite.json")
+
+    monkeypatch.setattr(server, "BENCHMARK_ROOT", private_root)
+    monkeypatch.setattr(server, "_default_benchmark_suite", lambda: suite_path)
+    monkeypatch.setattr(server, "load_benchmark_suite", fail_suite)
+
+    result = await server._list_benchmarks_tool({})
+
+    encoded = _serialized(result)
+    assert SENTINEL not in encoded
+    assert "C:\\\\private" not in encoded
+    assert all("path" not in suite for suite in result["suites"])

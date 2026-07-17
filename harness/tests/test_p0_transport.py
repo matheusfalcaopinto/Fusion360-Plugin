@@ -263,6 +263,26 @@ class _FakeSession:
             self.state.active_calls -= 1
 
 
+class _BlockingPingMcp(_FakeMcp):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ping_started = asyncio.Event()
+        self.release_ping = asyncio.Event()
+
+    def session_factory(self, *_: Any, **__: Any) -> "_BlockingPingSession":
+        connection_index = self.session_count
+        self.session_count += 1
+        return _BlockingPingSession(self, connection_index)
+
+
+class _BlockingPingSession(_FakeSession):
+    async def send_ping(self) -> _Model:
+        self.state.ping_count += 1
+        self.state.ping_started.set()
+        await self.state.release_ping.wait()
+        return _Model({})
+
+
 def _client(state: _FakeMcp, **kwargs: Any) -> RealMcpClient:
     kwargs.setdefault("transport_mode", "persistent")
     return RealMcpClient(
@@ -487,6 +507,42 @@ async def test_cancelled_while_queued_is_not_dispatched_and_is_traced(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_fallback", [False, True])
+async def test_cancelled_during_active_mutation_ping_is_acknowledged_before_result(
+    legacy_fallback: bool,
+) -> None:
+    state = _BlockingPingMcp()
+    client = _client(state)
+    if legacy_fallback:
+
+        async def switch_to_legacy() -> None:
+            client._effective_transport_mode = "legacy"
+            return None
+
+        client._prepare_mutation = switch_to_legacy  # type: ignore[method-assign]
+
+    task = asyncio.create_task(
+        client.call_tool("fusion_mcp_execute", {"featureType": "script"})
+    )
+    await asyncio.wait_for(state.ping_started.wait(), timeout=1.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    result_was_returned_before_ack = task.done()
+
+    state.release_ping.set()
+    result = await asyncio.wait_for(task, timeout=1.0)
+    await asyncio.sleep(0)
+    call_count = state.call_count
+    await client.aclose()
+
+    assert result_was_returned_before_ack is False
+    assert result.error_code == ErrorCode.CALL_CANCELLED
+    assert result.meta["fusion_agent_transport"]["dispatched"] is False
+    assert result.meta["fusion_agent_transport"]["mutation_outcome"] == "known"
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_functional_read_error_is_not_retried() -> None:
     state = _FakeMcp(functional_read_errors=1)
     client = _client(state)
@@ -561,6 +617,36 @@ async def test_command_mode_remains_one_shot_and_never_retries_mutation() -> Non
 
 
 @pytest.mark.asyncio
+async def test_command_manifest_observation_failure_is_public_and_zero_dispatch() -> (
+    None
+):
+    canary = "FA041_PRIVATE_COMMAND_MANIFEST_CANARY"
+    manifest = ToolManifest(tools=[ToolDefinition(name="fusion_mcp_execute")])
+    client = RealMcpClient(command="fake-fusion-mcp")
+    adapter = FusionMcpAdapter(
+        client=client,
+        manifest=manifest,
+        policy=ToolPolicy.from_manifest(manifest.names()),
+    )
+    methods: list[str] = []
+
+    async def fake_command(method: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        methods.append(method)
+        if method == "tools/list":
+            raise RuntimeError(canary)
+        raise AssertionError("mutating tools/call must not dispatch")
+
+    client._command_jsonrpc_async = fake_command  # type: ignore[method-assign]
+    rejected = await adapter.call("fusion_mcp_execute", {"featureType": "create"})
+
+    assert rejected.error_code == ErrorCode.CONNECTION_UNAVAILABLE
+    assert rejected.public_error is not None
+    assert canary not in rejected.model_dump_json()
+    assert methods == ["tools/list"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_command_timeout_terminates_process_and_returns_within_two_seconds() -> (
     None
 ):
@@ -603,6 +689,159 @@ async def test_manifest_drift_blocks_retry_until_explicit_rediscovery() -> None:
     verified = await client.call_tool("fusion_mcp_read", {})
     assert verified.ok
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_manifest_acceptance_is_bound_to_each_adapter_fingerprint() -> None:
+    state = _FakeMcp(
+        manifests=[
+            [{"name": "fusion_mcp_read", "description": "v1"}],
+            [{"name": "fusion_mcp_read", "description": "v2"}],
+        ]
+    )
+    client = _client(state)
+    manifest_v1 = await client.list_tools()
+    stale_adapter = FusionMcpAdapter(
+        client=client,
+        manifest=manifest_v1,
+        policy=ToolPolicy.from_manifest(manifest_v1.names()),
+    )
+
+    state.fail_reads = 1
+    drift = await stale_adapter.call("fusion_mcp_read", {})
+    assert drift.error_code == ErrorCode.MANIFEST_DRIFT
+
+    manifest_v2 = await client.list_tools()
+    fresh_adapter = FusionMcpAdapter(
+        client=client,
+        manifest=manifest_v2,
+        policy=ToolPolicy.from_manifest(manifest_v2.names()),
+    )
+    calls_before_stale = state.call_count
+
+    stale = await stale_adapter.call("fusion_mcp_read", {})
+    fresh = await fresh_adapter.call("fusion_mcp_read", {})
+
+    assert stale.error_code == ErrorCode.MANIFEST_DRIFT
+    assert stale.public_error is not None
+    assert state.call_count == calls_before_stale + 1
+    assert fresh.ok is True
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_call_observes_manifest_on_same_session_before_dispatch() -> None:
+    state = _FakeMcp(
+        manifests=[
+            [{"name": "fusion_mcp_read", "description": "v1"}],
+            [{"name": "fusion_mcp_read", "description": "v2"}],
+        ]
+    )
+    client = _client(state, transport_mode="legacy")
+    manifest_v1 = await client.list_tools()
+    adapter = FusionMcpAdapter(
+        client=client,
+        manifest=manifest_v1,
+        policy=ToolPolicy.from_manifest(manifest_v1.names()),
+    )
+
+    rejected = await adapter.call("fusion_mcp_read", {})
+
+    assert rejected.error_code == ErrorCode.MANIFEST_DRIFT
+    assert rejected.public_error is not None
+    assert state.call_count == 0
+    assert state.list_count == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_adapter_schema_failures_are_public_and_input_rejection_has_zero_dispatch() -> (
+    None
+):
+    canary = "FA041_PRIVATE_SCHEMA_CANARY"
+
+    class CaptureClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call_tool(self, _name, _arguments, *, options=None):
+            del options
+            self.calls += 1
+            return ToolResult.success(value=canary)
+
+    manifest = ToolManifest(
+        tools=[
+            ToolDefinition(
+                name="fusion_mcp_read",
+                input_schema={
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "integer"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+            )
+        ]
+    )
+    capture = CaptureClient()
+    adapter = FusionMcpAdapter(
+        client=capture,
+        manifest=manifest,
+        policy=ToolPolicy.from_manifest(manifest.names()),
+    )
+
+    rejected = await adapter.call("fusion_mcp_read", {"count": canary})
+    assert capture.calls == 0
+    assert rejected.error_code == ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR
+    assert rejected.public_error is not None
+    assert canary not in rejected.model_dump_json()
+
+    invalid_output = await adapter.call("fusion_mcp_read", {"count": 1})
+    assert capture.calls == 1
+    assert invalid_output.error_code == ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR
+    assert invalid_output.public_error is not None
+    assert canary not in invalid_output.model_dump_json()
+
+
+def test_trace_logger_does_not_persist_arguments_or_raw_diagnostics(
+    tmp_path: Path,
+) -> None:
+    canary = "FA041_PRIVATE_TRACE_CANARY"
+    trace_path = tmp_path / "safe-trace.jsonl"
+    logger = JsonlTraceLogger(trace_path)
+
+    logger.log_tool_call(
+        session_id="session",
+        facade_tool="fusion_agent_native_read",
+        native_tool="fusion_mcp_read",
+        arguments={"path": rf"C:\private\{canary}", "message": canary},
+        result_status="error",
+        duration_ms=1,
+        error_code=ErrorCode.CONNECTION_LOST,
+    )
+    logger.log_transport_event(
+        "connection_failed",
+        error=f"provider error {canary}",
+        fallback_reason=canary,
+        path=rf"C:\private\{canary}",
+        connection_generation=2,
+    )
+
+    raw = trace_path.read_text(encoding="utf-8")
+    events = [json.loads(line) for line in raw.splitlines()]
+    assert canary not in raw
+    assert "C:\\private" not in raw
+    assert "arguments_redacted" not in events[0]
+    assert events[0]["arguments_present"] is True
+    assert "error" not in events[1]
+    assert "fallback_reason" not in events[1]
+    assert "path" not in events[1]
+    assert events[1]["connection_generation"] == 2
 
 
 def test_manifest_v2_migrates_legacy_and_saves_only_on_fingerprint_change(
@@ -717,11 +956,12 @@ def test_tool_result_channels_and_recursive_trace_redaction(tmp_path: Path) -> N
     assert "TOKEN VALUE" not in raw
     assert "PRIVATE CONTENT" not in raw
     payload = json.loads(raw)
-    assert payload["arguments_redacted"]["script"]["redacted"] is True
-    assert payload["arguments_redacted"]["nested"]["api_token"]["type"] == "str"
+    assert "arguments_redacted" not in payload
+    assert payload["arguments_present"] is True
     assert payload["transport_mode"] == "persistent"
     assert payload["connection_generation"] == 2
-    assert payload["manifest_fingerprint"] == "fingerprint"
+    assert "manifest_fingerprint" not in payload
+    assert len(payload["manifest_fingerprint_hash"]) == 64
     assert payload["call_semantics"] == "read_only"
     assert payload["attempt_count"] == 1
     assert payload["reconnected"] is False

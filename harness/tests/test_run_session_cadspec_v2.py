@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 
 from agent_core.capability_executor import CapabilityExecutionResult, CapabilityExecutor
 from cad_spec.v2 import CadSpecV2
@@ -11,6 +13,7 @@ from fusion_agent_mcp import server
 from fusion_agent_mcp.runtime import FusionAgentRuntime
 from fusion_mcp_adapter.tool_result import ToolDefinition, ToolManifest, ToolResult
 from fusion_tool_facade.autodesk_typed_backend import AutodeskTypedBackend
+from verifier.result_models import EvidenceEnvelope
 
 
 def _v2_payload(*, include_parameter: bool = False) -> dict:
@@ -84,10 +87,11 @@ def _legacy_payload() -> dict:
 
 
 def _entity_contract(*, independent: bool = False) -> CadSpecV2:
+    stable_ref = "root/verified_body#1"
     assertion = {
         "id": "body_verified",
         "kind": "custom_oracle" if independent else "entity_exists",
-        "target_ref": "verified_body",
+        "target_ref": stable_ref,
         "expected": {"body": "verified_body"} if independent else True,
     }
     requirement = {
@@ -124,6 +128,7 @@ def _complete_body_readback() -> dict:
             "truncated": False,
             "payload_capped": False,
             "stop_reason": None,
+            "document": {"binding_identity": "d" * 64},
             "counts": {"bodies_total": 1},
             "bodies": [
                 {
@@ -214,6 +219,172 @@ def test_v2_complete_readback_can_verify_declared_contract(
     assert result["verification"]["assertion_status"] == "passed"
     assert result["verification"]["intent_coverage"] == "complete"
     assert result["verification"]["contract_verified"] is True
+
+
+def test_v2_entity_label_without_stable_reference_is_incomplete(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
+    payload = _entity_contract().model_dump(mode="json")
+    payload["assertions"][0]["target_ref"] = "verified_body"
+    result = server._record_v2_session(
+        CadSpecV2.model_validate(payload),
+        execution=CapabilityExecutionResult(
+            success=True,
+            provider="autodesk_http",
+            dispatched=True,
+            mutation_outcome="known",
+        ),
+        project="label_is_not_identity",
+        mode="real",
+        dry_run=False,
+        warnings=[],
+        readback=_complete_body_readback(),
+    )
+
+    assert result["verification"]["assertion_status"] == "incomplete"
+    assert result["verification"]["contract_verified"] is False
+
+
+@pytest.mark.parametrize("invalid", [True, math.nan, math.inf, -math.inf])
+def test_v2_physical_range_rejects_invalid_numeric_bounds(invalid) -> None:
+    payload = _v2_payload()
+    payload["assertions"][0]["expected"]["min_kg"] = invalid
+    with pytest.raises(ValidationError):
+        CadSpecV2.model_validate(payload)
+
+
+def test_v2_analysis_requires_conclusive_document_bound_envelope(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
+    envelope = EvidenceEnvelope(
+        producer="capability_executor",
+        provenance={
+            "provider": "autodesk_http",
+            "operation_id": "measure_shaft",
+            "operation_kind": "analysis.physical_properties",
+        },
+        document_identity="d" * 64,
+        complete=True,
+        counts_exact=True,
+        truncated=False,
+        metrics_finite=True,
+        assertion_ids=["mass_in_range"],
+        assertion_count=1,
+        evaluated_count=1,
+    )
+    execution = CapabilityExecutionResult(
+        success=True,
+        provider="autodesk_http",
+        evidence={
+            "measure_shaft": {
+                "envelope": envelope.model_dump(mode="json"),
+                "data": {
+                    "shaft": {
+                        "entity_identity": "e" * 64,
+                        "mass_kg": 1.0,
+                        "volume_mm3": 100.0,
+                        "area_mm2": 20.0,
+                    }
+                },
+            }
+        },
+    )
+    result = server._record_v2_session(
+        CadSpecV2.model_validate(_v2_payload()),
+        execution=execution,
+        project="analysis_bound",
+        mode="real",
+        dry_run=False,
+        warnings=[],
+        readback=_complete_body_readback(),
+    )
+    assert result["verification"]["assertion_status"] == "passed"
+
+    drifted = execution.evidence["measure_shaft"]["envelope"].copy()
+    drifted["document_identity"] = "a" * 64
+    execution.evidence["measure_shaft"]["envelope"] = drifted
+    result = server._record_v2_session(
+        CadSpecV2.model_validate(_v2_payload()),
+        execution=execution,
+        project="analysis_drifted",
+        mode="real",
+        dry_run=False,
+        warnings=[],
+        readback=_complete_body_readback(),
+    )
+    assert result["verification"]["assertion_status"] == "incomplete"
+
+
+def test_v2_export_assertion_uses_bound_transaction_not_filesystem(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
+    spec = CadSpecV2.model_validate(
+        {
+            "cad_spec_version": "2.0",
+            "intent": "Export one bound body",
+            "requirements": [
+                {
+                    "id": "export_required",
+                    "description": "The requested body is exported",
+                    "assertion_ids": ["export_verified"],
+                }
+            ],
+            "operations": [
+                {
+                    "id": "export_part",
+                    "kind": "io.export",
+                    "target_ref": "part_body",
+                    "path": str(tmp_path / "does-not-exist.step"),
+                    "format": "step",
+                    "requirement_ids": ["export_required"],
+                }
+            ],
+            "assertions": [
+                {
+                    "id": "export_verified",
+                    "kind": "export_exists",
+                    "target_ref": "export_part",
+                    "expected": True,
+                }
+            ],
+        }
+    )
+    result = server._record_v2_session(
+        spec,
+        execution=CapabilityExecutionResult(
+            success=True,
+            provider="autodesk_http",
+            dispatched=True,
+            mutation_outcome="known",
+            transactions=[
+                {
+                    "operation_id": "export_part",
+                    "kind": "io.export",
+                    "status": "ok",
+                    "native_result": {
+                        "completed": True,
+                        "kind": "io.export",
+                        "format": "step",
+                        "bytes": 128,
+                    },
+                }
+            ],
+        ),
+        project="export_bound",
+        mode="real",
+        dry_run=False,
+        warnings=[],
+        readback=_complete_body_readback(),
+    )
+
+    assert not (tmp_path / "does-not-exist.step").exists()
+    assert result["verification"]["assertion_status"] == "passed"
+    assert result["verification"]["assertions"][0]["evidence_source"] == (
+        "bound_export_transaction"
+    )
 
 
 def test_v2_positive_readback_never_promotes_unknown_mutation(

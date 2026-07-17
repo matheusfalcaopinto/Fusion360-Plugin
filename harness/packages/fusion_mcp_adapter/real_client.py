@@ -11,7 +11,7 @@ import subprocess
 import time
 import urllib.request
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from json import JSONDecodeError
 from typing import Any, Callable
@@ -73,6 +73,35 @@ class _WorkerRequest:
     refresh: bool = False
     dispatched: bool = False
     cancelled: bool = False
+    started: bool = False
+    completed: bool = False
+    cancellation_acknowledged: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def request_cancel(self) -> None:
+        """Request cancellation and acknowledge queued work immediately."""
+
+        self.cancelled = True
+        if not self.started:
+            self.acknowledge_completion()
+
+    def mark_started(self) -> None:
+        self.started = True
+
+    def try_claim_dispatch(self) -> bool:
+        """Atomically cross the final cancellation/dispatch boundary.
+
+        This method contains no await and is only called on the asyncio event
+        loop, so cancellation cannot be observed between the gate and claim.
+        """
+
+        if self.cancelled:
+            return False
+        self.dispatched = True
+        return True
+
+    def acknowledge_completion(self) -> None:
+        self.completed = True
+        self.cancellation_acknowledged.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,7 +401,7 @@ class RealMcpClient:
         try:
             self._ensure_callable()
         except FusionHarnessError as exc:
-            return ToolResult.failure(str(exc.code), str(exc))
+            return ToolResult.public_failure(str(exc.code))
 
         call_options = self._resolve_options(name, options)
         queued_at = time.perf_counter()
@@ -399,15 +428,14 @@ class RealMcpClient:
             async with self._operation_lock:
                 dispatched = False
 
-                def mark_dispatched() -> None:
+                def mark_dispatched() -> bool:
                     nonlocal dispatched
                     dispatched = True
+                    return True
 
                 queue_ms = int((time.perf_counter() - queued_at) * 1000)
                 if self._closing:
-                    return ToolResult.failure(
-                        ErrorCode.CLIENT_CLOSED, "Fusion MCP client is closing"
-                    )
+                    return ToolResult.public_failure(ErrorCode.CLIENT_CLOSED)
                 cooldown = self._cooldown_result()
                 if cooldown is not None:
                     return cooldown
@@ -453,10 +481,7 @@ class RealMcpClient:
         except asyncio.CancelledError:
             # Cancellation before dispatch is known-safe.  Post-dispatch
             # cancellation is converted inside the transport-specific path.
-            result = ToolResult.failure(
-                ErrorCode.CALL_CANCELLED,
-                "Fusion MCP call cancelled before dispatch",
-            )
+            result = ToolResult.public_failure(ErrorCode.CALL_CANCELLED)
             elapsed_ms = int((time.perf_counter() - queued_at) * 1000)
             self._trace_tool_call(
                 name=name,
@@ -562,9 +587,7 @@ class RealMcpClient:
         await self._ensure_worker()
         queue = self._worker_queue
         if queue is None:
-            result = ToolResult.failure(
-                ErrorCode.CONNECTION_UNAVAILABLE, "MCP transport worker unavailable"
-            )
+            result = ToolResult.public_failure(ErrorCode.CONNECTION_UNAVAILABLE)
             return _WorkerCallResult(result, 0, 0, 0, False, 0, False)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         request = _WorkerRequest(
@@ -579,9 +602,11 @@ class RealMcpClient:
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
-            request.cancelled = True
+            request.request_cancel()
             future.cancel()
             elapsed_ms = int((time.perf_counter() - queued_at) * 1000)
+            if not request.dispatched and not request.completed:
+                await asyncio.shield(request.cancellation_acknowledged.wait())
             if request.dispatched:
                 self._set_cooldown("call cancelled after dispatch")
                 if self.state not in {ConnectionState.CLOSING, ConnectionState.CLOSED}:
@@ -597,9 +622,7 @@ class RealMcpClient:
                         "read cancelled after dispatch; native work may still be running",
                     )
                 return _WorkerCallResult(result, 1, 0, elapsed_ms, False, 0, True)
-            result = ToolResult.failure(
-                ErrorCode.CALL_CANCELLED, "Fusion MCP call cancelled before dispatch"
-            )
+            result = ToolResult.public_failure(ErrorCode.CALL_CANCELLED)
             return _WorkerCallResult(result, 0, elapsed_ms, elapsed_ms, False, 0, False)
 
     async def _worker_loop(self, queue: asyncio.Queue[_WorkerRequest]) -> None:
@@ -613,7 +636,9 @@ class RealMcpClient:
             while True:
                 request = await queue.get()
                 self._active_worker_request = request
+                request.mark_started()
                 if request.cancelled:
+                    request.acknowledge_completion()
                     self._active_worker_request = None
                     continue
                 try:
@@ -662,6 +687,7 @@ class RealMcpClient:
                     if not request.future.done():
                         request.future.set_exception(exc)
                 finally:
+                    request.acknowledge_completion()
                     self._active_worker_request = None
         finally:
             await self._dispose_stack_owned(timeout_seconds=2.0)
@@ -692,7 +718,7 @@ class RealMcpClient:
                 request.name,
                 request.arguments,
                 options,
-                on_dispatch=lambda: setattr(request, "dispatched", True),
+                on_dispatch=request.try_claim_dispatch,
             )
         else:
             result, attempts = await self._persistent_call_owned(
@@ -796,10 +822,16 @@ class RealMcpClient:
         *,
         request: _WorkerRequest,
     ) -> tuple[ToolResult, int]:
+        binding_failure = self._manifest_binding_failure(options)
+        if binding_failure is not None:
+            return binding_failure, 0
         if options.semantics == CallSemantics.MUTATING:
             prepared = await self._prepare_mutation()
             if prepared is not None:
                 return prepared, 0
+            binding_failure = self._manifest_binding_failure(options)
+            if binding_failure is not None:
+                return binding_failure, 0
             if self._effective_transport_mode == "legacy":
                 cooldown = self._cooldown_result()
                 if cooldown is not None:
@@ -808,17 +840,12 @@ class RealMcpClient:
                     name,
                     arguments,
                     options,
-                    on_dispatch=lambda: setattr(request, "dispatched", True),
+                    on_dispatch=request.try_claim_dispatch,
                 )
 
-        if self._manifest_drift:
-            return (
-                ToolResult.failure(
-                    ErrorCode.MANIFEST_DRIFT,
-                    "native Fusion tool manifest changed; rediscover and revalidate before calling",
-                ),
-                0,
-            )
+        binding_failure = self._manifest_binding_failure(options)
+        if binding_failure is not None:
+            return binding_failure, 0
 
         attempt = 0
         predispatch_reconnects = 0
@@ -829,6 +856,9 @@ class RealMcpClient:
             try:
                 if self.state != ConnectionState.READY or self._session is None:
                     await self._owner_ensure_ready()
+                binding_failure = self._manifest_binding_failure(options)
+                if binding_failure is not None:
+                    return binding_failure, attempt - 1
                 if self._effective_transport_mode == "legacy":
                     cooldown = self._cooldown_result()
                     if cooldown is not None:
@@ -837,17 +867,16 @@ class RealMcpClient:
                         name,
                         arguments,
                         options,
-                        on_dispatch=lambda: setattr(request, "dispatched", True),
+                        on_dispatch=request.try_claim_dispatch,
                     )
-                if self._manifest_drift:
-                    return ToolResult.failure(
-                        ErrorCode.MANIFEST_DRIFT, "native Fusion tool manifest changed"
-                    ), attempt - 1
                 session = self._session
                 if session is None:
                     raise ConnectionError("MCP session unavailable")
+                if not request.try_claim_dispatch():
+                    return ToolResult.public_failure(
+                        ErrorCode.CALL_CANCELLED
+                    ), attempt - 1
                 dispatched = True
-                request.dispatched = True
                 if options.semantics == CallSemantics.MUTATING:
                     self._mutation_dispatched = True
                 self._call_count += 1
@@ -868,8 +897,8 @@ class RealMcpClient:
                 return ToolResult.from_mcp(payload), attempt
             except McpError as exc:
                 if not _is_retryable_mcp_error(exc):
-                    return ToolResult.failure(
-                        ErrorCode.MCP_PROTOCOL_ERROR, str(exc)
+                    return ToolResult.public_failure(
+                        ErrorCode.MCP_PROTOCOL_ERROR
                     ), attempt
                 await self._mark_broken_owned(f"MCP transport error: {exc}")
                 if dispatched and options.semantics == CallSemantics.MUTATING:
@@ -901,7 +930,7 @@ class RealMcpClient:
                         error=f"McpError:{_mcp_error_code(exc)}",
                     )
                     continue
-                return ToolResult.failure(_mcp_failure_code(exc), str(exc)), attempt
+                return ToolResult.public_failure(_mcp_failure_code(exc)), attempt
             except asyncio.CancelledError:
                 await self._mark_broken_owned(
                     "call cancelled after dispatch" if dispatched else "call cancelled"
@@ -943,9 +972,7 @@ class RealMcpClient:
                     self._retry_count += 1
                     self._trace_event("read_retry", attempt=attempt, error="timeout")
                     continue
-                return ToolResult.failure(
-                    ErrorCode.TIMEOUT, "Fusion MCP read timed out"
-                ), attempt
+                return ToolResult.public_failure(ErrorCode.TIMEOUT), attempt
             except Exception as exc:
                 await self._mark_broken_owned(f"{type(exc).__name__}: {exc}")
                 if dispatched and options.semantics == CallSemantics.MUTATING:
@@ -986,10 +1013,7 @@ class RealMcpClient:
                 if self._effective_transport_mode == "legacy":
                     return None
                 if self._manifest_drift:
-                    return ToolResult.failure(
-                        ErrorCode.MANIFEST_DRIFT,
-                        "native Fusion tool manifest changed; rediscover before mutation",
-                    )
+                    return ToolResult.public_failure(ErrorCode.MANIFEST_DRIFT)
                 session = self._session
                 if session is None:
                     raise ConnectionError("MCP session unavailable")
@@ -1006,9 +1030,7 @@ class RealMcpClient:
                 if attempt >= 3:
                     return self._connection_failure(exc)
                 self._trace_event("predispatch_reconnect", attempt=attempt)
-        return ToolResult.failure(
-            ErrorCode.CONNECTION_UNAVAILABLE, "mutation preflight failed"
-        )
+        return ToolResult.public_failure(ErrorCode.CONNECTION_UNAVAILABLE)
 
     async def _connect_owned(self) -> None:
         self._assert_worker_owner()
@@ -1224,10 +1246,10 @@ class RealMcpClient:
         remaining = self._cooldown_remaining()
         if remaining <= 0:
             return None
-        return ToolResult.failure(
+        return ToolResult.public_failure(
             ErrorCode.CONNECTION_UNAVAILABLE,
-            f"Fusion MCP transport is cooling down; retry after {remaining:.2f}s",
             data={"retry_after_seconds": round(remaining, 3)},
+            retryable=True,
         )
 
     @staticmethod
@@ -1238,10 +1260,9 @@ class RealMcpClient:
             and not options.trusted_internal_read
         )
 
-    def _nonreplayable_read_failure(self, code: ErrorCode, message: str) -> ToolResult:
-        return ToolResult.failure(
+    def _nonreplayable_read_failure(self, code: ErrorCode, _message: str) -> ToolResult:
+        return ToolResult.public_failure(
             code,
-            message,
             data={
                 "dispatched": True,
                 "may_still_be_running": True,
@@ -1302,8 +1323,11 @@ class RealMcpClient:
         arguments: dict[str, Any],
         options: McpCallOptions,
         *,
-        on_dispatch: Callable[[], None] | None = None,
+        on_dispatch: Callable[[], bool] | None = None,
     ) -> tuple[ToolResult, int]:
+        binding_failure = self._manifest_binding_failure(options)
+        if binding_failure is not None:
+            return binding_failure, 0
         max_attempts = 2 if self._can_retry_after_dispatch(options) else 1
         for attempt in range(1, max_attempts + 1):
             dispatched = False
@@ -1329,18 +1353,38 @@ class RealMcpClient:
                             )
                         ),
                     ) as session:
-                        await asyncio.wait_for(
+                        initialized = await asyncio.wait_for(
                             session.initialize(), timeout=self.connect_timeout_seconds
                         )
                         self._initialize_count += 1
+                        if options.expected_manifest_fingerprint is not None:
+                            tools_result = await asyncio.wait_for(
+                                session.list_tools(), timeout=self.read_timeout_seconds
+                            )
+                            self._tools_list_count += 1
+                            observed_manifest = _manifest_from_results(
+                                initialized, tools_result
+                            )
+                            if (
+                                observed_manifest.fingerprint
+                                != options.expected_manifest_fingerprint
+                            ):
+                                return ToolResult.public_failure(
+                                    ErrorCode.MANIFEST_DRIFT
+                                ), attempt - 1
                         if options.semantics == CallSemantics.MUTATING:
                             await asyncio.wait_for(
                                 session.send_ping(),
                                 timeout=self.connect_timeout_seconds,
                             )
+                        binding_failure = self._manifest_binding_failure(options)
+                        if binding_failure is not None:
+                            return binding_failure, attempt - 1
+                        if on_dispatch is not None and not on_dispatch():
+                            return ToolResult.public_failure(
+                                ErrorCode.CALL_CANCELLED
+                            ), attempt - 1
                         dispatched = True
-                        if on_dispatch is not None:
-                            on_dispatch()
                         if options.semantics == CallSemantics.MUTATING:
                             self._mutation_dispatched = True
                         self._call_count += 1
@@ -1364,8 +1408,8 @@ class RealMcpClient:
                         ), attempt
             except McpError as exc:
                 if not _is_retryable_mcp_error(exc):
-                    return ToolResult.failure(
-                        ErrorCode.MCP_PROTOCOL_ERROR, str(exc)
+                    return ToolResult.public_failure(
+                        ErrorCode.MCP_PROTOCOL_ERROR
                     ), attempt
                 if dispatched and options.semantics == CallSemantics.MUTATING:
                     return self._unknown_mutation(
@@ -1382,7 +1426,7 @@ class RealMcpClient:
                 if attempt < max_attempts:
                     self._retry_count += 1
                     continue
-                return ToolResult.failure(_mcp_failure_code(exc), str(exc)), attempt
+                return ToolResult.public_failure(_mcp_failure_code(exc)), attempt
             except asyncio.CancelledError:
                 if dispatched and options.semantics == CallSemantics.MUTATING:
                     return self._unknown_mutation(
@@ -1412,9 +1456,7 @@ class RealMcpClient:
                 if attempt < max_attempts:
                     self._retry_count += 1
                     continue
-                return ToolResult.failure(
-                    ErrorCode.TIMEOUT, "Fusion MCP read timed out"
-                ), attempt
+                return ToolResult.public_failure(ErrorCode.TIMEOUT), attempt
             except Exception as exc:
                 if dispatched and options.semantics == CallSemantics.MUTATING:
                     return self._unknown_mutation(
@@ -1432,9 +1474,7 @@ class RealMcpClient:
                     self._retry_count += 1
                     continue
                 return self._connection_failure(exc), attempt
-        return ToolResult.failure(
-            ErrorCode.CONNECTION_LOST, "legacy Fusion MCP call failed"
-        ), max_attempts
+        return ToolResult.public_failure(ErrorCode.CONNECTION_LOST), max_attempts
 
     async def _command_call(
         self,
@@ -1442,17 +1482,43 @@ class RealMcpClient:
         arguments: dict[str, Any],
         options: McpCallOptions,
         *,
-        on_dispatch: Callable[[], None] | None = None,
+        on_dispatch: Callable[[], bool] | None = None,
     ) -> tuple[ToolResult, int]:
+        binding_failure = self._manifest_binding_failure(options)
+        if binding_failure is not None:
+            return binding_failure, 0
         max_attempts = 2 if self._can_retry_after_dispatch(options) else 1
         for attempt in range(1, max_attempts + 1):
+            dispatched = False
             # subprocess.run either returns a complete JSON response or raises;
             # once launched, a mutating command has an unknown outcome on any
             # timeout/transport failure and therefore is never replayed.
-            dispatched = True
-            if on_dispatch is not None:
-                on_dispatch()
             try:
+                expected = options.expected_manifest_fingerprint
+                if expected is not None:
+                    manifest_payload = await self._command_jsonrpc_async(
+                        "tools/list",
+                        {},
+                        min(
+                            options.timeout_seconds or self.read_timeout_seconds,
+                            self.read_timeout_seconds,
+                        ),
+                    )
+                    try:
+                        observed_manifest = _manifest_from_payload(manifest_payload)
+                    except Exception:
+                        return ToolResult.public_failure(
+                            ErrorCode.MCP_PROTOCOL_ERROR
+                        ), attempt - 1
+                    if observed_manifest.fingerprint != expected:
+                        return ToolResult.public_failure(
+                            ErrorCode.MANIFEST_DRIFT
+                        ), attempt - 1
+                if on_dispatch is not None and not on_dispatch():
+                    return ToolResult.public_failure(
+                        ErrorCode.CALL_CANCELLED
+                    ), attempt - 1
+                dispatched = True
                 if options.semantics == CallSemantics.MUTATING:
                     self._mutation_dispatched = True
                 self._call_count += 1
@@ -1471,25 +1537,27 @@ class RealMcpClient:
                         return self._unknown_mutation(
                             f"command mutation outcome unknown: {payload['error']}"
                         ), attempt
-                    return ToolResult.failure(
-                        ErrorCode.MCP_PROTOCOL_ERROR, str(payload["error"])
+                    return ToolResult.public_failure(
+                        ErrorCode.MCP_PROTOCOL_ERROR
                     ), attempt
                 result = payload.get("result", payload)
                 if not isinstance(result, dict):
-                    return ToolResult.failure(
-                        ErrorCode.MCP_PROTOCOL_ERROR, "invalid command result"
+                    return ToolResult.public_failure(
+                        ErrorCode.MCP_PROTOCOL_ERROR
                     ), attempt
                 return ToolResult.from_mcp(result), attempt
             except asyncio.CancelledError:
-                if options.semantics == CallSemantics.MUTATING:
+                if dispatched and options.semantics == CallSemantics.MUTATING:
                     return self._unknown_mutation(
                         "command mutation cancelled after dispatch"
                     ), attempt
-                self._set_cooldown("command read cancelled after dispatch")
-                return self._nonreplayable_read_failure(
-                    ErrorCode.CALL_CANCELLED,
-                    "command read cancelled after dispatch; native work may still be running",
-                ), attempt
+                if dispatched:
+                    self._set_cooldown("command read cancelled after dispatch")
+                    return self._nonreplayable_read_failure(
+                        ErrorCode.CALL_CANCELLED,
+                        "command read cancelled after dispatch; native work may still be running",
+                    ), attempt
+                raise
             except Exception as exc:
                 if dispatched and options.semantics == CallSemantics.MUTATING:
                     return self._unknown_mutation(
@@ -1512,9 +1580,7 @@ class RealMcpClient:
                     self._retry_count += 1
                     continue
                 return self._connection_failure(exc), attempt
-        return ToolResult.failure(
-            ErrorCode.CONNECTION_LOST, "command Fusion MCP call failed"
-        ), max_attempts
+        return ToolResult.public_failure(ErrorCode.CONNECTION_LOST), max_attempts
 
     def _resolve_options(
         self, name: str, options: McpCallOptions | None
@@ -1527,10 +1593,12 @@ class RealMcpClient:
         if options is None:
             if default_semantics == CallSemantics.READ_ONLY:
                 return McpCallOptions.for_read(
-                    timeout_seconds=self.read_timeout_seconds
+                    timeout_seconds=self.read_timeout_seconds,
+                    expected_manifest_fingerprint=self._accepted_fingerprint,
                 )
             return McpCallOptions.for_mutation(
-                timeout_seconds=self.mutation_timeout_seconds
+                timeout_seconds=self.mutation_timeout_seconds,
+                expected_manifest_fingerprint=self._accepted_fingerprint,
             )
         # Any native tool that is mutating-by-default can never opt itself into
         # replay. Only the audited internal execute templates carry the marker
@@ -1545,32 +1613,43 @@ class RealMcpClient:
                     options.timeout_seconds or 0.0, self.mutation_timeout_seconds
                 ),
                 operation_id=options.operation_id,
+                expected_manifest_fingerprint=(
+                    options.expected_manifest_fingerprint or self._accepted_fingerprint
+                ),
             )
         replay_policy = options.replay_policy
         if options.semantics == CallSemantics.MUTATING or options.trusted_internal_read:
             replay_policy = ReplayPolicy.BEFORE_DISPATCH_ONLY
-        if options.timeout_seconds is None:
+        timeout = options.timeout_seconds
+        if timeout is None:
             timeout = (
                 self.read_timeout_seconds
                 if options.semantics == CallSemantics.READ_ONLY
                 else self.mutation_timeout_seconds
             )
-            return McpCallOptions(
-                options.semantics,
-                timeout,
-                options.operation_id,
-                trusted_internal_read=options.trusted_internal_read,
-                replay_policy=replay_policy,
-            )
-        if replay_policy != options.replay_policy:
-            return McpCallOptions(
-                options.semantics,
-                options.timeout_seconds,
-                options.operation_id,
-                trusted_internal_read=options.trusted_internal_read,
-                replay_policy=replay_policy,
-            )
-        return options
+        return replace(
+            options,
+            timeout_seconds=timeout,
+            replay_policy=replay_policy,
+            expected_manifest_fingerprint=(
+                options.expected_manifest_fingerprint or self._accepted_fingerprint
+            ),
+        )
+
+    def _manifest_binding_failure(self, options: McpCallOptions) -> ToolResult | None:
+        """Reject drift or a request-local manifest mismatch before dispatch."""
+
+        if self._manifest_drift:
+            return ToolResult.public_failure(ErrorCode.MANIFEST_DRIFT)
+        expected = options.expected_manifest_fingerprint
+        current = (
+            self._manifest.fingerprint
+            if self._manifest is not None
+            else self._accepted_fingerprint
+        )
+        if expected is not None and current is not None and expected != current:
+            return ToolResult.public_failure(ErrorCode.MANIFEST_DRIFT)
+        return None
 
     def _persist_manifest(self, manifest: ToolManifest) -> None:
         if self.manifest_store is None:
@@ -1608,17 +1687,17 @@ class RealMcpClient:
 
     def _connection_failure(self, exc: Exception) -> ToolResult:
         if isinstance(exc, RealMcpNotConfigured):
-            return ToolResult.failure(ErrorCode.CONNECTION_UNAVAILABLE, str(exc))
+            return ToolResult.public_failure(ErrorCode.CONNECTION_UNAVAILABLE)
         code = (
             ErrorCode.CONNECTION_UNAVAILABLE
             if self.connection_generation == 0
             else ErrorCode.CONNECTION_LOST
         )
-        return ToolResult.failure(code, f"{type(exc).__name__}: {exc}")
+        return ToolResult.public_failure(code)
 
     @staticmethod
-    def _unknown_mutation(message: str) -> ToolResult:
-        return ToolResult.failure(ErrorCode.MUTATION_OUTCOME_UNKNOWN, message)
+    def _unknown_mutation(_message: str) -> ToolResult:
+        return ToolResult.public_failure(ErrorCode.MUTATION_OUTCOME_UNKNOWN)
 
     def _trace_tool_call(
         self,
@@ -1795,6 +1874,7 @@ class RealMcpClient:
             timeout=timeout,
             auth=auth,
             follow_redirects=False,
+            trust_env=False,
             event_hooks={"request": [revalidate_before_request]},
         )
 

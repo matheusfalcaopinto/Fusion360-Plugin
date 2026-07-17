@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -474,7 +475,8 @@ def canonical_snapshot_fingerprint(snapshot: dict[str, Any]) -> str | None:
         "counts_exact": snapshot.get("counts_exact"),
         "truncated": snapshot.get("truncated"),
     }
-    return snapshot_hash(payload)
+    encoded = repr(_sorted_jsonish(payload)).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def bind_safe_change_targets(
@@ -572,6 +574,33 @@ def bind_safe_change_targets(
                 }
             )
             continue
+        match = matches[0]
+        stable_token = str(
+            match.get("entity_token") or match.get("token") or ""
+        ).strip()
+        binding_fingerprint = str(match.get("binding_fingerprint") or "").strip()
+        binding_facts = (
+            match.get("visible"),
+            match.get("is_root"),
+            match.get("is_referenced"),
+            match.get("is_imported"),
+            match.get("shared_definition"),
+        )
+        if (
+            not stable_token
+            or not binding_fingerprint
+            or not all(isinstance(value, bool) for value in binding_facts)
+        ):
+            errors.append(
+                {
+                    "target_index": index,
+                    "kind": normalized_kind,
+                    "match_count": 1,
+                    "reason": "stable_target_binding_required",
+                }
+            )
+            continue
+        identifier = stable_token
         entity_key = (normalized_kind, identifier)
         if entity_key in seen_entities:
             errors.append(
@@ -584,7 +613,6 @@ def bind_safe_change_targets(
             )
             continue
         seen_entities.add(entity_key)
-        match = matches[0]
         bindings.append(
             {
                 "target_index": index,
@@ -744,8 +772,13 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
         for key in ("visible_occurrences", "visible_bodies", "visible_components")
         if int(after_counts.get(key, 0)) < int(before_counts.get(key, 0))
     }
-    bbox_shrank = _bbox_shrank(
-        before_view.get("visible_body_bbox_mm"), after_view.get("visible_body_bbox_mm")
+    before_bbox = before_view.get("visible_body_bbox_mm")
+    after_bbox = after_view.get("visible_body_bbox_mm")
+    numeric_evidence_valid = _valid_bbox_evidence(before_bbox) and _valid_bbox_evidence(
+        after_bbox
+    )
+    bbox_shrank = (
+        _bbox_shrank(before_bbox, after_bbox) if numeric_evidence_valid else False
     )
     negative_impact = bool(
         missing_occurrences
@@ -754,11 +787,15 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
         or count_regressions
         or bbox_shrank
     )
-    globally_complete = _complete_global_snapshot(before) and _complete_global_snapshot(
-        after
+    globally_complete = (
+        numeric_evidence_valid
+        and _complete_global_snapshot(before)
+        and _complete_global_snapshot(after)
     )
     drift_conclusion = (
-        "drift_detected"
+        "incomplete_invalid_numeric_evidence"
+        if not numeric_evidence_valid
+        else "drift_detected"
         if negative_impact
         else "no_drift_in_complete_global_fingerprint"
         if globally_complete
@@ -766,6 +803,7 @@ def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
     )
     return {
         "negative_impact": negative_impact,
+        "numeric_evidence_valid": numeric_evidence_valid,
         "drift_conclusion": drift_conclusion,
         "global_fingerprint_complete": globally_complete,
         "visible_occurrences_missing": missing_occurrences,
@@ -884,6 +922,24 @@ def _bbox_shrank(before: Any, after: Any) -> bool:
     return any(
         float(after_value) + 0.01 < float(before_value)
         for before_value, after_value in zip(before_size, after_size, strict=False)
+    )
+
+
+def _valid_bbox_evidence(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    size = value.get("size_mm")
+    return bool(
+        isinstance(size, list)
+        and len(size) == 3
+        and all(
+            not isinstance(item, bool)
+            and isinstance(item, int | float)
+            and math.isfinite(float(item))
+            for item in size
+        )
     )
 
 

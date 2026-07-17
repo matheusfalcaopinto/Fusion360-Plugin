@@ -16,7 +16,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -51,25 +65,34 @@ def run(_context: str):
         raise RuntimeError("B02 oracle requires an active Fusion design")
 
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     bodies = _items(root.bRepBodies)
     body = bodies[0] if len(bodies) == 1 else None
     checks = []
 
     def check(check_id, passed, expected, observed, evidence=None):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-            "evidence": evidence or {},
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+                "evidence": evidence or {},
+            }
+        )
 
-    check("document.marked_unsaved", bool(marker) and document.dataFile is None, True, {
-        "marker": marker,
-        "saved": document.dataFile is not None,
-    })
+    check(
+        "document.marked_unsaved",
+        bool(marker) and document.dataFile is None,
+        True,
+        {
+            "marker": marker,
+            "saved": document.dataFile is not None,
+        },
+    )
     check("topology.body_count", len(bodies) == 1, 1, len(bodies))
     check(
         "topology.single_solid_lump",
@@ -108,7 +131,9 @@ def run(_context: str):
     for name, expected in expected_parameters.items():
         actual = parameter_values.get(name, {}).get("value")
         if not _close(actual, expected, 0.0001):
-            parameter_failures.append({"name": name, "expected": expected, "actual": actual})
+            parameter_failures.append(
+                {"name": name, "expected": expected, "actual": actual}
+            )
     check(
         "parameters.exact_values",
         len(parameter_values) == 17 and not parameter_failures,
@@ -129,7 +154,8 @@ def run(_context: str):
     ]
     check(
         "sketches.valid_and_constrained",
-        len(sketches) == 5 and all(item["valid"] and item["fully_constrained"] for item in sketch_data),
+        len(sketches) == 5
+        and all(item["valid"] and item["fully_constrained"] for item in sketch_data),
         {"count": 5, "fully_constrained": 5},
         sketch_data,
     )
@@ -152,7 +178,8 @@ def run(_context: str):
     ]
     check(
         "features.healthy",
-        len(features) >= 9 and all(item["valid"] and not item["message"] for item in feature_data),
+        len(features) >= 9
+        and all(item["valid"] and not item["message"] for item in feature_data),
         {"minimum": 9, "errors": 0},
         feature_data,
     )
@@ -181,8 +208,7 @@ def run(_context: str):
             "outside": ([61.0, 0.0, 20.0], "outside"),
         }
         probe_observed = {
-            name: _point_state(body, spec[0])
-            for name, spec in probe_specs.items()
+            name: _point_state(body, spec[0]) for name, spec in probe_specs.items()
         }
         check(
             "geometry.open_top_floor_and_walls",
@@ -194,14 +220,19 @@ def run(_context: str):
         boss_positions = [(-50.0, -30.0), (50.0, -30.0), (-50.0, 30.0), (50.0, 30.0)]
         boss_probes = []
         for center_x, center_y in boss_positions:
-            boss_probes.append({
-                "center": [center_x, center_y],
-                "hole": _point_state(body, [center_x, center_y, 10.0]),
-                "annulus": _point_state(body, [center_x + 3.0, center_y, 10.0]),
-            })
+            boss_probes.append(
+                {
+                    "center": [center_x, center_y],
+                    "hole": _point_state(body, [center_x, center_y, 10.0]),
+                    "annulus": _point_state(body, [center_x + 3.0, center_y, 10.0]),
+                }
+            )
         check(
             "bosses.connected_and_hollow",
-            all(item["hole"] == "outside" and item["annulus"] == "inside" for item in boss_probes),
+            all(
+                item["hole"] == "outside" and item["annulus"] == "inside"
+                for item in boss_probes
+            ),
             {"count": 4, "hole": "outside", "annulus": "inside"},
             boss_probes,
         )
@@ -209,29 +240,48 @@ def run(_context: str):
         cylinders = []
         for face in _items(body.faces):
             geometry = face.geometry
-            if geometry is None or geometry.objectType != adsk.core.Cylinder.classType():
+            if (
+                geometry is None
+                or geometry.objectType != adsk.core.Cylinder.classType()
+            ):
                 continue
             axis = geometry.axis
             origin = geometry.origin
             face_box = face.boundingBox
-            cylinders.append({
-                "radius_mm": geometry.radius * 10.0,
-                "origin_mm": [origin.x * 10.0, origin.y * 10.0, origin.z * 10.0],
-                "axis": [axis.x, axis.y, axis.z],
-                "bbox_min_mm": [face_box.minPoint.x * 10.0, face_box.minPoint.y * 10.0, face_box.minPoint.z * 10.0],
-                "bbox_max_mm": [face_box.maxPoint.x * 10.0, face_box.maxPoint.y * 10.0, face_box.maxPoint.z * 10.0],
-            })
+            cylinders.append(
+                {
+                    "radius_mm": geometry.radius * 10.0,
+                    "origin_mm": [origin.x * 10.0, origin.y * 10.0, origin.z * 10.0],
+                    "axis": [axis.x, axis.y, axis.z],
+                    "bbox_min_mm": [
+                        face_box.minPoint.x * 10.0,
+                        face_box.minPoint.y * 10.0,
+                        face_box.minPoint.z * 10.0,
+                    ],
+                    "bbox_max_mm": [
+                        face_box.maxPoint.x * 10.0,
+                        face_box.maxPoint.y * 10.0,
+                        face_box.maxPoint.z * 10.0,
+                    ],
+                }
+            )
         boss_outer = [
-            item for item in cylinders
-            if _close(item["radius_mm"], 4.0, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in cylinders
+            if _close(item["radius_mm"], 4.0, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         boss_holes = [
-            item for item in cylinders
-            if _close(item["radius_mm"], 1.6, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in cylinders
+            if _close(item["radius_mm"], 1.6, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         vent_ends = [
-            item for item in cylinders
-            if _close(item["radius_mm"], 1.5, 0.05) and math.fabs(item["axis"][1]) > 0.99
+            item
+            for item in cylinders
+            if _close(item["radius_mm"], 1.5, 0.05)
+            and math.fabs(item["axis"][1]) > 0.99
         ]
         check(
             "bosses.cylindrical_signature",
@@ -244,7 +294,10 @@ def run(_context: str):
         vent_z = sorted(set(round(item["origin_mm"][2], 2) for item in vent_ends))
         front_count = sum(1 for item in vent_ends if item["bbox_max_mm"][1] < 0)
         rear_count = sum(1 for item in vent_ends if item["bbox_min_mm"][1] > 0)
-        consecutive_x = [round(vent_x[index + 1] - vent_x[index], 2) for index in range(len(vent_x) - 1)]
+        consecutive_x = [
+            round(vent_x[index + 1] - vent_x[index], 2)
+            for index in range(len(vent_x) - 1)
+        ]
         check(
             "vents.count_lattice_and_length",
             len(vent_ends) == 60
@@ -272,7 +325,9 @@ def run(_context: str):
             },
         )
 
-        vent_pattern = root.features.rectangularPatternFeatures.itemByName("RP03_Front_Vent_5x3")
+        vent_pattern = root.features.rectangularPatternFeatures.itemByName(
+            "RP03_Front_Vent_5x3"
+        )
         pattern_data = None
         if vent_pattern is not None:
             pattern_data = {
@@ -325,6 +380,12 @@ def run(_context: str):
             },
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

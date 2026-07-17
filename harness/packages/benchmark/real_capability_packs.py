@@ -18,10 +18,11 @@ import json
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from agent_core.authority import HostOutputDisabledError, REAL_HOST_OUTPUT_POLICY
 from agent_core.capability_executor import CapabilityExecutionResult
 from benchmark.filesystem import (
     atomic_write_text,
@@ -72,9 +73,6 @@ NIGHTLY_PACK_CAPABILITIES = frozenset(
         "rigid_groups",
         "physical_properties",
         "interference",
-        "import_step",
-        "export_step",
-        "export_stl",
     }
 )
 
@@ -88,6 +86,7 @@ class CapabilityPackCase:
     target_capabilities: tuple[str, ...]
     spec: CadSpecV2
     oracle_expectations: dict[str, Any]
+    execution_expectation: str = "success"
 
 
 def _operation(
@@ -151,6 +150,8 @@ def _case(
     intent: str,
     operations: list[dict[str, Any]],
     oracle_expectations: dict[str, Any],
+    *,
+    execution_expectation: str = "success",
 ) -> CapabilityPackCase:
     value = CapabilityPackCase(
         id=case_id,
@@ -158,6 +159,7 @@ def _case(
         target_capabilities=tuple(sorted(set(target_capabilities))),
         spec=_contract(case_id, intent, operations, oracle_expectations),
         oracle_expectations=oracle_expectations,
+        execution_expectation=execution_expectation,
     )
     missing = set(value.target_capabilities) - value.spec.capabilities
     if missing:
@@ -189,8 +191,7 @@ def build_capability_pack_cases(
 
     root = Path(artifact_root).resolve()
     io_root = root / "io"
-    step_path = str((io_root / "capability-roundtrip.step").resolve())
-    stl_path = str((io_root / "capability-body.stl").resolve())
+    denied_output_path = str((io_root / "deny-io-output.step").resolve())
 
     cases = [
         _case(
@@ -415,7 +416,7 @@ def build_capability_pack_cases(
         _boolean_case("split"),
         _assembly_case(),
         _analysis_case(),
-        _io_case(step_path, stl_path),
+        _output_denial_case(denied_output_path),
     ]
 
     ids = [case.id for case in cases]
@@ -745,49 +746,24 @@ def _analysis_case() -> CapabilityPackCase:
     )
 
 
-def _io_case(step_path: str, stl_path: str) -> CapabilityPackCase:
-    operations = _base_body_operations("Io", center=("0 mm", "0 mm"))
-    operations.extend(
-        [
-            _operation(
-                "export_roundtrip_step",
-                "io.export",
-                depends_on=[operations[-1]["id"]],
-                target_ref="root",
-                path=step_path,
-                format="step",
-            ),
-            _operation(
-                "export_roundtrip_stl",
-                "io.export",
-                depends_on=["export_roundtrip_step"],
-                target_ref="io_body",
-                path=stl_path,
-                format="stl",
-            ),
-            _operation(
-                "import_roundtrip_step",
-                "io.import",
-                depends_on=["export_roundtrip_stl"],
-                path=step_path,
-                format="step",
-                component_name="imported_roundtrip",
-            ),
-        ]
-    )
+def _output_denial_case(output_path: str) -> CapabilityPackCase:
+    operations = [
+        _operation(
+            "deny_real_output",
+            "io.export",
+            target_ref="root",
+            path=output_path,
+            format="step",
+        )
+    ]
     return _case(
-        "io_step_roundtrip",
-        "import_export",
-        {"import_step", "export_step", "export_stl"},
-        "Export deterministic STEP/STL artifacts and import the generated STEP into the fixture.",
+        "output_deny_io_zero_dispatch",
+        "host_output_deny_io",
+        set(),
+        "Prove that real Fusion host output is denied before transport dispatch.",
         operations,
-        {
-            "components": ["imported_roundtrip"],
-            "bodies": ["io_body"],
-            "features": ["extrude_io_body"],
-            "positive_physical_bodies": ["io_body"],
-            "files": [step_path, stl_path],
-        },
+        {"absent_files": [output_path]},
+        execution_expectation="host_output_denied_zero_dispatch",
     )
 
 
@@ -879,23 +855,20 @@ async def _safe_cleanup(
     )
     active_id = await lifecycle.read_active_document_id()
     open_ids = await lifecycle.list_open_document_ids()
-    evidence = {
+    evidence: dict[str, Any] = {
         "closed_without_save": bool(closed),
         "restored": bool(restored),
-        "active_document_id": active_id,
-        "original_document_id": session.original_document_id,
-        "open_document_ids": list(open_ids),
-        "baseline_open_document_ids": list(baseline_open_ids),
+        "identity_restored": active_id == session.original_document_id,
         "inventory_restored": sorted(open_ids) == sorted(baseline_open_ids),
     }
     evidence["passed"] = bool(
         evidence["closed_without_save"]
         and evidence["restored"]
-        and active_id == session.original_document_id
+        and evidence["identity_restored"]
         and evidence["inventory_restored"]
     )
     if not evidence["passed"]:
-        raise RuntimeError(f"disposable fixture cleanup failed closed: {evidence}")
+        raise RuntimeError("disposable fixture cleanup failed closed")
     return evidence
 
 
@@ -917,6 +890,7 @@ def build_independent_oracle_script(
         separators=(",", ":"),
     )
     return f'''import json
+import math
 import os
 import adsk.core
 import adsk.fusion
@@ -943,19 +917,19 @@ def run(_context: str):
     design = adsk.fusion.Design.cast(app.activeProduct)
     checks = []
 
-    def check(check_id, passed, expected=None, actual=None, error=None):
+    def check(check_id, passed, expected=None, actual=None, failure_code=None):
         value = {{"id": check_id, "passed": bool(passed)}}
         if expected is not None:
             value["expected"] = expected
         if actual is not None:
             value["actual"] = actual
-        if error is not None:
-            value["error"] = error
+        if failure_code is not None:
+            value["failure_code"] = failure_code
         checks.append(value)
 
     if design is None or document is None:
         check("active_fusion_design", False, expected=True, actual=False)
-        print(json.dumps({{"ok": True, "schema_version": "{ORACLE_SCHEMA_VERSION}", "passed": False, "checks": checks}}, sort_keys=True))
+        print(json.dumps({{"ok": True, "schema_version": "{ORACLE_SCHEMA_VERSION}", "passed": False, "checks": checks}}, sort_keys=True, allow_nan=False))
         return
 
     root = design.rootComponent
@@ -963,8 +937,8 @@ def run(_context: str):
     fingerprint_attribute = root.attributes.itemByName(GROUP, "fixture_fingerprint")
     marker_value = marker_attribute.value if marker_attribute is not None else None
     fingerprint_value = fingerprint_attribute.value if fingerprint_attribute is not None else None
-    check("fixture_marker", marker_value == PAYLOAD["marker"], PAYLOAD["marker"], marker_value)
-    check("fixture_fingerprint", fingerprint_value == PAYLOAD["fingerprint"], PAYLOAD["fingerprint"], fingerprint_value)
+    check("fixture_marker", marker_value == PAYLOAD["marker"], True, marker_value == PAYLOAD["marker"])
+    check("fixture_fingerprint", fingerprint_value == PAYLOAD["fingerprint"], True, fingerprint_value == PAYLOAD["fingerprint"])
     check("fixture_unsaved", document.dataFile is None, True, document.dataFile is None)
 
     components = _items(design.allComponents)
@@ -1021,7 +995,7 @@ def run(_context: str):
     for name in expectations.get("positive_physical_bodies") or []:
         matches = _matches(bodies, name)
         actual = None
-        error = None
+        failure_code = None
         try:
             if len(matches) != 1:
                 raise RuntimeError(f"expected one body, found {{len(matches)}}")
@@ -1032,16 +1006,17 @@ def run(_context: str):
                 mass = float(body.physicalProperties.mass)
             except Exception:
                 mass = None
-            actual = {{"volume_cm3": volume, "mass_kg": mass}}
-            passed = volume > 0.0 and (mass is None or mass > 0.0)
-        except Exception as exc:
+            finite = math.isfinite(volume) and (mass is None or math.isfinite(mass))
+            actual = {{"volume_positive": volume > 0.0, "mass_positive": mass is None or mass > 0.0, "finite": finite}}
+            passed = finite and volume > 0.0 and (mass is None or mass > 0.0)
+        except Exception:
             passed = False
-            error = str(exc)
-        check(f"physical_body:{{name}}", passed, {{"volume_cm3_gt": 0}}, actual, error)
+            failure_code = "PHYSICAL_EVIDENCE_UNAVAILABLE"
+        check(f"physical_body:{{name}}", passed, {{"positive_finite": True}}, actual, failure_code)
 
     if "interference_max" in expectations:
         count = None
-        error = None
+        failure_code = None
         try:
             collection = adsk.core.ObjectCollection.create()
             for body in bodies:
@@ -1049,15 +1024,19 @@ def run(_context: str):
             results = design.analyzeInterference(collection) if collection.count >= 2 else None
             count = int(results.count) if results is not None else 0
             passed = count <= int(expectations["interference_max"])
-        except Exception as exc:
+        except Exception:
             passed = False
-            error = str(exc)
-        check("interference", passed, {{"max": expectations["interference_max"]}}, {{"count": count}}, error)
+            failure_code = "INTERFERENCE_EVIDENCE_UNAVAILABLE"
+        check("interference", passed, {{"max": expectations["interference_max"]}}, {{"count": count}}, failure_code)
 
-    for path in expectations.get("files") or []:
+    for index, path in enumerate(expectations.get("files") or []):
         exists = os.path.isfile(path)
         size = os.path.getsize(path) if exists else 0
-        check(f"file:{{path}}", exists and size > 0, {{"exists": True, "bytes_gt": 0}}, {{"exists": exists, "bytes": size}})
+        check(f"file:{{index}}", exists and size > 0, {{"exists": True, "bytes_gt": 0}}, {{"exists": exists, "bytes": size}})
+
+    for index, path in enumerate(expectations.get("absent_files") or []):
+        exists = os.path.exists(path)
+        check(f"absent_file:{{index}}", not exists, {{"exists": False}}, {{"exists": exists}})
 
     passed = bool(checks) and all(item["passed"] for item in checks)
     print(json.dumps({{
@@ -1069,7 +1048,7 @@ def run(_context: str):
         "requirement_ids": ["{REQUIREMENT_ID}"],
         "evidence_source": "independent_programmatic_readback",
         "supplemental_visual": False,
-    }}, sort_keys=True))
+    }}, sort_keys=True, allow_nan=False))
 '''
 
 
@@ -1098,7 +1077,44 @@ async def _run_independent_oracle(
     payload = _decode_script_payload(result, operation_id=operation_id)
     if payload.get("schema_version") != ORACLE_SCHEMA_VERSION:
         raise RuntimeError("independent oracle returned an unsupported schema")
-    return payload
+    return _project_oracle_payload(payload)
+
+
+def _project_oracle_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and shrink provider evidence before it reaches an artifact."""
+
+    checks = payload.get("checks")
+    if payload.get("ok") is not True or not isinstance(checks, list) or not checks:
+        raise RuntimeError("independent oracle evidence is incomplete")
+    projected_checks: list[dict[str, Any]] = []
+    for index, item in enumerate(checks[:512]):
+        if not isinstance(item, dict) or type(item.get("passed")) is not bool:
+            raise RuntimeError("independent oracle check is malformed")
+        check_id = str(item.get("id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", check_id):
+            check_id = f"check_{index:03d}"
+        failure_code = item.get("failure_code")
+        projected: dict[str, Any] = {"id": check_id, "passed": item["passed"]}
+        if isinstance(failure_code, str) and re.fullmatch(
+            r"[A-Z][A-Z0-9_]{2,79}", failure_code
+        ):
+            projected["failure_code"] = failure_code
+        projected_checks.append(projected)
+    passed = payload.get("passed")
+    if type(passed) is not bool or passed != all(
+        item["passed"] for item in projected_checks
+    ):
+        raise RuntimeError("independent oracle aggregate is inconsistent")
+    return {
+        "ok": True,
+        "schema_version": ORACLE_SCHEMA_VERSION,
+        "passed": passed,
+        "checks": projected_checks,
+        "check_count": len(projected_checks),
+        "requirement_ids": [REQUIREMENT_ID],
+        "evidence_source": "independent_programmatic_readback",
+        "supplemental_visual": False,
+    }
 
 
 def _execution_contract(
@@ -1106,15 +1122,13 @@ def _execution_contract(
 ) -> dict[str, Any]:
     failures: list[str] = []
     if result.provider != "autodesk_http":
-        failures.append(f"provider_mismatch:{result.provider}")
+        failures.append("provider_mismatch")
     if not result.success:
         failures.append("executor_reported_failure")
     if result.dry_run:
         failures.append("dry_run_is_not_real_evidence")
     if len(result.transactions) != len(spec.operations):
-        failures.append(
-            f"transaction_count:{len(result.transactions)}!={len(spec.operations)}"
-        )
+        failures.append("transaction_count_mismatch")
     transaction_ids = [
         str(item.get("operation_id") or "") for item in result.transactions
     ]
@@ -1132,7 +1146,7 @@ def _execution_contract(
         for target in operation.target_refs:
             value = measured.get(target) or {}
             if float(value.get("volume_mm3") or 0.0) <= 0.0:
-                failures.append(f"physical_properties_not_positive:{target}")
+                failures.append("physical_properties_not_positive")
     for operation in spec.operations:
         if operation.kind != "analysis.interference":
             continue
@@ -1143,20 +1157,26 @@ def _execution_contract(
 
     return {
         "passed": not failures,
-        "provider": result.provider,
+        "provider_verified": result.provider == "autodesk_http",
         "success": result.success,
         "dry_run": result.dry_run,
         "transaction_count": len(result.transactions),
         "expected_transaction_count": len(spec.operations),
         "required_capabilities": sorted(spec.capabilities),
-        "available_capabilities": list(result.available_capabilities),
+        "available_required_capabilities": sorted(
+            set(result.available_capabilities).intersection(spec.capabilities)
+        ),
         "failures": failures,
     }
 
 
 def _prepare_case_artifacts(case: CapabilityPackCase, artifact_root: Path) -> None:
     root = artifact_root.resolve()
-    for value in case.oracle_expectations.get("files") or []:
+    values = [
+        *(case.oracle_expectations.get("files") or []),
+        *(case.oracle_expectations.get("absent_files") or []),
+    ]
+    for value in values:
         path = Path(value).resolve()
         if not path.is_relative_to(root):
             raise RuntimeError(f"capability pack artifact escapes nightly root: {path}")
@@ -1179,6 +1199,51 @@ def _spec_sha256(spec: CadSpecV2) -> str:
     ).hexdigest()
 
 
+def _transport_call_count(runtime: Any) -> int | None:
+    diagnostics = getattr(runtime, "diagnostics", None)
+    if not callable(diagnostics):
+        return None
+    try:
+        value = diagnostics().get("call_count")
+    except BaseException:
+        return None
+    return value if type(value) is int and value >= 0 else None
+
+
+async def _exercise_output_denial(
+    runtime: FusionAgentRuntime,
+    case: CapabilityPackCase,
+) -> dict[str, Any]:
+    before = _transport_call_count(runtime)
+    denied = False
+    error_code = None
+    try:
+        await runtime.execute_cad_spec_v2(case.spec, mode="real")
+    except HostOutputDisabledError as exc:
+        denied = True
+        error_code = exc.error_code
+    after = _transport_call_count(runtime)
+    delta = after - before if before is not None and after is not None else None
+    absent_files = case.oracle_expectations.get("absent_files") or []
+    files_absent = bool(absent_files) and all(
+        not path_exists(Path(value)) for value in absent_files
+    )
+    passed = bool(
+        denied and error_code == "HOST_OUTPUT_DISABLED" and delta == 0 and files_absent
+    )
+    return {
+        "passed": passed,
+        "policy": REAL_HOST_OUTPUT_POLICY,
+        "error_code": error_code,
+        "transport_call_count_before": before,
+        "transport_call_count_after": after,
+        "transport_dispatch_delta": delta,
+        "checked_absent_file_count": len(absent_files),
+        "files_absent": files_absent,
+        "output_executed": not denied,
+    }
+
+
 async def _run_case(
     runtime: FusionAgentRuntime,
     lifecycle: FusionRuntimeLifecycleBackend,
@@ -1197,8 +1262,9 @@ async def _run_case(
         "group": case.group,
         "target_capabilities": list(case.target_capabilities),
         "spec_sha256": _spec_sha256(case.spec),
-        "trial_id": context.trial_id,
-        "fixture_marker": context.fixture_marker,
+        "trial_identity_sha256": hashlib.sha256(
+            f"{context.trial_id}|{context.fixture_marker}".encode("utf-8")
+        ).hexdigest(),
         "status": "running",
         "execution_attempted": False,
         "executor_completed": False,
@@ -1209,61 +1275,87 @@ async def _run_case(
         session = await lifecycle.prepare_fixture(context)
         identity = await lifecycle.read_fixture_identity(context, session)
         identity_verified = _identity_matches(context, session, identity)
+        identity_material = "|".join(
+            (
+                session.fixture_document_id,
+                session.fixture_marker,
+                session.fixture_fingerprint,
+            )
+        )
         result["fixture"] = {
             "identity_verified": identity_verified,
-            "fixture_document_id": session.fixture_document_id,
-            "fixture_marker": session.fixture_marker,
-            "fixture_fingerprint": session.fixture_fingerprint,
+            "identity_sha256": hashlib.sha256(
+                identity_material.encode("utf-8")
+            ).hexdigest(),
+            "document_bound": bool(session.fixture_document_id),
+            "marker_bound": bool(session.fixture_marker),
+            "fingerprint_bound": bool(session.fixture_fingerprint),
             "unsaved": session.unsaved,
-            "original_document_id": session.original_document_id,
         }
         if not identity_verified:
-            raise RuntimeError(f"disposable fixture identity mismatch: {identity}")
+            raise RuntimeError("disposable fixture identity mismatch")
 
         result["execution_attempted"] = True
-        try:
-            execution = await runtime.execute_cad_spec_v2(case.spec, mode="real")
-        except BaseException:
-            # CapabilityExecutor may have failed before dispatch or after one
-            # of several typed operations.  Without correlated per-operation
-            # transport evidence, the conservative aggregate outcome is
-            # unknown.  Never replay; read back, then destroy the disposable
-            # fixture.
-            result["mutation_outcome"] = "unknown"
-            result["post_failure_readback_attempted"] = True
+        if case.execution_expectation == "host_output_denied_zero_dispatch":
+            result["output_denial"] = await _exercise_output_denial(runtime, case)
+            result["mutation_outcome"] = "not_dispatched"
+            result["oracle"] = await _run_independent_oracle(
+                runtime,
+                case,
+                context,
+                session,
+            )
+            result["status"] = (
+                "passed"
+                if result["output_denial"]["passed"]
+                and result["oracle"].get("passed") is True
+                else "failed"
+            )
+        else:
             try:
-                result["oracle"] = await _run_independent_oracle(
-                    runtime,
-                    case,
-                    context,
-                    session,
-                )
-                result["oracle_context"] = "post_executor_failure_readback"
-            except BaseException as readback_error:
-                result["oracle_error"] = (
-                    f"{type(readback_error).__name__}: {readback_error}"
-                )
-            raise
-        result["executor_completed"] = True
-        execution_contract = _execution_contract(execution, case.spec)
-        result["execution"] = asdict(execution)
-        result["execution_contract"] = execution_contract
-        result["oracle"] = await _run_independent_oracle(
-            runtime,
-            case,
-            context,
-            session,
-        )
-        result["mutation_outcome"] = (
-            "observed_in_independent_readback"
-            if result["oracle"].get("passed") is True
-            else "executor_completed_but_readback_failed"
-        )
-        result["status"] = (
-            "passed"
-            if execution_contract["passed"] and result["oracle"].get("passed") is True
-            else "failed"
-        )
+                execution = await runtime.execute_cad_spec_v2(case.spec, mode="real")
+            except BaseException:
+                # CapabilityExecutor may have failed before dispatch or after one
+                # of several typed operations.  Without correlated per-operation
+                # transport evidence, the conservative aggregate outcome is
+                # unknown.  Never replay; read back, then destroy the disposable
+                # fixture.
+                result["mutation_outcome"] = "unknown"
+                result["post_failure_readback_attempted"] = True
+                try:
+                    result["oracle"] = await _run_independent_oracle(
+                        runtime,
+                        case,
+                        context,
+                        session,
+                    )
+                    result["oracle_context"] = "post_executor_failure_readback"
+                except BaseException:
+                    result["oracle_error"] = _public_error(
+                        "INDEPENDENT_ORACLE_FAILED",
+                        correlation_material=f"{run_id}:{case.id}:post-failure-oracle",
+                    )
+                raise
+            result["executor_completed"] = True
+            execution_contract = _execution_contract(execution, case.spec)
+            result["execution_contract"] = execution_contract
+            result["oracle"] = await _run_independent_oracle(
+                runtime,
+                case,
+                context,
+                session,
+            )
+            result["mutation_outcome"] = (
+                "observed_in_independent_readback"
+                if result["oracle"].get("passed") is True
+                else "executor_completed_but_readback_failed"
+            )
+            result["status"] = (
+                "passed"
+                if execution_contract["passed"]
+                and result["oracle"].get("passed") is True
+                else "failed"
+            )
         if result["status"] != "passed":
             raise RuntimeError(
                 "capability pack did not satisfy executor and independent-oracle contracts"
@@ -1271,7 +1363,10 @@ async def _run_case(
     except BaseException as exc:
         failure = exc
         result["status"] = "failed"
-        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["error"] = _public_error(
+            "CAPABILITY_PACK_CASE_FAILED",
+            correlation_material=f"{run_id}:{case.id}:case",
+        )
     finally:
         if session is not None:
             try:
@@ -1285,7 +1380,10 @@ async def _run_case(
             except BaseException as cleanup_error:
                 result["cleanup"] = {
                     "passed": False,
-                    "error": f"{type(cleanup_error).__name__}: {cleanup_error}",
+                    "error": _public_error(
+                        "FIXTURE_CLEANUP_FAILED",
+                        correlation_material=f"{run_id}:{case.id}:cleanup",
+                    ),
                 }
                 result["status"] = "failed"
                 result["cleanup_error"] = result["cleanup"]["error"]
@@ -1310,17 +1408,18 @@ async def _restoration_evidence(
         )
         return {
             "passed": passed,
-            "active_document_id": active_id,
-            "original_document_id": original_document_id,
-            "open_document_ids": open_ids,
-            "original_open_document_ids": original_open_ids,
+            "identity_restored": active_id == original_document_id,
+            "inventory_restored": sorted(open_ids) == sorted(original_open_ids),
         }
-    except BaseException as exc:
+    except BaseException:
         return {
             "passed": False,
-            "error": f"{type(exc).__name__}: {exc}",
-            "original_document_id": original_document_id,
-            "original_open_document_ids": original_open_ids,
+            "identity_restored": False,
+            "inventory_restored": False,
+            "error": _public_error(
+                "RESTORATION_READBACK_FAILED",
+                correlation_material="capability-packs:restoration",
+            ),
         }
 
 
@@ -1350,8 +1449,41 @@ def _group_summaries(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _write_result(path: Path, value: dict[str, Any]) -> None:
     atomic_write_text(
         path,
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
     )
+
+
+def _public_error(code: str, *, correlation_material: str) -> dict[str, Any]:
+    return {
+        "code": code,
+        "generic_message": "The capability-pack operation failed. Inspect private local diagnostics.",
+        "correlation_id": hashlib.sha256(
+            correlation_material.encode("utf-8")
+        ).hexdigest()[:16],
+        "retryable": False,
+    }
+
+
+def _public_environment(environment: dict[str, str]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key, value in sorted(environment.items()):
+        safe_key = str(key)
+        safe_value = str(value)
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", safe_key):
+            continue
+        projected[safe_key] = (
+            safe_value
+            if re.fullmatch(r"[A-Za-z0-9_.:+-]{1,160}", safe_value)
+            else {"redacted": True}
+        )
+    return projected
 
 
 async def run_capability_pack_suite(
@@ -1375,7 +1507,7 @@ async def run_capability_pack_suite(
         "fixture_policy": "disposable_unsaved_only",
         "save_user_documents": False,
         "screenshot_role": "supplemental_visual_only",
-        "environment": dict(environment or {}),
+        "environment": _public_environment(dict(environment or {})),
         "requested_case_ids": [case.id for case in cases],
         "target_capabilities": sorted(
             {capability for case in cases for capability in case.target_capabilities}
@@ -1387,11 +1519,12 @@ async def run_capability_pack_suite(
     try:
         original_document_id = await lifecycle.read_active_document_id()
         original_open_ids = await lifecycle.list_open_document_ids()
-        suite["original_document_id"] = original_document_id
-        suite["original_open_document_ids"] = original_open_ids
-    except BaseException as exc:
+    except BaseException:
         suite["status"] = "failed"
-        suite["error"] = f"{type(exc).__name__}: {exc}"
+        suite["error"] = _public_error(
+            "RESTORATION_BASELINE_FAILED",
+            correlation_material=f"{run_id}:baseline",
+        )
         suite["restoration"] = {"passed": False, "reason": "baseline_not_captured"}
         _write_result(output_path, suite)
         return suite

@@ -3,6 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from agent_core.authority import (
+    cad_graph_target_producers,
+    cad_operation_produced_targets,
+    cad_operation_target_requirements,
+)
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
 from cad_spec.v2 import (
     CadSpecV2,
@@ -92,6 +97,78 @@ def test_v2_typed_references_reject_non_wire_or_control_character_values(
         )
 
 
+@pytest.mark.parametrize("modifier", ["join", "cut", "intersect"])
+@pytest.mark.parametrize(
+    ("kind", "fields"),
+    [
+        (
+            "feature.extrude",
+            {"profile_ref": "profile", "distance": "5 mm"},
+        ),
+        (
+            "feature.revolve",
+            {"profile_ref": "profile", "axis_ref": "x_axis"},
+        ),
+        (
+            "feature.sweep",
+            {"profile_ref": "profile", "path_ref": "path/line#0"},
+        ),
+        (
+            "feature.loft",
+            {"profile_refs": ["profile_a", "profile_b"]},
+        ),
+    ],
+)
+def test_non_new_feature_operations_require_bound_target_and_are_not_producers(
+    modifier: str,
+    kind: str,
+    fields: dict[str, object],
+) -> None:
+    payload = {
+        "id": "modify_body",
+        "kind": kind,
+        "component_ref": "fixture",
+        "operation": modifier,
+        "result_name": "fixture_body",
+        **fields,
+    }
+
+    with pytest.raises(ValidationError, match="requires target_body_ref"):
+        OPERATION_ADAPTER.validate_python(payload)
+    with pytest.raises(ValidationError, match="must equal target_body_ref"):
+        OPERATION_ADAPTER.validate_python(
+            {**payload, "target_body_ref": "different_body"}
+        )
+
+    operation = OPERATION_ADAPTER.validate_python(
+        {**payload, "target_body_ref": "fixture_body"}
+    )
+    assert ("body", "fixture_body") in cad_operation_target_requirements(operation)
+    assert cad_operation_produced_targets(operation) == ()
+
+
+def test_new_body_feature_rejects_target_and_remains_the_unique_producer() -> None:
+    payload = {
+        "id": "create_body",
+        "kind": "feature.extrude",
+        "component_ref": "fixture",
+        "profile_ref": "profile",
+        "distance": "5 mm",
+        "operation": "new_body",
+        "result_name": "fixture_body",
+    }
+    operation = OPERATION_ADAPTER.validate_python(payload)
+
+    assert cad_operation_produced_targets(operation) == (
+        ("body", "fixture_body"),
+        ("geometry", "fixture_body"),
+    )
+    with pytest.raises(ValidationError, match="cannot declare target_body_ref"):
+        OPERATION_ADAPTER.validate_python(
+            {**payload, "target_body_ref": "fixture_body"}
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "prompt",
@@ -130,6 +207,18 @@ async def test_plate_hole_prompts_expand_to_four_bounded_typed_cuts_without_disp
     }
     assert len(cuts) == 4
     assert {cut.result_name for cut in cuts} == {"plate_body"}
+    assert {cut.target_body_ref for cut in cuts} == {"plate_body"}
+    base_extrude = next(
+        operation
+        for operation in spec.operations
+        if isinstance(operation, ExtrudeOperation)
+        and operation.operation == "new_body"
+        and operation.result_name == "plate_body"
+    )
+    producer_map = cad_graph_target_producers(spec)
+    assert all(
+        producer_map[cut.id][("body", "plate_body")] == base_extrude.id for cut in cuts
+    )
     assert spec.requirements[0].oracle == "independent"
 
     client = _NoDispatchClient()
@@ -158,6 +247,16 @@ async def test_spacer_prompt_expands_center_bore_and_preflights_without_dispatch
     ]
     assert len(cuts) == 1
     assert cuts[0].result_name == "spacer_body"
+    assert cuts[0].target_body_ref == "spacer_body"
+    base_extrude = next(
+        operation
+        for operation in spec.operations
+        if isinstance(operation, ExtrudeOperation)
+        and operation.operation == "new_body"
+        and operation.result_name == "spacer_body"
+    )
+    producer_map = cad_graph_target_producers(spec)
+    assert producer_map[cuts[0].id][("body", "spacer_body")] == base_extrude.id
     assert tuple(circles[-1].center) == ("0 mm", "0 mm")
     assert circles[-1].diameter == "inner_diameter"
 

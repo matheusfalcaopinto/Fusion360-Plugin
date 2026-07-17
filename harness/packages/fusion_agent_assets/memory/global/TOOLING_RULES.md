@@ -14,7 +14,7 @@
 - Each tool call is logged.
 - Tool result schemas are validated when available.
 - Timeouts are mandatory.
-- Programmatic reads are primary evidence; screenshots are secondary and must
-  report `evidence_quality=verified_file`.
+- Programmatic reads are the real-session evidence. Screenshot receipts are
+  mock/dry-run compatibility only; real capture/export is `deny_io` in 0.4.1.
 - `plan_spec` is only for known CAD creation/modeling, not hub inventory,
   audit, reorg, cleanup, delete, or read-only diagnosis.

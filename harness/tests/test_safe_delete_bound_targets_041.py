@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,9 @@ class _MutationAdapterCanary:
         options: McpCallOptions | None = None,
     ) -> ToolResult:
         self.calls.append((tool_name, arguments, options))
+        script = str(arguments["object"]["script"])
+        match = re.search(r'"operation_binding": "([0-9a-f]{64})"', script)
+        assert match is not None
         return ToolResult.success(
             message=json.dumps(
                 {
@@ -144,10 +148,15 @@ class _MutationAdapterCanary:
                             "kind": "body",
                             "component": "assembly",
                             "name": "neutral_current",
+                            "entity_identity_digest": hashlib.sha256(
+                                b"body-token"
+                            ).hexdigest(),
+                            "binding_fingerprint": _body()["binding_fingerprint"],
                         }
                     ],
                     "deleted_count": 1,
                     "skipped": [],
+                    "operation_binding": match.group(1),
                 }
             ),
             meta={
@@ -266,6 +275,7 @@ async def test_delete_rename_between_preview_and_apply_is_stale_zero_dispatch(
     )
     assert preview["blocked"] is False
     assert preview["classification"]["allow_apply"] is True
+    assert len(str(preview["preview_digest"])) == 64
 
     result = await controller.safe_change_apply(
         project="can-014",
@@ -340,6 +350,7 @@ async def test_safe_bound_target_dispatches_exactly_once_end_to_end(
             "binding_fingerprint": body["binding_fingerprint"],
         }
     ]
+    assert len(str(preview["preview_digest"])) == 64
 
     result = await controller.safe_change_apply(
         project="can-014",
@@ -358,6 +369,9 @@ async def test_safe_bound_target_dispatches_exactly_once_end_to_end(
     script = str(arguments["object"]["script"])
     assert "body-token" in script
     assert str(body["binding_fingerprint"]) in script
+    assert str(preview["preview_digest"]) in script
+    assert str(preview["state_fingerprint"]) in script
+    assert str(preview["document_identity"]["stable_id"]) in script
     assert "neutral_current" in script
     assert "neutral_requested" not in script
     assert result["preview_status"] == "consumed"

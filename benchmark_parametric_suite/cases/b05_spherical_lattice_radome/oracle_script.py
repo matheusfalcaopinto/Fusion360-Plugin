@@ -9,7 +9,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -45,10 +59,12 @@ def _bolt_cylinders(body):
             continue
         if math.fabs(geometry.axis.z) < 0.99:
             continue
-        result.append({
-            "radius_mm": geometry.radius * 10.0,
-            "center_mm": [geometry.origin.x * 10.0, geometry.origin.y * 10.0],
-        })
+        result.append(
+            {
+                "radius_mm": geometry.radius * 10.0,
+                "center_mm": [geometry.origin.x * 10.0, geometry.origin.y * 10.0],
+            }
+        )
     return result
 
 
@@ -59,18 +75,22 @@ def run(_context: str):
     if document is None or design is None:
         raise RuntimeError("B05 oracle requires an active Fusion design")
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed, evidence=None):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-            "evidence": evidence or {},
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+                "evidence": evidence or {},
+            }
+        )
 
     check(
         "document.marked_unsaved",
@@ -82,7 +102,10 @@ def run(_context: str):
         "assembly.root_only",
         design.allComponents.count == 1 and root.allOccurrences.count == 0,
         {"components": 1, "occurrences": 0},
-        {"components": design.allComponents.count, "occurrences": root.allOccurrences.count},
+        {
+            "components": design.allComponents.count,
+            "occurrences": root.allOccurrences.count,
+        },
     )
 
     parameters = {
@@ -112,7 +135,9 @@ def run(_context: str):
     for name, expected in expected_parameters.items():
         actual = parameters.get(name, {}).get("value")
         if not _close(actual, expected, 0.0001):
-            parameter_failures.append({"name": name, "expected": expected, "actual": actual})
+            parameter_failures.append(
+                {"name": name, "expected": expected, "actual": actual}
+            )
     ring_relationship_failures = []
     for index, angle_degrees in enumerate([15.0, 30.0, 45.0, 60.0, 75.0], start=1):
         angle = math.radians(angle_degrees)
@@ -126,15 +151,19 @@ def run(_context: str):
             and _close(actual_radius, expected_radius, 0.0001)
             and _close(actual_height, expected_height, 0.0001)
         ):
-            ring_relationship_failures.append({
-                "index": index,
-                "angle": actual_angle,
-                "radius": actual_radius,
-                "height": actual_height,
-            })
+            ring_relationship_failures.append(
+                {
+                    "index": index,
+                    "angle": actual_angle,
+                    "radius": actual_radius,
+                    "height": actual_height,
+                }
+            )
     check(
         "parameters.values_and_derived_rings",
-        len(parameters) == 28 and not parameter_failures and not ring_relationship_failures,
+        len(parameters) == 28
+        and not parameter_failures
+        and not ring_relationship_failures,
         {"count": 28, "ring_relationships": 5},
         {
             "count": len(parameters),
@@ -145,12 +174,16 @@ def run(_context: str):
 
     bodies = _items(root.bRepBodies)
     body = bodies[0] if len(bodies) == 1 else None
-    body_data = None if body is None else {
-        "name": body.name,
-        "solid": body.isSolid,
-        "lumps": body.lumps.count,
-        "valid": body.isValid,
-    }
+    body_data = (
+        None
+        if body is None
+        else {
+            "name": body.name,
+            "solid": body.isSolid,
+            "lumps": body.lumps.count,
+            "valid": body.isValid,
+        }
+    )
     check(
         "topology.single_connected_solid",
         body is not None
@@ -184,7 +217,8 @@ def run(_context: str):
         }
         check(
             "geometry.open_hollow_shell",
-            hollow_probes == {
+            hollow_probes
+            == {
                 "cavity": "outside",
                 "crown_shell": "inside",
                 "above_crown": "outside",
@@ -199,15 +233,20 @@ def run(_context: str):
         }
         check(
             "geometry.annular_base_flange",
-            flange_probes == {"opening": "outside", "flange": "inside", "outside": "outside"},
+            flange_probes
+            == {"opening": "outside", "flange": "inside", "outside": "outside"},
             {"opening": "outside", "flange": "inside", "outside": "outside"},
             flange_probes,
         )
         bolt_cylinders = _bolt_cylinders(body)
-        bolt_radii = [math.hypot(item["center_mm"][0], item["center_mm"][1]) for item in bolt_cylinders]
+        bolt_radii = [
+            math.hypot(item["center_mm"][0], item["center_mm"][1])
+            for item in bolt_cylinders
+        ]
         check(
             "holes.base_bolt_circle_12x",
-            len(bolt_cylinders) == 12 and all(_close(radius, 92.0, 0.1) for radius in bolt_radii),
+            len(bolt_cylinders) == 12
+            and all(_close(radius, 92.0, 0.1) for radius in bolt_radii),
             {"count": 12, "diameter_mm": 6.5, "bolt_circle_mm": 184.0},
             {"count": len(bolt_cylinders), "radii_mm": bolt_radii},
         )
@@ -221,12 +260,15 @@ def run(_context: str):
             check(check_id, False, "one valid body", None)
 
     features = _items(root.features)
-    feature_data = [{
-        "name": feature.name,
-        "valid": feature.isValid,
-        "health": str(feature.healthState),
-        "message": feature.errorOrWarningMessage,
-    } for feature in features]
+    feature_data = [
+        {
+            "name": feature.name,
+            "valid": feature.isValid,
+            "health": str(feature.healthState),
+            "message": feature.errorOrWarningMessage,
+        }
+        for feature in features
+    ]
     expected_feature_names = {
         "RV01_Outer_Dome",
         "RV02_Inner_Dome_Tool",
@@ -250,14 +292,20 @@ def run(_context: str):
         {"count": 13, "names": sorted(expected_feature_names), "errors": 0},
         feature_data,
     )
-    meridian_pattern = root.features.circularPatternFeatures.itemByName("CP01_Meridional_Ribs")
+    meridian_pattern = root.features.circularPatternFeatures.itemByName(
+        "CP01_Meridional_Ribs"
+    )
     bolt_pattern = root.features.circularPatternFeatures.itemByName("CP02_Base_Bolts")
     pattern_data = {
-        "meridians": None if meridian_pattern is None else {
+        "meridians": None
+        if meridian_pattern is None
+        else {
             "quantity": meridian_pattern.quantity.value,
             "elements": meridian_pattern.patternElements.count,
         },
-        "bolts": None if bolt_pattern is None else {
+        "bolts": None
+        if bolt_pattern is None
+        else {
             "quantity": bolt_pattern.quantity.value,
             "elements": bolt_pattern.patternElements.count,
         },
@@ -304,9 +352,17 @@ def run(_context: str):
             "marker": marker,
             "volume_mm3": None if body is None else body.volume * 1000.0,
             "faces": None if body is None else body.faces.count,
-            "parameter_expressions": {name: value["expression"] for name, value in parameters.items()},
+            "parameter_expressions": {
+                name: value["expression"] for name, value in parameters.items()
+            },
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

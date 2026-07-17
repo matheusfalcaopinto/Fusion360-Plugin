@@ -66,8 +66,9 @@ session journals through the Fusion Agent harness.
    clear.
 12. Use `fusion_agent_verify_active_design` for verifier-only checks against
    the active design.
-13. Use `fusion_agent_capture_viewport` only when visual evidence is useful and
-   treat `evidence_quality=verified_file` as required for screenshot proof.
+13. In 0.4.1, real viewport capture and host export are structurally disabled
+   with `HOST_OUTPUT_DISABLED`. Use typed read-only evidence in real sessions;
+   capture receipts are compatibility-only in mock or dry-run.
 14. Never save, undo, redo, promote, or fall back automatically after Fast
    Execute. `fusion_agent_recover_change` is explicit-only and applies only to
    the latest no-drift operation in the same runtime/document.
@@ -80,14 +81,15 @@ session journals through the Fusion Agent harness.
 ## Safe Tool Groups
 
 The default `normal` profile intentionally exposes 12 task-oriented tools.
-Use `advanced` for Fast Path, broad inspection, export, inventory, and memory;
+Use `advanced` for Fast Path, broad inspection, inventory, and memory;
 `diagnostic` for read-only transport diagnosis; `benchmark` for isolated
 fixture runs; and `all` only for 0.x legacy compatibility.
 
 - Session and environment: `fusion_agent_doctor`,
   `fusion_agent_readiness_report`, `fusion_agent_probe`,
   `fusion_agent_session_health`, `fusion_agent_inspect`,
-  `fusion_agent_verify_active_design`, `fusion_agent_capture_viewport`,
+  `fusion_agent_verify_active_design`, `fusion_agent_capture_viewport`
+  (mock/dry-run compatibility only in 0.4.1),
   `fusion_agent_run_session`, `fusion_agent_dry_run_session`,
   `fusion_agent_list_sessions`.
 - Inspection evidence (non-mutating CAD; local artifacts are possible):
@@ -114,8 +116,10 @@ fixture runs; and `all` only for 0.x legacy compatibility.
 ## Verification And Repair
 
 - Verification is programmatic first: body counts, named objects, named
-  parameters, bounding boxes, feature health, body validity, and export checks.
-- Screenshots are secondary evidence.
+  parameters, bounding boxes, feature health, body validity, and typed
+  inspection evidence. Real export and capture are not verification paths in
+  0.4.1.
+- Screenshots are secondary evidence only in mock or dry-run compatibility.
 - `save`, `undo`, `promote`, visible UI state, or screenshot presence never
   count as proof without a programmatic audit afterward.
 - Repair loops must be bounded and must classify failure causes.

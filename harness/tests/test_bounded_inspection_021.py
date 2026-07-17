@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import io
 import json
+import math
 import sys
 import types
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 
 from agent_core.fusion_scripts import (
     compact_snapshot_script,
+    hub_inventory_script,
     safe_delete_apply_script,
     safe_visibility_apply_script,
 )
@@ -26,6 +28,7 @@ from agent_core.session_controller import (
     SessionOptions,
     _safe_change_transport_fields,
     _safe_change_verification,
+    _safe_change_preview_digest,
     _snapshot_is_complete,
 )
 from agent_core.targeted_inspection import (
@@ -237,6 +240,25 @@ def test_compact_snapshot_v2_preserves_v1_keys_and_hard_budgets() -> None:
         "stop_reason",
     ):
         assert f'"{metadata_key}"' in script
+    assert "str(exc)" not in script
+    assert "BOUNDING_BOX_UNAVAILABLE" in script
+
+
+def test_compact_snapshot_visibility_read_failure_is_incomplete_not_visible() -> None:
+    script = compact_snapshot_script({})
+
+    assert 'stop("visibility_unavailable")' in script
+    assert "def _visible(entity):" in script
+    assert "def _component_visible(component):" in script
+    assert "except Exception:\n        return True" not in script
+
+
+def test_successful_read_scripts_expose_codes_not_raw_exception_text() -> None:
+    script = hub_inventory_script({"query": "", "max_results": 5})
+    compile(script, "<hub-inventory>", "exec")
+    assert "str(exc)" not in script
+    assert "PROJECT_METADATA_UNAVAILABLE" in script
+    assert "OPEN_DOCUMENTS_UNAVAILABLE" in script
 
 
 def test_mock_snapshot_stops_at_entity_budget_and_is_not_a_safe_baseline() -> None:
@@ -320,6 +342,11 @@ def test_safe_change_incomplete_readback_is_applied_unverified(tmp_path: Path) -
                 "component": "root",
                 "entity_token": "body-1",
                 "visible": True,
+                "is_root": True,
+                "is_referenced": False,
+                "is_imported": False,
+                "shared_definition": False,
+                "binding_fingerprint": "bounded-body-proof",
             }
         ],
         "occurrences": [],
@@ -333,26 +360,26 @@ def test_safe_change_incomplete_readback_is_applied_unverified(tmp_path: Path) -
     targets = [{"kind": "body", "name": "Body1", "component": "root", "visible": False}]
     bindings, errors = bind_safe_change_targets(targets, before_snapshot)
     assert not errors
+    preview_payload = {
+        "schema_version": "safe_change_preview.v2",
+        "preview_id": preview_id,
+        "preview_status": "ready",
+        "project": "bounded",
+        "mode": "mock",
+        "operation": "visibility",
+        "targets": targets,
+        "policy": {},
+        "classification": {"blocked": False},
+        "before_snapshot_path": str(before_path),
+        "document_identity": {"kind": "mock_session", "stable_id": "mock:test"},
+        "state_fingerprint": canonical_snapshot_fingerprint(before_snapshot),
+        "bound_targets": bindings,
+        "inspection_budget": {},
+        "requirements": [],
+    }
+    preview_payload["preview_digest"] = _safe_change_preview_digest(preview_payload)
     (preview_dir / f"{preview_id}.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "safe_change_preview.v2",
-                "preview_id": preview_id,
-                "preview_status": "ready",
-                "project": "bounded",
-                "mode": "mock",
-                "operation": "visibility",
-                "targets": targets,
-                "policy": {},
-                "classification": {"blocked": False},
-                "before_snapshot_path": str(before_path),
-                "document_identity": {"kind": "mock_session", "stable_id": "mock:test"},
-                "state_fingerprint": canonical_snapshot_fingerprint(before_snapshot),
-                "bound_targets": bindings,
-                "inspection_budget": {},
-                "requirements": [],
-            }
-        ),
+        json.dumps(preview_payload),
         encoding="utf-8",
     )
     after_path = tmp_path / "after.json"
@@ -410,6 +437,11 @@ def _complete_safe_snapshot(*, visible: bool = True) -> dict:
                 "component": "root",
                 "entity_token": "body-token",
                 "visible": visible,
+                "is_root": True,
+                "is_referenced": False,
+                "is_imported": False,
+                "shared_definition": False,
+                "binding_fingerprint": "safe-body-proof",
             }
         ],
         "occurrences": [],
@@ -619,7 +651,7 @@ def test_safe_change_mixed_requirements_cannot_self_satisfy_independent_oracle()
     result = _safe_change_verification(
         preview,
         {"changed_count": 1},
-        {"negative_impact": False},
+        {"negative_impact": False, "numeric_evidence_valid": True},
         1,
     )
 
@@ -631,6 +663,35 @@ def test_safe_change_mixed_requirements_cannot_self_satisfy_independent_oracle()
     assert by_id["target_count"]["passed"] is True
     assert by_id["external_shape"]["covered"] is False
     assert by_id["external_shape"]["oracle_evidence"] == "not_available"
+
+
+@pytest.mark.parametrize("invalid", [True, 1.0, "1", None, math.nan, math.inf])
+def test_safe_change_verification_rejects_untyped_mutation_counts(
+    invalid: object,
+) -> None:
+    result = _safe_change_verification(
+        {},
+        {"changed_count": invalid},
+        {"negative_impact": False, "numeric_evidence_valid": True},
+        1,
+    )
+
+    assert result["assertion_status"] == "incomplete"
+    assert result["contract_verified"] is False
+    assert result["invalid_numeric_evidence"] is True
+
+
+def test_safe_change_verification_rejects_invalid_snapshot_numeric_evidence() -> None:
+    result = _safe_change_verification(
+        {},
+        {"changed_count": 1},
+        {"negative_impact": False, "numeric_evidence_valid": False},
+        1,
+    )
+
+    assert result["assertion_status"] == "incomplete"
+    assert result["contract_verified"] is False
+    assert result["verification"]["readback_complete"] is False
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,16 @@ from benchmark.provenance import RevisionIdentity
 from cli import main as cli_main
 
 
+def _exact_revision() -> RevisionIdentity:
+    return RevisionIdentity(
+        expected_git_commit="a" * 40,
+        observed_git_commit="a" * 40,
+        expected_source_manifest_sha256="b" * 64,
+        observed_source_manifest_sha256="b" * 64,
+        tracked_state="clean",
+    )
+
+
 def test_public_driver_binds_revision_expectations_to_startup_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -49,7 +59,11 @@ def test_public_driver_binds_revision_expectations_to_startup_snapshot(
 @pytest.mark.asyncio
 async def test_cli_executes_our_mock_b02_b07_and_faults_but_not_competitors(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        driver_module, "collect_workspace_revision", lambda *_a, **_k: _exact_revision()
+    )
     result = await cli_main._benchmark_public(
         cli_main._default_public_manifest(),
         str(tmp_path / "public"),
@@ -100,7 +114,11 @@ async def test_cli_executes_our_mock_b02_b07_and_faults_but_not_competitors(
 @pytest.mark.asyncio
 async def test_confirmed_real_public_run_fails_closed_at_runtime_capability_preflight(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        driver_module, "collect_workspace_revision", lambda *_a, **_k: _exact_revision()
+    )
     result = await cli_main._benchmark_public(
         cli_main._default_public_manifest(),
         str(tmp_path / "public-real"),
@@ -121,11 +139,5 @@ async def test_confirmed_real_public_run_fails_closed_at_runtime_capability_pref
     }
     assert len(own) == 6
     assert all(item["state"] == "not_run" for item in own)
-    assert all(
-        item["reason"].startswith("real_public_capabilities_unavailable:")
-        for item in own
-    )
-    assert all(
-        "no real benchmark action was dispatched" in item["reason"] for item in own
-    )
+    assert {item["reason"] for item in own} == {"real_public_capabilities_unavailable"}
     assert not (tmp_path / "public-real" / "fusion_agent_internal").exists()

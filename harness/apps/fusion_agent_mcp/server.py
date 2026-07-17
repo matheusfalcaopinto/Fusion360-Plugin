@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import math
+import struct
+import zlib
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
@@ -43,6 +47,7 @@ from fusion_agent_mcp.runtime import (
 from fusion_agent_mcp.benchmark_bridge import FusionRuntimeBenchmarkBridge
 from fusion_agent_mcp import __version__
 from fusion_agent_mcp import mcp_surface
+from verifier.result_models import EvidenceEnvelope
 from fusion_agent_mcp.profiles import (
     TOOL_PROFILES,
     ToolProfileError,
@@ -107,6 +112,7 @@ class ToolSpec:
     capability_group: str = "orchestration"
     risk: str = "read"
     evidence_role: str = "structured"
+    content_policy: mcp_surface.ContentPolicy = "structured_only"
     profiles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -135,12 +141,17 @@ def surface_specs() -> list[mcp_surface.SurfaceSpec]:
             data_class=f"tool_{spec.evidence_role}",
             capability_group=spec.capability_group,
             evidence_role=spec.evidence_role,
+            content_policy=spec.content_policy,
             description=spec.description,
             input_schema=spec.input_schema,
             output_schema=spec.output_schema,
             annotations=spec.annotations,
             handler=spec.handler,
-            projector=_as_call_tool_result,
+            projector=(
+                _as_visual_call_tool_result
+                if spec.content_policy == "validated_png"
+                else _as_call_tool_result
+            ),
         )
         for spec in tool_specs()
     ]
@@ -153,7 +164,7 @@ _RUNTIME_OVERRIDE: ContextVar[FusionAgentRuntime | None] = ContextVar(
 )
 _PROFILE_OVERRIDE: ContextVar[str] = ContextVar(
     "fusion_agent_tool_profile_override",
-    default="all",
+    default="normal",
 )
 _DEFAULT_RUNTIME: FusionAgentRuntime | None = None
 
@@ -352,7 +363,7 @@ async def execute_tool(
     arguments: JsonDict | None = None,
     *,
     runtime: FusionAgentRuntime | None = None,
-    profile: str = "all",
+    profile: str = "normal",
     request_context: RequestContext | None = None,
 ) -> JsonDict:
     """Execute one wrapper tool by name and return a JSON-serializable payload."""
@@ -372,7 +383,7 @@ async def execute_tool_response(
     arguments: JsonDict | None = None,
     *,
     runtime: FusionAgentRuntime | None = None,
-    profile: str = "all",
+    profile: str = "normal",
     request_context: RequestContext | None = None,
 ) -> FastPathResponse:
     """Execute one tool while preserving structured and binary MCP channels."""
@@ -589,6 +600,7 @@ def tool_specs() -> list[ToolSpec]:
             "Read Autodesk API documentation, projects, documents, active-command state, or a PNG screenshot through a bounded safe wrapper.",
             _native_read_schema(),
             _native_read_tool,
+            content_policy="validated_png",
         ),
         ToolSpec(
             "fusion_agent_targeted_inspect",
@@ -601,6 +613,7 @@ def tool_specs() -> list[ToolSpec]:
             "Lint, bind declared targets, dispatch at most once without automatic post-dispatch replay, and programmatically verify a bounded native Fusion script. Scoped updates must mutate targets[query_id]; additive scripts must create only through target_components[component_path]. Delete, move, visibility, componentize, bulk, hidden/shared, and ambiguous work remains Safe Harness only.",
             _fast_execute_schema(),
             _fast_execute_tool,
+            content_policy="validated_png",
         ),
         ToolSpec(
             "fusion_agent_recover_change",
@@ -640,7 +653,7 @@ def tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             "fusion_agent_capture_viewport",
-            "Capture the active Fusion viewport through the safe facade.",
+            "Capture a mock viewport for compatibility; real Fusion capture is deny_io in 0.4.1.",
             _capture_schema(),
             _capture_viewport_tool,
         ),
@@ -892,10 +905,19 @@ def _public_runtime_diagnostics(diagnostics: JsonDict) -> JsonDict:
         io_enabled = authority_policy.get("io_enabled")
         if isinstance(io_enabled, bool):
             authority_public["io_enabled"] = io_enabled
+        for key in (
+            "import_enabled",
+            "output_enabled",
+            "output_policy",
+            "overwrite_supported",
+        ):
+            value = authority_policy.get(key)
+            if isinstance(value, bool | str):
+                authority_public[key] = value
         root_ids = authority_policy.get("root_ids")
         if isinstance(root_ids, dict):
             public_root_ids: JsonDict = {}
-            for direction in ("import", "export"):
+            for direction in ("import",):
                 values = root_ids.get(direction)
                 if isinstance(values, list) and all(
                     isinstance(value, str) for value in values
@@ -905,6 +927,24 @@ def _public_runtime_diagnostics(diagnostics: JsonDict) -> JsonDict:
                 authority_public["root_ids"] = public_root_ids
         if authority_public:
             public["authority_policy"] = authority_public
+    host_io_platform = diagnostics.get("host_io_platform")
+    if isinstance(host_io_platform, dict):
+        allowed_host_io_states = {
+            "sealed_windows_handle",
+            "sealed_memfd",
+            "anonymous_memfd",
+            "fail_closed_path_only",
+            "fail_closed_unavailable",
+            "deny_io",
+        }
+        host_io_public = {
+            key: value
+            for key in ("import_staging", "output_staging")
+            if isinstance((value := host_io_platform.get(key)), str)
+            and value in allowed_host_io_states
+        }
+        if host_io_public:
+            public["host_io_platform"] = host_io_public
     if diagnostics.get("last_error") or diagnostics.get("manifest_persistence_error"):
         public["diagnostic_failure_present"] = True
     if diagnostics.get("fallback_reason"):
@@ -934,7 +974,7 @@ async def _probe_tool(args: JsonDict) -> JsonDict:
             return {
                 "ok": False,
                 "error_code": exc.code,
-                "error": str(exc),
+                "error": "The configured Fusion endpoint is not permitted by policy.",
                 "probes": [],
             }
     return _public_probe_result(
@@ -961,8 +1001,11 @@ def _public_probe_result(payload: JsonDict) -> JsonDict:
         if not isinstance(raw, dict):
             continue
         item: JsonDict = {
-            "endpoint": str(raw.get("endpoint") or "configured"),
-            "health_uri": str(raw.get("health_uri") or "configured"),
+            # Endpoint paths and query strings are startup-private configuration.
+            # A diagnostic probe only needs to identify that the declared target
+            # was used; never reflect the downstream URI into MCP output.
+            "endpoint": "configured",
+            "health_uri": "configured",
             "health": _public_probe_stage(raw.get("health")),
             "tools_list": _public_probe_stage(raw.get("tools_list")),
         }
@@ -1525,6 +1568,336 @@ def _public_readback_error(value: JsonDict | str | None) -> JsonDict | None:
     return _coerce_public_error(value, code="INCOMPLETE_INSPECTION")
 
 
+_COMPACT_SNAPSHOT_KEYS = frozenset(
+    {
+        "schema_version",
+        "schema_compatibility",
+        "source",
+        "document",
+        "payload_capped",
+        "counts",
+        "occurrences",
+        "bodies",
+        "visible_occurrence_paths",
+        "visible_body_keys",
+        "visible_component_keys",
+        "visible_body_bbox_mm",
+        "duplicate_body_names",
+        "duplicate_name_warnings",
+        "complete",
+        "truncated",
+        "visited_entities",
+        "elapsed_ms",
+        "response_bytes",
+        "counts_exact",
+        "stop_reason",
+        "snapshot_hash",
+    }
+)
+_COMPACT_ENTITY_KEYS = frozenset(
+    {
+        "key",
+        "path",
+        "name",
+        "component",
+        "component_key",
+        "entity_token",
+        "entity_identity",
+        "visible",
+        "is_root",
+        "is_referenced",
+        "is_imported",
+        "shared_definition",
+        "binding_fingerprint",
+        "bbox_mm",
+        "bbox_error_code",
+        "transform",
+    }
+)
+
+
+def _public_v2_readback(value: JsonDict) -> JsonDict:
+    """Project a compact snapshot through a closed, typed artifact schema."""
+
+    raw = value.get("snapshot", value)
+    if not isinstance(raw, dict) or raw.get("schema_version") != "compact_snapshot.v2":
+        return {"snapshot": _invalid_public_snapshot()}
+    structurally_valid = set(raw).issubset(_COMPACT_SNAPSHOT_KEYS)
+    counts, counts_valid = _public_snapshot_counts(raw.get("counts"))
+    document, document_valid = _public_snapshot_document(raw.get("document"))
+    occurrences, occurrences_valid = _public_snapshot_entities(
+        raw.get("occurrences"), kind="occurrence"
+    )
+    bodies, bodies_valid = _public_snapshot_entities(raw.get("bodies"), kind="body")
+    structurally_valid = bool(
+        structurally_valid
+        and counts_valid
+        and document_valid
+        and occurrences_valid
+        and bodies_valid
+    )
+    stop_reason = raw.get("stop_reason")
+    if stop_reason not in {
+        None,
+        "",
+        "deadline_ms",
+        "downstream_unavailable",
+        "max_bodies",
+        "max_entities_visited",
+        "max_occurrences",
+        "max_response_bytes",
+        "response_limit",
+        "visibility_unavailable",
+    }:
+        structurally_valid = False
+    complete = bool(raw.get("complete") is True and structurally_valid)
+    counts_exact = bool(raw.get("counts_exact") is True and structurally_valid)
+    truncated = bool(raw.get("truncated") is not False or not structurally_valid)
+    if not structurally_valid:
+        stop_reason = "invalid_snapshot_evidence"
+    projected: JsonDict = {
+        "schema_version": "compact_snapshot.v2",
+        "schema_compatibility": ["compact_snapshot.v1"],
+        "source": raw.get("source")
+        if raw.get("source") in {"mock", "real"}
+        else "unknown",
+        "document": document,
+        "payload_capped": raw.get("payload_capped") is True,
+        "counts": counts,
+        "occurrences": occurrences,
+        "bodies": bodies,
+        "visible_occurrence_paths": _public_snapshot_labels(
+            raw.get("visible_occurrence_paths")
+        ),
+        "visible_body_keys": _public_snapshot_labels(raw.get("visible_body_keys")),
+        "visible_component_keys": _public_snapshot_labels(
+            raw.get("visible_component_keys")
+        ),
+        "visible_body_bbox_mm": _public_snapshot_numeric_object(
+            raw.get("visible_body_bbox_mm")
+        ),
+        "duplicate_body_names": _public_duplicate_names(
+            raw.get("duplicate_body_names")
+        ),
+        "complete": complete,
+        "truncated": truncated,
+        "visited_entities": _public_nonnegative_integer(raw.get("visited_entities")),
+        "elapsed_ms": _public_nonnegative_integer(raw.get("elapsed_ms")),
+        "response_bytes": _public_nonnegative_integer(raw.get("response_bytes")),
+        "counts_exact": counts_exact,
+        "stop_reason": stop_reason or None,
+    }
+    snapshot_hash = raw.get("snapshot_hash")
+    if _v2_sha256(snapshot_hash):
+        projected["snapshot_hash"] = snapshot_hash
+    return {"snapshot": projected}
+
+
+def _invalid_public_snapshot() -> JsonDict:
+    return {
+        "schema_version": "compact_snapshot.v2",
+        "schema_compatibility": ["compact_snapshot.v1"],
+        "source": "unknown",
+        "document": {},
+        "payload_capped": False,
+        "counts": {},
+        "occurrences": [],
+        "bodies": [],
+        "visible_occurrence_paths": [],
+        "visible_body_keys": [],
+        "visible_component_keys": [],
+        "visible_body_bbox_mm": None,
+        "duplicate_body_names": {},
+        "complete": False,
+        "truncated": True,
+        "visited_entities": 0,
+        "elapsed_ms": 0,
+        "response_bytes": 0,
+        "counts_exact": False,
+        "stop_reason": "invalid_snapshot_evidence",
+    }
+
+
+def _public_snapshot_counts(value: Any) -> tuple[JsonDict, bool]:
+    allowed = {
+        "components_total",
+        "occurrences_total",
+        "bodies_total",
+        "visible_occurrences",
+        "visible_bodies",
+        "visible_components",
+    }
+    if not isinstance(value, dict) or not set(value).issubset(allowed):
+        return {}, False
+    projected = {
+        key: child
+        for key, child in value.items()
+        if isinstance(child, int) and not isinstance(child, bool) and child >= 0
+    }
+    return projected, len(projected) == len(value)
+
+
+def _public_snapshot_document(value: Any) -> tuple[JsonDict, bool]:
+    if not isinstance(value, dict):
+        return {}, False
+    allowed = {
+        "name",
+        "id",
+        "version",
+        "identity_kind",
+        "stable_id",
+        "binding_identity",
+        "truncated",
+    }
+    valid = set(value).issubset(allowed)
+    projected: JsonDict = {}
+    binding_identity = value.get("binding_identity")
+    if _v2_sha256(binding_identity):
+        projected["binding_identity"] = binding_identity
+    identity_kind = value.get("identity_kind")
+    if identity_kind in {"data_file", "mock_session", "unsaved_session"}:
+        projected["identity_kind"] = identity_kind
+    if value.get("truncated") is True:
+        projected["truncated"] = True
+    return projected, valid
+
+
+def _public_snapshot_entities(value: Any, *, kind: str) -> tuple[list[JsonDict], bool]:
+    if not isinstance(value, list):
+        return [], False
+    projected: list[JsonDict] = []
+    valid = True
+    for raw in value:
+        if not isinstance(raw, dict) or not set(raw).issubset(_COMPACT_ENTITY_KEYS):
+            valid = False
+            continue
+        item: JsonDict = {}
+        for key in ("key", "path", "name", "component", "component_key"):
+            label = _public_snapshot_label(raw.get(key))
+            if label is not None:
+                item[key] = label
+            elif key in raw:
+                valid = False
+        identity = raw.get("entity_identity")
+        token = raw.get("entity_token")
+        if _v2_sha256(identity):
+            item["entity_identity"] = identity
+        elif isinstance(token, str) and token:
+            item["entity_identity"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        else:
+            valid = False
+        for key in (
+            "visible",
+            "is_root",
+            "is_referenced",
+            "is_imported",
+            "shared_definition",
+        ):
+            child = raw.get(key)
+            if child is None:
+                item[key] = None
+            elif isinstance(child, bool):
+                item[key] = child
+            else:
+                valid = False
+        fingerprint = raw.get("binding_fingerprint")
+        if _v2_sha256(fingerprint):
+            item["binding_fingerprint"] = fingerprint
+        elif fingerprint is not None:
+            valid = False
+        bbox = _public_snapshot_numeric_object(raw.get("bbox_mm"))
+        if bbox is not None:
+            item["bbox_mm"] = bbox
+        error_code = raw.get("bbox_error_code")
+        if error_code == "BOUNDING_BOX_UNAVAILABLE":
+            item["bbox_error_code"] = error_code
+        transform = _public_snapshot_numeric_object(raw.get("transform"))
+        if transform is not None:
+            item["transform"] = transform
+        item["entity_kind"] = kind
+        projected.append(item)
+    return projected, valid
+
+
+def _public_snapshot_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        return None
+    if any(ord(character) < 32 for character in value):
+        return None
+    lowered = value.casefold()
+    if any(
+        marker in lowered
+        for marker in ("authorization=", "bearer ", "--token", "api_key=", "password=")
+    ):
+        return None
+    return value
+
+
+def _public_snapshot_labels(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [label for child in value if (label := _public_snapshot_label(child))]
+
+
+def _public_snapshot_numeric_object(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, list):
+        projected = [_public_snapshot_numeric_object(child) for child in value]
+        return projected if all(child is not None for child in projected) else None
+    if not isinstance(value, dict):
+        return None
+    allowed = {
+        "min_mm",
+        "max_mm",
+        "size_mm",
+        "center_mm",
+        "translation_mm",
+        "matrix",
+        "error_code",
+    }
+    if not set(value).issubset(allowed):
+        return None
+    projected = {
+        key: _public_snapshot_numeric_object(child)
+        for key, child in value.items()
+        if key != "error_code"
+    }
+    if any(child is None for child in projected.values()):
+        return None
+    if value.get("error_code") == "BOUNDING_BOX_UNAVAILABLE":
+        projected["error_code"] = "BOUNDING_BOX_UNAVAILABLE"
+    return projected
+
+
+def _public_duplicate_names(value: Any) -> JsonDict:
+    if not isinstance(value, dict):
+        return {}
+    projected: JsonDict = {}
+    for name, count in value.items():
+        label = _public_snapshot_label(name)
+        if (
+            label
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > 1
+        ):
+            projected[label] = count
+    return projected
+
+
+def _public_nonnegative_integer(value: Any) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
+
+
 def _record_v2_session(
     spec: CadSpecV2,
     *,
@@ -1569,7 +1942,9 @@ def _record_v2_session(
     journal.write_text("prompt.md", "Caller supplied CadSpec v2 JSON.\n")
     journal.write_json("execution.json", execution_payload)
     if readback is not None:
-        readback_path = journal.write_json("readback.json", readback)
+        readback_path = journal.write_json(
+            "readback.json", _public_v2_readback(readback)
+        )
         verification["readback_path"] = str(readback_path)
     journal.write_json("verification.json", verification)
     journal.trace_path.touch(exist_ok=True)
@@ -1647,6 +2022,7 @@ def _evaluate_v2_verification(
                 spec=spec,
                 snapshot=snapshot,
                 evidence=execution_payload.get("evidence") or {},
+                transactions=execution_payload.get("transactions") or [],
                 inspection_complete=inspection_complete,
             )
             for assertion in spec.assertions
@@ -1777,6 +2153,7 @@ def _v2_snapshot(readback: JsonDict | None) -> JsonDict:
 def _v2_snapshot_complete(snapshot: JsonDict) -> bool:
     return bool(
         snapshot
+        and snapshot.get("schema_version") == "compact_snapshot.v2"
         and snapshot.get("complete") is True
         and snapshot.get("counts_exact") is True
         and not snapshot.get("truncated", False)
@@ -1791,6 +2168,7 @@ def _evaluate_v2_assertion(
     spec: CadSpecV2,
     snapshot: JsonDict,
     evidence: JsonDict,
+    transactions: list[Any],
     inspection_complete: bool,
 ) -> JsonDict:
     base: JsonDict = {
@@ -1806,11 +2184,14 @@ def _evaluate_v2_assertion(
 
     if assertion.kind == "entity_exists":
         matches = _v2_entity_matches(snapshot, assertion.target_ref)
-        actual = bool(matches)
+        presentation_only = not matches and _v2_has_presentation_label(
+            snapshot, assertion.target_ref
+        )
+        actual = len(matches) == 1 if len(matches) <= 1 else None
         expected = True if assertion.expected is None else bool(assertion.expected)
-        if matches or inspection_complete:
+        if inspection_complete and len(matches) <= 1 and not presentation_only:
             status = "passed" if actual is expected else "failed"
-            evidence_source = "compact_snapshot"
+            evidence_source = "compact_snapshot_stable_identity"
     elif assertion.kind == "entity_count":
         actual = _v2_entity_count(snapshot, assertion.target_ref, assertion.expected)
         expected_count = _v2_expected_count(assertion.expected)
@@ -1818,15 +2199,22 @@ def _evaluate_v2_assertion(
             status = "passed" if actual == expected_count else "failed"
             evidence_source = "compact_snapshot"
     elif assertion.kind == "export_exists":
-        export_path = _v2_export_path(spec, assertion.target_ref)
-        if export_path is not None:
-            actual = export_path.is_file()
-            expected = True if assertion.expected is None else bool(assertion.expected)
-            status = "passed" if actual is expected else "failed"
-            evidence_source = "filesystem_readback"
+        export_evidence = _v2_export_evidence(spec, assertion.target_ref, transactions)
+        expected = True if assertion.expected is None else bool(assertion.expected)
+        if expected is True and export_evidence is not None:
+            actual = True
+            status = "passed"
+            evidence_source = "bound_export_transaction"
     elif assertion.kind == "interference_count":
+        analysis = _v2_analysis_evidence(
+            spec,
+            evidence,
+            assertion.target_ref,
+            assertion.id,
+            snapshot,
+        )
         actual = _v2_find_number(
-            evidence.get(assertion.target_ref or ""),
+            analysis,
             ("count", "interference_count"),
         )
         expected_count = _v2_expected_count(assertion.expected)
@@ -1834,9 +2222,14 @@ def _evaluate_v2_assertion(
             status = "passed" if actual == expected_count else "failed"
             evidence_source = "typed_analysis_readback"
     elif assertion.kind == "physical_property_range":
-        actual, lower, upper = _v2_physical_range(
-            evidence.get(assertion.target_ref or ""), assertion.expected
+        analysis = _v2_analysis_evidence(
+            spec,
+            evidence,
+            assertion.target_ref,
+            assertion.id,
+            snapshot,
         )
+        actual, lower, upper = _v2_physical_range(analysis, assertion.expected)
         if actual is not None and (lower is not None or upper is not None):
             passed = (lower is None or actual >= lower) and (
                 upper is None or actual <= upper
@@ -1868,25 +2261,31 @@ def _v2_entity_records(snapshot: JsonDict) -> list[JsonDict]:
 def _v2_entity_matches(snapshot: JsonDict, target_ref: str | None) -> list[JsonDict]:
     if not target_ref:
         return []
-    expected = target_ref.casefold()
-    keys = (
-        "name",
-        "key",
-        "path",
-        "component",
-        "component_key",
-        "entity_token",
-        "full_path",
-        "fullPathName",
-    )
+    expected = target_ref
+    keys = ("key", "path", "entity_identity", "entity_token")
     return [
         item
         for item in _v2_entity_records(snapshot)
+        if _v2_record_has_stable_identity(item)
         if any(
-            isinstance(item.get(key), str) and str(item[key]).casefold() == expected
+            isinstance(item.get(key), str) and str(item[key]) == expected
             for key in keys
         )
     ]
+
+
+def _v2_record_has_stable_identity(item: JsonDict) -> bool:
+    identity = item.get("entity_identity") or item.get("entity_token")
+    return isinstance(identity, str) and bool(identity.strip())
+
+
+def _v2_has_presentation_label(snapshot: JsonDict, target_ref: str | None) -> bool:
+    if not target_ref:
+        return False
+    return any(
+        item.get("name") == target_ref or item.get("component") == target_ref
+        for item in _v2_entity_records(snapshot)
+    )
 
 
 def _v2_entity_count(
@@ -1926,13 +2325,87 @@ def _v2_expected_count(expected: Any) -> int | None:
     return None
 
 
-def _v2_export_path(spec: CadSpecV2, target_ref: str | None) -> Path | None:
-    for operation in spec.operations:
-        if operation.kind != "io.export":
-            continue
-        if target_ref in {None, operation.id, operation.target_ref, operation.path}:
-            return Path(operation.path)
-    return Path(target_ref) if target_ref else None
+def _v2_export_evidence(
+    spec: CadSpecV2, target_ref: str | None, transactions: list[Any]
+) -> JsonDict | None:
+    operations = [
+        operation
+        for operation in spec.operations
+        if operation.kind == "io.export"
+        and target_ref in {operation.id, operation.target_ref}
+    ]
+    if len(operations) != 1:
+        return None
+    operation = operations[0]
+    matching = [
+        item
+        for item in transactions
+        if isinstance(item, dict) and item.get("operation_id") == operation.id
+    ]
+    if len(matching) != 1 or matching[0].get("status") != "ok":
+        return None
+    native = matching[0].get("native_result")
+    if not isinstance(native, dict):
+        return None
+    size = native.get("bytes")
+    if (
+        native.get("completed") is not True
+        or native.get("kind") != "io.export"
+        or native.get("format") != operation.format
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+    ):
+        return None
+    return native
+
+
+def _v2_analysis_evidence(
+    spec: CadSpecV2,
+    evidence: JsonDict,
+    target_ref: str | None,
+    assertion_id: str,
+    snapshot: JsonDict,
+) -> JsonDict | None:
+    operations = [
+        operation
+        for operation in spec.operations
+        if operation.kind.startswith("analysis.")
+        and target_ref in {operation.id, getattr(operation, "output_ref", None)}
+    ]
+    if len(operations) != 1:
+        return None
+    entry = evidence.get(operations[0].id)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        envelope = EvidenceEnvelope.model_validate(entry.get("envelope"))
+    except Exception:  # noqa: BLE001 - malformed evidence is inconclusive
+        return None
+    snapshot_document = snapshot.get("document")
+    snapshot_identity = (
+        snapshot_document.get("binding_identity")
+        if isinstance(snapshot_document, dict)
+        else None
+    )
+    if (
+        not envelope.conclusive
+        or assertion_id not in envelope.assertion_ids
+        or not _v2_sha256(envelope.document_identity)
+        or not _v2_sha256(snapshot_identity)
+        or envelope.document_identity != snapshot_identity
+    ):
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def _v2_sha256(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _v2_find_number(value: Any, keys: tuple[str, ...]) -> float | None:
@@ -1940,7 +2413,8 @@ def _v2_find_number(value: Any, keys: tuple[str, ...]) -> float | None:
         for key in keys:
             candidate = value.get(key)
             if isinstance(candidate, int | float) and not isinstance(candidate, bool):
-                return float(candidate)
+                number = float(candidate)
+                return number if math.isfinite(number) else None
         for candidate in value.values():
             found = _v2_find_number(candidate, keys)
             if found is not None:
@@ -1981,12 +2455,16 @@ def _v2_physical_range(
         upper = expected.get(f"max_{suffix}")
     normalized_lower = (
         float(lower)
-        if isinstance(lower, int | float) and not isinstance(lower, bool)
+        if isinstance(lower, int | float)
+        and not isinstance(lower, bool)
+        and math.isfinite(float(lower))
         else None
     )
     normalized_upper = (
         float(upper)
-        if isinstance(upper, int | float) and not isinstance(upper, bool)
+        if isinstance(upper, int | float)
+        and not isinstance(upper, bool)
+        and math.isfinite(float(upper))
         else None
     )
     return actual, normalized_lower, normalized_upper
@@ -2113,6 +2591,7 @@ def _public_session_artifact_text(artifact: str, content: str) -> str:
         return "\n".join(projected_lines) + ("\n" if projected_lines else "")
     if artifact not in {
         "execution.json",
+        "readback.json",
         "verification.json",
         "session_journal.json",
     }:
@@ -2120,6 +2599,8 @@ def _public_session_artifact_text(artifact: str, content: str) -> str:
     parsed = _try_json(content)
     if artifact == "execution.json" and isinstance(parsed, dict):
         projected = _public_execution_payload(parsed)
+    elif artifact == "readback.json" and isinstance(parsed, dict):
+        projected = _public_v2_readback(parsed)
     else:
         projected = _public_artifact_value(parsed)
     return json.dumps(projected, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
@@ -2226,8 +2707,8 @@ async def _plan_spec_tool(args: JsonDict) -> JsonDict:
         spec, metadata = await _plan_spec(prompt, project)
     except PlannerUnsupportedError as exc:
         return exc.payload()
-    except ValueError as exc:
-        return _planner_route_payload(prompt, str(exc))
+    except ValueError:
+        return _planner_route_payload(prompt)
     return {
         "cad_spec": spec.model_dump(mode="json"),
         "cad_spec_json": spec.to_json_text(),
@@ -2238,8 +2719,12 @@ async def _plan_spec_tool(args: JsonDict) -> JsonDict:
 async def _validate_spec_tool(args: JsonDict) -> JsonDict:
     try:
         normalized = parse_cad_spec(_required_str(args, "spec_json"))
-    except Exception as exc:  # noqa: BLE001 - validator diagnostics
-        return {"valid": False, "error": f"{type(exc).__name__}: {exc}"}
+    except Exception:  # noqa: BLE001 - parser diagnostics stay private
+        return {
+            "valid": False,
+            "error_code": "INVALID_CAD_SPEC",
+            "error": "The CAD specification is invalid.",
+        }
     spec = normalized.spec or normalized.legacy_spec
     assert spec is not None
     return {
@@ -2259,8 +2744,8 @@ async def _export_spec_json_tool(args: JsonDict) -> JsonDict:
         spec, metadata = await _plan_spec(prompt, project)
     except PlannerUnsupportedError as exc:
         return exc.payload()
-    except ValueError as exc:
-        return _planner_route_payload(prompt, str(exc))
+    except ValueError:
+        return _planner_route_payload(prompt)
     output_path = _optional_str(args, "output_path")
     payload: JsonDict = {
         "cad_spec": spec.model_dump(mode="json"),
@@ -2289,20 +2774,19 @@ async def _list_benchmarks_tool(_: JsonDict) -> JsonDict:
             suites.append(
                 {
                     "name": path.name,
-                    "path": str(path),
                     "schema_version": suite.schema_version,
                     "suite_id": suite.suite_id,
                     "case_count": len(suite.cases),
                     "valid": True,
                 }
             )
-        except (BenchmarkSuiteError, FileNotFoundError, ValueError) as exc:
+        except (BenchmarkSuiteError, FileNotFoundError, ValueError):
             suites.append(
                 {
                     "name": path.name,
-                    "path": str(path),
                     "valid": False,
-                    "error": str(exc),
+                    "error_code": "INVALID_BENCHMARK_SUITE",
+                    "error": "The benchmark suite is invalid or unavailable.",
                 }
             )
     return {"suites": suites}
@@ -2635,16 +3119,44 @@ async def _read_mcp_resource(
     runtime: FusionAgentRuntime,
     profile: str,
 ) -> JsonDict:
-    """Resolve one bounded ``fusion-agent://`` resource."""
+    """Authorize, dispatch and project one declared MCP resource entry."""
+
+    resolved_profile = resolve_tool_profile(profile)
+    spec = mcp_surface.authorize_resource(uri, resolved_profile)
+    handler = spec.handler
+    projector = spec.projector
+    if not callable(handler) or not callable(projector):
+        raise RuntimeError("resource registry entry is incomplete")
+    payload = await handler(
+        spec,
+        uri,
+        runtime=runtime,
+        profile=resolved_profile,
+        dispatcher=_read_bound_mcp_resource,
+    )
+    projected = projector(spec, payload)
+    if not isinstance(projected, dict):
+        raise TypeError("resource projector must return an object")
+    return projected
+
+
+async def _read_bound_mcp_resource(
+    spec: mcp_surface.SurfaceSpec,
+    uri: str,
+    *,
+    runtime: FusionAgentRuntime,
+    profile: str,
+) -> JsonDict:
+    """Resolve content only after an exact registry entry was authorized."""
 
     parsed = urlsplit(uri)
     if parsed.scheme != "fusion-agent":
         raise ValueError("resource URI must use the fusion-agent scheme")
     family = parsed.netloc
-    # Authorization precedes identifier parsing, lookup, and handler dispatch
-    # so a restricted profile cannot use errors or timing as an existence
-    # oracle for memory, benchmark, or other resource families.
-    mcp_surface.authorize_resource(uri, profile)
+    # Defense in depth for callers of this internal bound dispatcher: the
+    # supplied entry must still be the exact route selected by the registry.
+    if mcp_surface.authorize_resource(uri, profile) is not spec:
+        raise RuntimeError("resource registry binding changed before dispatch")
     segments = [unquote(segment) for segment in parsed.path.split("/") if segment]
     query = parse_qs(parsed.query, keep_blank_values=False)
     offset = _resource_integer(
@@ -2873,7 +3385,7 @@ def _bounded_json_text(payload: JsonDict) -> str:
     )
 
 
-def _planner_route_payload(prompt: str, reason: str) -> JsonDict:
+def _planner_route_payload(prompt: str) -> JsonDict:
     lowered = prompt.lower()
     destructive = any(
         term in lowered
@@ -2896,7 +3408,7 @@ def _planner_route_payload(prompt: str, reason: str) -> JsonDict:
     return {
         "supported": False,
         "code": "unsupported_for_legacy_cadspec_recipe",
-        "reason": reason,
+        "reason": "The request cannot be represented by the legacy CadSpec recipe.",
         "recommended_path": "safe_harness"
         if destructive
         else "api_documentation_then_native_fast",
@@ -3009,12 +3521,46 @@ def _safe_name(value: str, label: str) -> None:
 
 
 def _safe_relative_path(root: Path, value: str) -> Path:
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts:
+    windows_path = PureWindowsPath(value)
+    posix_path = PurePosixPath(value.replace("\\", "/"))
+    raw_parts = value.replace("\\", "/").split("/")
+    if (
+        not value
+        or windows_path.anchor
+        or windows_path.drive
+        or windows_path.root
+        or posix_path.is_absolute()
+        or any(part == ".." for part in raw_parts)
+        or any(_unsafe_windows_output_segment(part) for part in raw_parts if part)
+    ):
         raise ValueError("path must be relative and must not contain '..'")
+    path = Path(*posix_path.parts)
     if path.parts and path.parts[0] == root.name:
         path = Path(*path.parts[1:]) if len(path.parts) > 1 else Path()
-    return root / path
+    candidate = root / path
+    canonical_root = root.resolve()
+    canonical_candidate = candidate.resolve()
+    try:
+        canonical_candidate.relative_to(canonical_root)
+    except ValueError as exc:
+        raise ValueError("path must remain inside the configured output root") from exc
+    return candidate
+
+
+def _unsafe_windows_output_segment(value: str) -> bool:
+    """Reject device names, ADS syntax and ambiguous trailing characters."""
+
+    if ":" in value or value.endswith((" ", ".")):
+        return True
+    stem = value.split(".", 1)[0].casefold()
+    return stem in {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
 
 
 def _read_json(path: Path) -> Any:
@@ -3070,6 +3616,25 @@ def _compact_summary(name: str, payload: JsonDict, ok: bool) -> str:
 
 
 def _as_call_tool_result(name: str, response: FastPathResponse) -> types.CallToolResult:
+    return _project_call_tool_result(name, response, allow_png=False)
+
+
+def _as_visual_call_tool_result(
+    name: str, response: FastPathResponse
+) -> types.CallToolResult:
+    return _project_call_tool_result(
+        name,
+        response,
+        allow_png=_visual_png_allowed(name, response.payload),
+    )
+
+
+def _project_call_tool_result(
+    name: str,
+    response: FastPathResponse,
+    *,
+    allow_png: bool,
+) -> types.CallToolResult:
     semantic_code = _semantic_failure_code(response.payload)
     if response.is_error or semantic_code is not None:
         code = _normalized_public_error_code(
@@ -3096,9 +3661,9 @@ def _as_call_tool_result(name: str, response: FastPathResponse) -> types.CallToo
             text=_compact_summary(name, response.payload, True),
         )
     ]
-    content.extend(_mcp_content_blocks(response.content))
+    if allow_png:
+        content.extend(_validated_png_content_blocks(response.content))
     return types.CallToolResult(
-        meta=response.meta or None,
         content=content,
         structuredContent=structured,
         isError=False,
@@ -3109,9 +3674,12 @@ _PUBLIC_ERROR_CODES = frozenset(
     {item.value for item in ErrorCode}
     | {
         "ENDPOINT_SOURCE_NOT_ALLOWED",
+        "ENDPOINT_POLICY_BLOCKED",
         "FAST_PATH_UNAVAILABLE_FOR_BACKEND",
         "INTERNAL_ERROR",
         "INCOMPLETE_INSPECTION",
+        "INVALID_BENCHMARK_SUITE",
+        "INVALID_CAD_SPEC",
         "INVALID_REQUEST",
         "OUTPUT_SCHEMA_VIOLATION",
         "REQUEST_REJECTED",
@@ -3208,6 +3776,8 @@ def _generic_public_error_message(code: str) -> str:
         ErrorCode.READ_TIMEOUT_MAY_STILL_BE_RUNNING.value: "The Fusion read timed out.",
         ErrorCode.MUTATION_OUTCOME_UNKNOWN.value: "The mutation outcome is unknown; do not replay it.",
         "INCOMPLETE_INSPECTION": "The readback inspection was incomplete.",
+        "INVALID_BENCHMARK_SUITE": "The benchmark suite is invalid or unavailable.",
+        "INVALID_CAD_SPEC": "The CAD specification is invalid.",
         "REQUEST_REJECTED": "The request was rejected before completion.",
     }.get(code, "The operation could not be completed.")
 
@@ -3290,24 +3860,89 @@ def _output_validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def _mcp_content_blocks(content: list[dict[str, Any]]) -> list[types.ContentBlock]:
-    blocks: list[types.ContentBlock] = []
+_MAX_PUBLIC_PNG_BYTES = 16 * 1024 * 1024
+_MAX_PUBLIC_PNG_BASE64_CHARS = ((_MAX_PUBLIC_PNG_BYTES + 2) // 3) * 4
+_MAX_PUBLIC_PNG_CHUNKS = 4096
+_MAX_PUBLIC_PNG_DIMENSION = 10_000
+
+
+def _visual_png_allowed(name: str, payload: JsonDict) -> bool:
+    if name == "fusion_agent_native_read":
+        return payload.get("query_type") == "screenshot"
+    if name == "fusion_agent_fast_execute":
+        return isinstance(payload.get("screenshot"), dict)
+    return False
+
+
+def _validated_png_content_blocks(
+    content: list[dict[str, Any]],
+) -> list[types.ContentBlock]:
     for raw in content:
         if not isinstance(raw, dict):
             continue
-        if raw.get("type") == "image" and isinstance(raw.get("data"), str):
-            blocks.append(
-                types.ImageContent(
-                    type="image",
-                    data=raw["data"],
-                    mimeType=str(
-                        raw.get("mimeType") or raw.get("mime_type") or "image/png"
-                    ),
-                )
+        encoded = raw.get("data")
+        mime_type = str(raw.get("mimeType") or raw.get("mime_type") or "").lower()
+        if (
+            raw.get("type") != "image"
+            or not isinstance(encoded, str)
+            or mime_type != "image/png"
+            or len(encoded) > _MAX_PUBLIC_PNG_BASE64_CHARS
+        ):
+            continue
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            continue
+        if len(decoded) > _MAX_PUBLIC_PNG_BYTES or not _valid_public_png(decoded):
+            continue
+        return [
+            types.ImageContent(
+                type="image",
+                data=encoded,
+                mimeType="image/png",
             )
-        elif raw.get("type") == "text" and isinstance(raw.get("text"), str):
-            blocks.append(types.TextContent(type="text", text=raw["text"]))
-    return blocks
+        ]
+    return []
+
+
+def _valid_public_png(value: bytes) -> bool:
+    """Validate a bounded PNG container without decoding untrusted pixels."""
+
+    if not value.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    saw_ihdr = False
+    saw_idat = False
+    for chunk_index in range(_MAX_PUBLIC_PNG_CHUNKS):
+        if offset + 12 > len(value):
+            return False
+        length = struct.unpack(">I", value[offset : offset + 4])[0]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(value):
+            return False
+        chunk_type = value[offset + 4 : offset + 8]
+        chunk_data = value[offset + 8 : offset + 8 + length]
+        expected_crc = struct.unpack(">I", value[offset + 8 + length : chunk_end])[0]
+        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
+            return False
+        if chunk_index == 0:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            width, height = struct.unpack(">II", chunk_data[:8])
+            if not (
+                1 <= width <= _MAX_PUBLIC_PNG_DIMENSION
+                and 1 <= height <= _MAX_PUBLIC_PNG_DIMENSION
+            ):
+                return False
+            saw_ihdr = True
+        elif chunk_type == b"IHDR":
+            return False
+        elif chunk_type == b"IDAT":
+            saw_idat = True
+        elif chunk_type == b"IEND":
+            return length == 0 and saw_ihdr and saw_idat and chunk_end == len(value)
+        offset = chunk_end
+    return False
 
 
 def _open_output_schema() -> JsonDict:
@@ -4129,6 +4764,7 @@ def _tool_result_contracts() -> dict[str, JsonDict]:
         "fusion_agent_validate_spec": _result_object(
             {
                 "valid": boolean,
+                "error_code": string,
                 "error": string,
                 "cad_spec": json_object,
                 "cad_spec_version": string,
@@ -4145,14 +4781,14 @@ def _tool_result_contracts() -> dict[str, JsonDict]:
                     "items": _result_object(
                         {
                             "name": string,
-                            "path": path,
                             "schema_version": string,
                             "suite_id": string,
                             "case_count": {"type": "integer", "minimum": 0},
                             "valid": boolean,
+                            "error_code": string,
                             "error": string,
                         },
-                        ("name", "path", "valid"),
+                        ("name", "valid"),
                     ),
                 }
             },

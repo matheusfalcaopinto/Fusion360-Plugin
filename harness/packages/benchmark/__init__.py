@@ -40,6 +40,7 @@ from benchmark.registry import ORACLE_REGISTRY
 from benchmark.public import (
     AdapterExecution,
     AdapterPreflight,
+    BenchmarkEvidenceEnvelope,
     PublicBenchmarkAdapter,
     PublicBenchmarkConfig,
     PublicBenchmarkReport,
@@ -60,6 +61,7 @@ __all__ = [
     "BenchmarkArtifactStore",
     "BenchmarkCase",
     "BenchmarkExecutionError",
+    "BenchmarkEvidenceEnvelope",
     "BenchmarkReport",
     "BenchmarkResult",
     "BenchmarkRun",

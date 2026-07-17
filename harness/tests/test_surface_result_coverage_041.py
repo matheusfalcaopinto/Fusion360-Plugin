@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from fusion_agent_mcp import mcp_surface
@@ -20,6 +21,12 @@ from verifier.result_models import (
 
 
 def _surface(**overrides: Any) -> mcp_surface.SurfaceSpec:
+    async def handler(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"ok": True}
+
+    def projector(value: Any) -> Any:
+        return value
+
     values: dict[str, Any] = {
         "kind": "resource",
         "name": "coverage-resource",
@@ -28,6 +35,10 @@ def _surface(**overrides: Any) -> mcp_surface.SurfaceSpec:
         "data_class": "coverage",
         "resource_family": "coverage",
         "resource_path": (),
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "handler": handler,
+        "projector": projector,
     }
     values.update(overrides)
     return mcp_surface.SurfaceSpec(**values)
@@ -43,11 +54,7 @@ def test_surface_registry_rejects_incomplete_or_unknown_declarations() -> None:
     with pytest.raises(ValueError, match="exact path"):
         _surface(resource_path=None)
     with pytest.raises(ValueError, match="schemas, handler, and projector"):
-        _surface(
-            kind="tool",
-            resource_family=None,
-            resource_path=None,
-        )
+        _surface(handler=None)
     with pytest.raises(ValueError, match="projector text"):
         _surface(
             kind="prompt",
@@ -55,6 +62,21 @@ def test_surface_registry_rejects_incomplete_or_unknown_declarations() -> None:
             resource_path=None,
             prompt_workflow=None,
         )
+    with pytest.raises(ValueError, match="content policy"):
+        _surface(content_policy="raw_downstream")
+
+
+def test_every_surface_entry_declares_valid_schemas_handler_and_projector() -> None:
+    specs = mcp_surface.surface_specs()
+
+    assert specs
+    for spec in specs:
+        assert spec.input_schema is not None
+        assert spec.output_schema is not None
+        Draft202012Validator.check_schema(spec.input_schema)
+        Draft202012Validator.check_schema(spec.output_schema)
+        assert callable(spec.handler)
+        assert callable(spec.projector)
 
 
 def test_surface_authorization_rejects_malformed_and_ambiguous_routes(
@@ -198,6 +220,7 @@ def test_tool_result_parsing_bounds_depth_and_ignores_non_text_content() -> None
 def _evidence(**overrides: Any) -> EvidenceEnvelope:
     values: dict[str, Any] = {
         "producer": "coverage",
+        "document_identity": "document:coverage",
         "complete": True,
         "counts_exact": True,
         "truncated": False,
@@ -226,17 +249,125 @@ def test_evidence_conclusive_requires_every_completeness_dimension() -> None:
         assert not complete.model_copy(update=update).conclusive
 
 
-def test_verification_result_infers_typed_defaults_and_helpers() -> None:
+@pytest.mark.parametrize(
+    ("status", "reasons"),
+    [
+        (DecisionStatus.PASSED, []),
+        (DecisionStatus.PASSED, [DecisionReasonCode.ASSERTION_FAILED]),
+        (DecisionStatus.FAILED, [DecisionReasonCode.VERIFIED]),
+        (DecisionStatus.INCOMPLETE, [DecisionReasonCode.ASSERTION_FAILED]),
+        (
+            DecisionStatus.INCOMPLETE,
+            [
+                DecisionReasonCode.INCOMPLETE_INSPECTION,
+                DecisionReasonCode.INCOMPLETE_INSPECTION,
+            ],
+        ),
+    ],
+)
+def test_decision_result_rejects_empty_incompatible_or_duplicate_reasons(
+    status: DecisionStatus,
+    reasons: list[DecisionReasonCode],
+) -> None:
+    with pytest.raises(ValidationError, match="reason_codes"):
+        DecisionResult(status=status, reason_codes=reasons)
+
+
+def test_decision_result_preserves_each_legitimate_status_reason_class() -> None:
+    controls = (
+        (DecisionStatus.PASSED, DecisionReasonCode.VERIFIED),
+        (DecisionStatus.FAILED, DecisionReasonCode.ASSERTION_FAILED),
+        (DecisionStatus.FAILED, DecisionReasonCode.UNSUPPORTED_ASSERTION),
+        (DecisionStatus.INCOMPLETE, DecisionReasonCode.INCOMPLETE_INSPECTION),
+        (DecisionStatus.INCOMPLETE, DecisionReasonCode.INVALID_NUMERIC_EVIDENCE),
+    )
+
+    for status, reason in controls:
+        decision = DecisionResult(status=status, reason_codes=[reason])
+        assert decision.status is status
+        assert decision.reason_codes == [reason]
+
+
+@pytest.mark.parametrize(
+    ("passed", "status", "reason"),
+    [
+        (True, DecisionStatus.PASSED, DecisionReasonCode.VERIFIED),
+        (False, DecisionStatus.FAILED, DecisionReasonCode.ASSERTION_FAILED),
+    ],
+)
+def test_inconclusive_evidence_cannot_authorize_pass_or_repairable_failure(
+    passed: bool,
+    status: DecisionStatus,
+    reason: DecisionReasonCode,
+) -> None:
+    evidence = _evidence(
+        document_identity=None,
+        complete=False,
+        counts_exact=False,
+        truncated=True,
+        stop_reason="deadline",
+        metrics_finite=False,
+        evaluated_count=0,
+    )
+    assert not evidence.conclusive
+
+    result = VerificationResult(
+        passed=passed,
+        status=status,
+        reason_codes=[reason],
+        evidence=evidence,
+    )
+
+    assert result.passed is False
+    assert result.status is DecisionStatus.INCOMPLETE
+    assert result.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert result.issues[0].code is FailureCode.INCOMPLETE_INSPECTION
+    assert result.decision is not None
+    assert result.decision.evidence_sha256 == evidence.sha256()
+
+
+def test_evidence_conclusiveness_preserves_legitimate_typed_decisions() -> None:
+    complete = _evidence()
+    incomplete = _evidence(complete=False, evaluated_count=0)
+
+    passed = VerificationResult(
+        passed=True,
+        status=DecisionStatus.PASSED,
+        reason_codes=[DecisionReasonCode.VERIFIED],
+        evidence=complete,
+    )
+    failed = VerificationResult(
+        passed=False,
+        status=DecisionStatus.FAILED,
+        reason_codes=[DecisionReasonCode.ASSERTION_FAILED],
+        evidence=complete,
+    )
+    inconclusive = VerificationResult.incomplete_result(evidence=incomplete)
+
+    assert passed.decision is not None
+    assert passed.decision.evidence_sha256 == complete.sha256()
+    assert failed.status is DecisionStatus.FAILED
+    assert inconclusive.status is DecisionStatus.INCOMPLETE
+
+
+def test_verification_result_maps_absent_evidence_to_incomplete() -> None:
     passed = VerificationResult(passed=True)
     failed = VerificationResult(passed=False)
     incomplete = VerificationResult(
         passed=False,
         status=DecisionStatus.INCOMPLETE,
     )
-    assert passed.reason_codes == [DecisionReasonCode.VERIFIED]
-    assert failed.reason_codes == [DecisionReasonCode.ASSERTION_FAILED]
+    assert passed.passed is False
+    assert passed.status is DecisionStatus.INCOMPLETE
+    assert passed.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert passed.issues[0].code is FailureCode.INCOMPLETE_INSPECTION
+    assert failed.status is DecisionStatus.INCOMPLETE
+    assert failed.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert failed.issues[0].code is FailureCode.INCOMPLETE_INSPECTION
     assert incomplete.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
-    assert VerificationResult.pass_result().metrics == {}
+
+    conclusive = _evidence()
+    assert VerificationResult.pass_result(evidence=conclusive).metrics == {}
 
     issue = VerificationIssue(code=FailureCode.INCOMPLETE_INSPECTION, message="partial")
     evidence = _evidence(complete=False, evaluated_count=0)
@@ -260,7 +391,7 @@ def test_verification_result_rejects_status_reason_and_digest_inconsistency() ->
             reason_codes=[DecisionReasonCode.ASSERTION_FAILED],
             decision=DecisionResult(
                 status=DecisionStatus.INCOMPLETE,
-                reason_codes=[DecisionReasonCode.ASSERTION_FAILED],
+                reason_codes=[DecisionReasonCode.INCOMPLETE_INSPECTION],
             ),
         )
 

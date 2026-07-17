@@ -59,7 +59,12 @@ def open_url_no_redirects(
 ) -> Any:
     """Open one validated URL while rejecting every redirect response."""
 
-    opener = urllib.request.build_opener(RejectHttpRedirectHandler())
+    # Never inherit HTTP(S)_PROXY for a local authority decision. An ambient
+    # proxy could otherwise redirect a validated request to a different sink.
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        RejectHttpRedirectHandler(),
+    )
     try:
         response = opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -88,8 +93,9 @@ def validate_endpoint(
 
     Loopback HTTP is permitted because Autodesk's desktop server is local.
     Non-loopback transports require the explicit ``allowlist`` policy, HTTPS,
-    an allowlisted hostname or address range, and an environment-provided
-    bearer token.
+    an allowlisted literal address, and an environment-provided bearer token.
+    Hostnames fail closed until the HTTP transport can pin the approved DNS
+    result at the socket boundary.
     """
 
     configured_policy = (
@@ -123,13 +129,20 @@ def validate_endpoint(
         port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     except ValueError as exc:
         raise EndpointPolicyError(f"invalid endpoint port: {exc}") from exc
+    try:
+        ipaddress.ip_address(host)
+    except ValueError as exc:
+        # DNS validation followed by a hostname-based client connection still
+        # permits a second, different resolution at the socket boundary. Until
+        # the transport can pin the approved address while preserving TLS SNI,
+        # hostname endpoints fail closed.
+        raise EndpointPolicyError(
+            "Fusion MCP hostname endpoints are disabled; use a literal IP address"
+        ) from exc
     resolved = _resolve_ips(host, port, resolver)
     loopback = bool(resolved) and all(
         ipaddress.ip_address(value).is_loopback for value in resolved
     )
-    if host == "localhost" and not loopback:
-        raise EndpointPolicyError("localhost resolved to a non-loopback address")
-
     if loopback:
         return EndpointDecision(
             endpoint=endpoint,

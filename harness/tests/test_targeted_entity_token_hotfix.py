@@ -127,6 +127,12 @@ class _FailingItemCollection:
         raise RuntimeError("collection-item-sensitive-detail")
 
 
+class _FailingCountCollection:
+    @property
+    def count(self) -> int:
+        raise RuntimeError("collection-count-sensitive-detail")
+
+
 class _PrematureStopCollection:
     count = 1
 
@@ -416,6 +422,34 @@ def test_entity_token_lookup_exception_is_inexact_and_fails_closed(
         }
     ]
     assert "token database unavailable" not in json.dumps(payload)
+
+
+def test_generic_fusion_read_failure_is_never_exact_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _FusionFixture([])
+    fixture.root.bRepBodies = _FailingCountCollection()  # type: ignore[assignment]
+    _install_fake_adsk(monkeypatch, fixture)
+
+    payload = _execute(
+        {
+            "queries": [
+                {
+                    "id": "body-by-name",
+                    "entity_type": "body",
+                    "selector": {"name": "missing"},
+                    "fields": ["exists"],
+                }
+            ]
+        }
+    )
+
+    assert payload["complete"] is False
+    assert payload["counts_exact"] is False
+    assert payload["stop_reason"] == "fusion_api_read_failed"
+    assert payload["results"][0]["match_count_exact"] is False
+    assert payload["warnings"] == [{"code": "FUSION_API_READ_FAILED"}]
+    assert "collection-count-sensitive-detail" not in json.dumps(payload)
 
 
 def test_entity_token_none_result_is_invalid_and_fails_closed(

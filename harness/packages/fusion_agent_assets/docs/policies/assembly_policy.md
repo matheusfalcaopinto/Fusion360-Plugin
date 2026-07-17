@@ -9,13 +9,16 @@ Required behavior:
 - Keep bodies inside their owning components.
 - Represent repeated parts as repeated occurrences when the workflow calls for reuse.
 - Create or persist inspectable joint contracts for every expected relationship.
-- Verify components, bodies, occurrences, joints, metadata, screenshots, physical properties, and interference before reporting success.
+- Verify components, bodies, occurrences, joints, metadata, physical properties, and interference before reporting success.
 - Fail closed when the active design cannot prove the requested assembly contract.
 
 V1.5 first-class workflows:
 
-- `spacer_plate_assembly`: two plates, repeated standoff occurrences, rigid joint contracts, metadata, screenshots, physical checks, and interference checks.
-- `hinge_assembly`: two hinge leaves, pin, alternating knuckles, revolute joint contract, metadata, screenshots, physical checks, and interference checks.
+- `spacer_plate_assembly`: two plates, repeated standoff occurrences, rigid joint contracts, metadata, typed readback, physical checks, and interference checks.
+- `hinge_assembly`: two hinge leaves, pin, alternating knuckles, revolute joint contract, metadata, typed readback, physical checks, and interference checks.
+
+Real capture/export is disabled by `deny_io` in 0.4.1. Do not add output or
+`screenshots_exist` contracts to a real assembly plan.
 
 Out of scope for V1.5:
 

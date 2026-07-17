@@ -371,7 +371,11 @@ class FusionRuntimeLifecycleBackend:
     ) -> None:
         try:
             await self._script_call(
-                _close_fixture_by_marker_script(marker, fingerprint),
+                _close_fixture_script(
+                    f"marker:{marker}",
+                    marker,
+                    fingerprint,
+                ),
                 semantics="mutating",
                 operation_id=f"benchmark:{trial_id}:prepare-cleanup",
             )
@@ -494,10 +498,10 @@ class FusionRuntimeBenchmarkBridge:
                 and finish.personal_project_access_count == 0
                 and finish.parallel_overlap_count == 0
             )
-            suffix = "" if cleanup_ok else f"; teardown evidence={finish}"
+            suffix = "" if cleanup_ok else "; fixture cleanup was incomplete"
             raise BenchmarkExecutionError(
-                f"real fixture identity read failed during preparation for {context.trial_id}: "
-                f"{type(identity_exc).__name__}: {identity_exc}{suffix}"
+                f"real fixture identity read failed during preparation for "
+                f"{context.trial_id}{suffix}"
             ) from identity_exc
         if not isinstance(identity, FixtureIdentity):
             identity = FixtureIdentity(**dict(identity))
@@ -572,23 +576,21 @@ class FusionRuntimeBenchmarkBridge:
         audit = ContainmentAudit()
         try:
             closed = bool(await backend.close_fixture_without_save(context, session))
-        except BaseException as exc:  # restoration is still mandatory
-            errors.append(f"close:{type(exc).__name__}:{exc}")
+        except BaseException:  # restoration is still mandatory
+            errors.append("fixture_close_failed")
         restoration_started = time.perf_counter()
         try:
             restored = bool(await backend.restore_original_document(context, session))
-        except BaseException as exc:
-            errors.append(f"restore:{type(exc).__name__}:{exc}")
+        except BaseException:
+            errors.append("original_restore_failed")
         try:
             active_id = await backend.read_active_document_id()
             restored = restored and active_id == session.original_document_id
             if active_id != session.original_document_id:
-                errors.append(
-                    f"active_document:{active_id!r}!=original:{session.original_document_id!r}"
-                )
-        except BaseException as exc:
+                errors.append("active_document_identity_mismatch")
+        except BaseException:
             restored = False
-            errors.append(f"restore_readback:{type(exc).__name__}:{exc}")
+            errors.append("restore_readback_failed")
         restoration_ms = (time.perf_counter() - restoration_started) * 1000
         try:
             open_document_ids = [
@@ -596,7 +598,7 @@ class FusionRuntimeBenchmarkBridge:
             ]
             if session.fixture_document_id in open_document_ids:
                 closed = False
-                errors.append(f"fixture_still_open:{session.fixture_document_id}")
+                errors.append("fixture_still_open")
             unidentified = [
                 value
                 for value in open_document_ids
@@ -611,19 +613,16 @@ class FusionRuntimeBenchmarkBridge:
             ):
                 if sorted(open_document_ids) != sorted(baseline):
                     closed = False
-                    errors.append(
-                        "open_document_inventory_drift:"
-                        f"{sorted(open_document_ids)!r}!={sorted(baseline)!r}"
-                    )
-        except BaseException as exc:
+                    errors.append("open_document_inventory_drift")
+        except BaseException:
             closed = False
-            errors.append(f"open_documents_readback:{type(exc).__name__}:{exc}")
+            errors.append("open_documents_readback_failed")
         try:
             audit = await backend.containment_audit(context, session)
             if not isinstance(audit, ContainmentAudit):
                 audit = ContainmentAudit(**dict(audit))
-        except BaseException as exc:
-            errors.append(f"audit:{type(exc).__name__}:{exc}")
+        except BaseException:
+            errors.append("containment_audit_failed")
             # Missing audit cannot prove no save/sync. Force containment failure.
             audit = ContainmentAudit(save_count=1)
         finally:
@@ -636,7 +635,7 @@ class FusionRuntimeBenchmarkBridge:
             personal_project_access_count=audit.personal_project_access_count,
             parallel_overlap_count=audit.parallel_overlap_count,
             restoration_ms=restoration_ms,
-            metadata={**audit.metadata, "errors": errors},
+            metadata={"containment_codes": sorted(set(errors))},
         )
 
     async def _require_active_identity(
@@ -861,7 +860,7 @@ def run(_context: str):
         fingerprint_matches = (
             fingerprint_attribute is not None and fingerprint_attribute.value == _FINGERPRINT
         )
-        if marker_matches or fingerprint_matches:
+        if marker_matches and fingerprint_matches:
             matches.append(candidate)
     if len(matches) > 1:
         raise RuntimeError("multiple documents have the unique benchmark marker")
@@ -882,9 +881,9 @@ def run(_context: str):
     fingerprint_matches = (
         fingerprint_attribute is not None and fingerprint_attribute.value == _FINGERPRINT
     )
-    if not marker_matches and not fingerprint_matches:
+    if not marker_matches or not fingerprint_matches:
         raise RuntimeError("refusing to close a document without an exact benchmark identity")
-    if marker_matches and _stable_document_key(target) != _DOCUMENT_ID:
+    if _stable_document_key(target) != _DOCUMENT_ID:
         raise RuntimeError("refusing to close a document with mismatched stable identity")
     active = app.activeDocument
     if _stable_document_key(active) != _DOCUMENT_ID:
@@ -895,48 +894,6 @@ def run(_context: str):
         .replace("__MARKER_JSON__", repr(json.dumps(marker)))
         .replace("__FINGERPRINT_JSON__", repr(json.dumps(fingerprint)))
         .replace("__STABLE_DOCUMENT_KEY_FUNCTION__", _STABLE_DOCUMENT_KEY_FUNCTION)
-    )
-
-
-def _close_fixture_by_marker_script(marker: str, fingerprint: str) -> str:
-    return """import adsk.core
-import adsk.fusion
-import json
-
-_GROUP = "fusion_agent_benchmark"
-_MARKER = json.loads(__MARKER_JSON__)
-_FINGERPRINT = json.loads(__FINGERPRINT_JSON__)
-
-def run(_context: str):
-    app = adsk.core.Application.get()
-    matches = []
-    for index in range(app.documents.count):
-        candidate = app.documents.item(index)
-        design = adsk.fusion.Design.cast(candidate.products.itemByProductType("DesignProductType"))
-        marker_attribute = (
-            design.rootComponent.attributes.itemByName(_GROUP, "trial_marker")
-            if design is not None else None
-        )
-        fingerprint_attribute = (
-            design.rootComponent.attributes.itemByName(_GROUP, "fixture_fingerprint")
-            if design is not None else None
-        )
-        marker_matches = marker_attribute is not None and marker_attribute.value == _MARKER
-        fingerprint_matches = (
-            fingerprint_attribute is not None and fingerprint_attribute.value == _FINGERPRINT
-        )
-        if marker_matches or fingerprint_matches:
-            matches.append(candidate)
-    if len(matches) > 1:
-        raise RuntimeError("multiple documents have the unique benchmark marker")
-    closed = True
-    if matches:
-        target = matches[0]
-        target.activate()
-        closed = bool(target.close(False))
-    print(json.dumps({"ok": True, "match_count": len(matches), "closed": closed}, sort_keys=True))
-""".replace("__MARKER_JSON__", repr(json.dumps(marker))).replace(
-        "__FINGERPRINT_JSON__", repr(json.dumps(fingerprint))
     )
 
 

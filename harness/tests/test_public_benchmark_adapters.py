@@ -159,10 +159,7 @@ async def test_exact_git_pin_is_enforced_before_task_execution() -> None:
     assert driver.preflight_calls == 1
     assert driver.execute_calls == 0
     assert all(result.state == "not_run" for result in report.results)
-    assert all(
-        result.reason and result.reason.startswith("revision_mismatch:")
-        for result in report.results
-    )
+    assert {result.reason for result in report.results} == {"revision_mismatch"}
 
 
 @pytest.mark.asyncio

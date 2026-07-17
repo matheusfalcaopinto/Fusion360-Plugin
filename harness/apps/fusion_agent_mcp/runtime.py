@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 from copy import deepcopy
 from dataclasses import dataclass
@@ -20,13 +21,18 @@ from agent_core.authority import (
     AuthorityBroker,
     AuthorityDeniedError,
     AuthorityPolicy,
+    BoundOperation,
+    CadTargetBinding,
     CapabilityLedger,
+    HostOutputDisabledError,
+    REAL_HOST_OUTPUT_DENIED_MESSAGE,
+    cad_operation_target_requirements,
 )
 from agent_core.capability_executor import CapabilityExecutionResult, CapabilityExecutor
 from agent_core.fast_path import FastPathService
 from agent_core.request_context import current_request_context
 from agent_core.session_controller import SessionController
-from cad_spec.v2 import CadSpecV2, OperationSpec
+from cad_spec.v2 import CadSpecV2, ExportOperation, OperationSpec
 from fusion_agent_mcp import __version__
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.backend import create_fusion_client, selected_backend
@@ -40,6 +46,32 @@ from telemetry.trace import JsonlTraceLogger
 
 
 _READINESS_TTL_SECONDS = 60.0
+
+
+def _host_io_platform_status() -> dict[str, str]:
+    """Return public, path-free support state for sealed host I/O staging."""
+
+    if os.name == "nt":
+        return {
+            "import_staging": "sealed_windows_handle",
+            "output_staging": "deny_io",
+        }
+    if os.name == "posix" and sys.platform.startswith("linux"):
+        memfd_supported = callable(getattr(os, "memfd_create", None)) and isinstance(
+            getattr(os, "MFD_ALLOW_SEALING", None), int
+        )
+        return {
+            "import_staging": (
+                "sealed_memfd" if memfd_supported else "fail_closed_unavailable"
+            ),
+            "output_staging": "deny_io",
+        }
+    return {
+        "import_staging": "fail_closed_unavailable",
+        "output_staging": "deny_io",
+    }
+
+
 MOCK_IMPLEMENTED_CAPABILITIES = frozenset(
     {
         "parameters",
@@ -90,7 +122,7 @@ MOCK_IMPLEMENTED_CAPABILITIES = frozenset(
 _PNG_1X1 = base64.b64encode(
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8"
-    b"\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+    b"\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xffr\x9cRg\x00\x00\x00\x00IEND\xaeB`\x82"
 ).decode("ascii")
 
 
@@ -272,9 +304,13 @@ class FusionAgentRuntime:
             # host I/O without preventing sessions that never touch the host
             # filesystem.  The exception text remains private.
             self.authority_policy = AuthorityPolicy.deny_all()
+        authority_ledger = CapabilityLedger(
+            self.outputs_root / ".authority" / "capabilities"
+        )
+        authority_ledger.reconcile_startup()
         self.authority_broker = AuthorityBroker(
             self.authority_policy,
-            ledger=CapabilityLedger(self.outputs_root / ".authority" / "capabilities"),
+            ledger=authority_ledger,
         )
         # A caller may inject a fully reviewed real benchmark backend.  When it
         # does not, the stock lifecycle-only backend is installed below; it
@@ -422,6 +458,8 @@ class FusionAgentRuntime:
             ).execute(spec, session_id=_request_session_id())
         if mode != "real":
             raise ValueError("mode must be 'mock' or 'real'")
+        if any(isinstance(operation, ExportOperation) for operation in spec.operations):
+            raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
 
         await self.ensure_ready()
         manifest = self.real_client.current_manifest
@@ -525,6 +563,7 @@ class FusionAgentRuntime:
             "readiness_ttl_seconds": _READINESS_TTL_SECONDS,
             "manifest_status": self.manifest_store.latest_status(),
             "authority_policy": self.authority_policy.safe_summary(),
+            "host_io_platform": _host_io_platform_status(),
             "real_benchmark_backend": self.real_benchmark_backend is not None,
             "closing": self._closing,
         }
@@ -570,8 +609,73 @@ class _MockCapabilityBackend:
     provider = "mock"
     capabilities = set(MOCK_IMPLEMENTED_CAPABILITIES)
 
+    def __init__(self) -> None:
+        self._bound: dict[str, BoundOperation] = {}
+
+    async def resolve_document_binding(self) -> CadTargetBinding:
+        return CadTargetBinding(
+            reference_kind="active_document",
+            requested_ref="active_document",
+            document_identity=hashlib.sha256(b"mock-document").hexdigest(),
+            entity_identity=hashlib.sha256(b"mock-root-component").hexdigest(),
+            fingerprint=hashlib.sha256(b"mock-document-binding").hexdigest(),
+        )
+
+    async def resolve_cad_target_binding(
+        self, operation: ExportOperation
+    ) -> CadTargetBinding:
+        return CadTargetBinding(
+            reference_kind="export_target",
+            requested_ref=str(operation.target_ref),
+            document_identity=hashlib.sha256(b"mock-document").hexdigest(),
+            entity_identity=hashlib.sha256(
+                str(operation.target_ref).encode("utf-8")
+            ).hexdigest(),
+            fingerprint=hashlib.sha256(
+                f"mock-export:{operation.target_ref}:{operation.format}".encode("utf-8")
+            ).hexdigest(),
+        )
+
+    async def resolve_operation_target_bindings(
+        self,
+        operation: OperationSpec,
+        *,
+        requirements: tuple[tuple[str, str], ...] | None = None,
+    ) -> tuple[CadTargetBinding, ...]:
+        document_identity = hashlib.sha256(b"mock-document").hexdigest()
+        return tuple(
+            CadTargetBinding(
+                reference_kind=(
+                    "parameter_absent"
+                    if reference_kind == "parameter_target"
+                    else reference_kind
+                ),
+                requested_ref=requested_ref,
+                document_identity=document_identity,
+                entity_identity=hashlib.sha256(
+                    f"mock-entity:{reference_kind}:{requested_ref}".encode("utf-8")
+                ).hexdigest(),
+                fingerprint=hashlib.sha256(
+                    f"mock-binding:{reference_kind}:{requested_ref}".encode("utf-8")
+                ).hexdigest(),
+            )
+            for reference_kind, requested_ref in (
+                cad_operation_target_requirements(operation)
+                if requirements is None
+                else requirements
+            )
+        )
+
     def preflight_operations(self, operations: list[OperationSpec]) -> None:
         del operations
+
+    def preflight_bound_operations(self, operations: list[BoundOperation]) -> None:
+        self._bound = {bound.operation.id: bound for bound in operations}
+
+    async def execute_bound_operation(self, bound: BoundOperation) -> dict[str, Any]:
+        if self._bound.get(bound.operation.id) != bound:
+            raise RuntimeError("mock bound operation does not match preflight")
+        return await self.execute_operation(bound.operation)
 
     async def execute_operation(self, operation: OperationSpec) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -624,7 +728,9 @@ class _MockFastBackend:
                     message=json.dumps(
                         {
                             "success": True,
+                            "complete": True,
                             "probe": "fusion_agent_active_command",
+                            "activeCommandRead": True,
                             "activeCommand": None,
                         }
                     )
@@ -680,7 +786,12 @@ class _MockFastBackend:
     def _read(self, arguments: dict[str, Any]) -> ToolResult:
         query = str(arguments.get("queryType") or "")
         if query == "activeCommand":
-            return ToolResult.success(activeCommand=None)
+            return ToolResult.success(
+                success=True,
+                complete=True,
+                activeCommandRead=True,
+                activeCommand=None,
+            )
         if query == "apiDocumentation":
             return ToolResult.success(
                 query=arguments.get("searchPattern"),

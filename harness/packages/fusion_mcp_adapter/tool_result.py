@@ -13,6 +13,21 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 PUBLIC_DOWNSTREAM_ERROR_MESSAGE = "The downstream Fusion operation failed."
 
+_PUBLIC_ERROR_MESSAGES: dict[str, str] = {
+    "CALL_CANCELLED": "The Fusion operation was cancelled.",
+    "CLIENT_CLOSED": "The Fusion connection is closed.",
+    "CONNECTION_LOST": "The Fusion connection was lost.",
+    "CONNECTION_UNAVAILABLE": "The Fusion connection is unavailable.",
+    "FUSION_OPERATION_FAILED": PUBLIC_DOWNSTREAM_ERROR_MESSAGE,
+    "MANIFEST_DRIFT": "The Fusion tool manifest changed; rediscovery is required.",
+    "MUTATION_OUTCOME_UNKNOWN": ("The mutation outcome is unknown; do not replay it."),
+    "READ_TIMEOUT_MAY_STILL_BE_RUNNING": "The Fusion read timed out.",
+    "TIMEOUT": "The Fusion operation timed out.",
+    "TOOL_SCHEMA_VALIDATION_ERROR": (
+        "The Fusion tool request or result did not match its schema."
+    ),
+}
+
 
 class PublicError(BaseModel):
     """Bounded error information safe for public responses and journals."""
@@ -197,6 +212,40 @@ class ToolResult(BaseModel):
         )
 
     @classmethod
+    def public_failure(
+        cls,
+        error_code: str,
+        *,
+        data: dict[str, Any] | None = None,
+        retryable: bool = False,
+    ) -> "ToolResult":
+        """Build a failure that is safe for every public and durable channel.
+
+        Callers must use this constructor for provider exceptions, schema
+        validator failures, subprocess errors, and other untrusted diagnostic
+        sources. Raw details deliberately have no parameter and therefore
+        cannot accidentally enter ``error_message`` or an MCP side channel.
+        """
+
+        code = str(error_code)
+        public_error = PublicError.create(
+            code=code,
+            generic_message=_PUBLIC_ERROR_MESSAGES.get(
+                code, "The operation could not be completed."
+            ),
+            retryable=retryable,
+        )
+        return cls.failure(
+            code,
+            public_error.generic_message,
+            data=data,
+            content=[],
+            structured_content=None,
+            meta={},
+            public_error=public_error,
+        )
+
+    @classmethod
     def from_mcp(cls, result: dict[str, Any]) -> "ToolResult":
         """Preserve every MCP result channel while keeping the legacy ``data`` view."""
 
@@ -212,21 +261,19 @@ class ToolResult(BaseModel):
             if structured is not None
             else _compatible_data_from_content(content, result)
         )
-        semantic_error = _semantic_failure_message(data)
-        if is_error or semantic_error or _explicit_error_field(data):
-            public_error = PublicError.downstream_failure()
-            return cls.failure(
-                "FUSION_OPERATION_FAILED",
-                public_error.generic_message,
-                # Downstream error channels are untrusted diagnostics.  They
-                # must not become canonical result data, exception text, MCP
-                # content, telemetry, or durable session artifacts.
-                data={},
-                content=[],
-                structured_content=None,
-                meta={},
-                public_error=public_error,
-            )
+        semantic_error = _semantic_failure_message(result) or _semantic_failure_message(
+            data
+        )
+        if (
+            is_error
+            or semantic_error
+            or _explicit_error_field(result)
+            or _explicit_error_field(data)
+        ):
+            # Downstream error channels are untrusted diagnostics. They must
+            # not become canonical result data, exception text, MCP content,
+            # telemetry, or durable session artifacts.
+            return cls.public_failure("FUSION_OPERATION_FAILED")
         return cls(
             ok=True,
             data=data,
@@ -284,14 +331,92 @@ def _semantic_failure_message(data: dict[str, Any]) -> str | None:
 
 
 def _explicit_error_field(data: dict[str, Any]) -> bool:
-    """Fail closed for malformed envelopes that omit a negative status flag."""
+    """Fail closed for contradictory or malformed success envelopes."""
 
-    if data.get("ok") is True or data.get("success") is True:
-        return False
-    return any(
-        isinstance(data.get(key), str) and bool(str(data[key]).strip())
-        for key in ("error", "error_message")
-    )
+    return _explicit_error_from_value(data, depth=0)
+
+
+def _explicit_error_from_value(value: Any, *, depth: int) -> bool:
+    """Find downstream failure channels at any JSON position.
+
+    Native servers are not required to put their acknowledgement under a
+    particular wrapper.  Walking only ``result``/``data`` allowed a positive
+    outer acknowledgement to hide a raw error under an arbitrary key or list.
+    The traversal is deliberately bounded; malformed, cyclic, over-deep, or
+    over-large envelopes fail closed instead of being accepted as successes.
+    """
+
+    seen: set[int] = set()
+    visited = 0
+    max_depth = 32
+    max_nodes = 4096
+    error_keys = {"error", "error_message", "exception", "traceback"}
+    failure_statuses = {"error", "failed", "failure", "fatal"}
+
+    def meaningful_error(candidate: Any) -> bool:
+        if candidate is None or candidate is False:
+            return False
+        if isinstance(candidate, str):
+            return bool(candidate.strip())
+        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+            return candidate != 0
+        if isinstance(candidate, (dict, list)):
+            return bool(candidate)
+        return True
+
+    def walk(candidate: Any, current_depth: int) -> bool:
+        nonlocal visited
+        visited += 1
+        if visited > max_nodes or current_depth > max_depth:
+            return True
+
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if not stripped or stripped[:1] not in {"{", "["}:
+                return False
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError):
+                return False
+            return walk(parsed, current_depth + 1)
+
+        if isinstance(candidate, list):
+            identity = id(candidate)
+            if identity in seen:
+                return True
+            seen.add(identity)
+            try:
+                return any(walk(item, current_depth + 1) for item in candidate)
+            finally:
+                seen.remove(identity)
+
+        if not isinstance(candidate, dict):
+            return False
+
+        identity = id(candidate)
+        if identity in seen:
+            return True
+        seen.add(identity)
+        try:
+            for raw_key, nested in candidate.items():
+                key = str(raw_key).strip().lower()
+                if key in error_keys and meaningful_error(nested):
+                    return True
+                if key in {"iserror", "is_error"} and nested is True:
+                    return True
+                if (
+                    key in {"status", "state", "outcome"}
+                    and isinstance(nested, str)
+                    and nested.strip().lower() in failure_statuses
+                ):
+                    return True
+                if walk(nested, current_depth + 1):
+                    return True
+            return False
+        finally:
+            seen.remove(identity)
+
+    return walk(value, depth)
 
 
 def _semantic_failure_from_value(value: Any, *, depth: int) -> str | None:

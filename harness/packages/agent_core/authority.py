@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import threading
 import time
 from dataclasses import asdict, dataclass, is_dataclass, replace
@@ -21,7 +22,7 @@ from typing import Any, Callable, Literal, cast
 from cad_spec.v2 import CadSpecV2, ExportOperation, ImportOperation, OperationSpec
 
 
-Direction = Literal["import", "export"]
+Direction = Literal["import", "export", "cad"]
 CapabilityState = Literal[
     "issued", "claimed", "consumed", "unknown", "revoked", "expired"
 ]
@@ -48,6 +49,18 @@ class AuthorityDeniedError(ValueError):
     error_code = "AUTHORITY_DENIED"
 
 
+class HostOutputDisabledError(AuthorityDeniedError):
+    """Real Fusion export/capture is structurally disabled for this release."""
+
+    error_code = "HOST_OUTPUT_DISABLED"
+
+
+REAL_HOST_OUTPUT_POLICY = "deny_io"
+REAL_HOST_OUTPUT_DENIED_MESSAGE = (
+    "real Fusion export and capture are disabled by deny_io in 0.4.1"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorityRoot:
     id: str
@@ -70,24 +83,30 @@ class AuthorityPolicy:
 
     @property
     def io_enabled(self) -> bool:
-        return bool(self.import_roots or self.export_roots)
+        """Report only executable real host I/O for this release.
+
+        Export roots remain parsed for one compatibility cycle, but `deny_io`
+        means they cannot enable a real operation in 0.4.1.
+        """
+
+        return bool(self.import_roots)
 
     @property
     def root_ids(self) -> dict[str, tuple[str, ...]]:
-        return {
-            "import": tuple(root.id for root in self.import_roots),
-            "export": tuple(root.id for root in self.export_roots),
-        }
+        return {"import": tuple(root.id for root in self.import_roots)}
 
     def safe_summary(self) -> dict[str, object]:
         """Return the only policy fields suitable for public diagnostics."""
 
         return {
             "digest": self.digest,
-            "io_enabled": self.io_enabled,
+            "io_enabled": bool(self.import_roots),
+            "import_enabled": bool(self.import_roots),
+            "output_enabled": False,
+            "output_policy": REAL_HOST_OUTPUT_POLICY,
+            "overwrite_supported": False,
             "root_ids": {
-                direction: list(root_ids)
-                for direction, root_ids in self.root_ids.items()
+                "import": [root.id for root in self.import_roots],
             },
         }
 
@@ -209,6 +228,7 @@ class CadTargetBinding:
     document_identity: str
     entity_identity: str
     fingerprint: str
+    producer_operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +293,57 @@ class CapabilityLedger:
         self.root = Path(root) if root is not None else None
         self._records: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+
+    def reconcile_startup(self) -> int:
+        """Make interrupted durable claims terminal before accepting work.
+
+        A process can stop after the exclusive claim marker is created or
+        after the record reaches ``claimed`` but before a terminal outcome is
+        persisted.  Neither state may be retried after restart: provider
+        dispatch might already have happened.  Startup therefore persists
+        ``unknown`` for both crash windows while leaving unclaimed grants and
+        terminal records unchanged.
+        """
+
+        if self.root is None:
+            return 0
+        with self._lock:
+            try:
+                record_paths = tuple(sorted(self.root.glob("*.json")))
+            except OSError as exc:
+                raise AuthorityDeniedError(
+                    "capability ledger reconciliation is unavailable"
+                ) from exc
+
+            reconciled = 0
+            for record_path in record_paths:
+                if record_path.is_symlink() or not record_path.is_file():
+                    continue
+                try:
+                    record = json.loads(record_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    # An unreadable record is already unclaimable through
+                    # _disk_record.  Do not trust it enough to derive a path.
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                capability_id = record.get("capability_id")
+                if (
+                    not isinstance(capability_id, str)
+                    or record_path.name != f"{capability_id}.json"
+                ):
+                    # Never derive a write target from persisted record data.
+                    continue
+                state = record.get("state")
+                interrupted = state == "claimed" or (
+                    state == "issued"
+                    and os.path.lexists(self._claim_path(capability_id))
+                )
+                if not interrupted:
+                    continue
+                self._write_disk_state_at(record_path, record, "unknown")
+                reconciled += 1
+            return reconciled
 
     def issue(self, capability: OperationCapability) -> None:
         record = {**asdict(capability), "state": "issued"}
@@ -416,8 +487,14 @@ class CapabilityLedger:
         return value
 
     def _write_disk_state(self, record: dict[str, Any], state: CapabilityState) -> None:
-        updated = {**record, "state": state}
         path = self._record_path(str(record["capability_id"]))
+        self._write_disk_state_at(path, record, state)
+
+    @staticmethod
+    def _write_disk_state_at(
+        path: Path, record: dict[str, Any], state: CapabilityState
+    ) -> None:
+        updated = {**record, "state": state}
         temporary = path.with_suffix(f".{os.getpid()}.{secrets.token_hex(4)}.tmp")
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
@@ -480,6 +557,7 @@ class AuthorityBroker:
         if not provider.strip():
             raise AuthorityDeniedError("provider is required for operation authority")
         provided_targets = target_bindings_by_operation or {}
+        producer_map = cad_graph_target_producers(spec)
         operation_ids = {operation.id for operation in spec.operations}
         unknown_target_operations = set(provided_targets) - operation_ids
         if unknown_target_operations:
@@ -493,10 +571,12 @@ class AuthorityBroker:
             operation_digest = _model_digest(operation)
             host_path = self._bind_host_path(operation)
             target_bindings = _validated_target_bindings(
-                operation, provided_targets.get(operation.id, ())
+                operation,
+                provided_targets.get(operation.id, ()),
+                expected_producers=producer_map.get(operation.id, {}),
             )
             proof = None
-            if host_path is not None:
+            if host_path is not None or target_bindings:
                 proof = BindingProof(
                     algorithm="sha256",
                     digest=_binding_digest(
@@ -524,19 +604,28 @@ class AuthorityBroker:
         issued_at = self._clock()
         bound_operations: list[BoundOperation] = []
         for bound in pending:
-            if bound.host_path is None or bound.proof is None:
+            if bound.proof is None:
                 bound_operations.append(bound)
                 continue
+            direction: Direction = (
+                bound.host_path.direction if bound.host_path is not None else "cad"
+            )
             capability = OperationCapability(
                 capability_id=secrets.token_urlsafe(24),
-                direction=bound.host_path.direction,
-                root_id=bound.host_path.root_id,
-                canonical_path=bound.host_path.canonical_path,
+                direction=direction,
+                root_id=bound.host_path.root_id if bound.host_path is not None else "",
+                canonical_path=(
+                    bound.host_path.canonical_path
+                    if bound.host_path is not None
+                    else ""
+                ),
                 spec_digest=bound.spec_digest,
                 operation_digest=bound.operation_digest,
                 session_id=session_id,
                 provider=provider,
-                overwrite=bound.host_path.overwrite,
+                overwrite=(
+                    bound.host_path.overwrite if bound.host_path is not None else False
+                ),
                 issued_at=issued_at,
                 expires_at=issued_at + self.policy.capability_ttl_seconds,
                 binding_digest=bound.proof.digest,
@@ -551,10 +640,110 @@ class AuthorityBroker:
         )
 
     def validate_host_requests(self, spec: CadSpecV2) -> None:
-        """Validate every host path before any provider-side target resolution."""
+        """Validate every host path and produced reference before provider reads."""
 
+        cad_graph_target_producers(spec)
         for operation in spec.operations:
             self._bind_host_path(operation)
+
+    def prepare_operation(
+        self,
+        spec: CadSpecV2,
+        operation: OperationSpec,
+        *,
+        session_id: str,
+        provider: str,
+        target_bindings: tuple[CadTargetBinding, ...] = (),
+    ) -> BoundOperation:
+        """Issue one just-in-time grant while retaining the complete graph digest.
+
+        The full graph is revalidated before each issuance.  This lets a target
+        produced by an earlier operation be materialized and resolved only
+        after its producer succeeds, without reducing the capability to a
+        caller-selected one-operation spec.
+        """
+
+        if not session_id.strip():
+            raise AuthorityDeniedError("session id is required for operation authority")
+        if not provider.strip():
+            raise AuthorityDeniedError("provider is required for operation authority")
+        operations_by_id = {item.id: item for item in spec.operations}
+        canonical_operation = operations_by_id.get(operation.id)
+        if canonical_operation is None or canonical_operation != operation:
+            raise AuthorityDeniedError(
+                "just-in-time capability operation is outside the validated graph"
+            )
+        producer_map = cad_graph_target_producers(spec)
+        spec_digest = _model_digest(spec)
+        operation_digest = _model_digest(operation)
+        host_path = self._bind_host_path(operation)
+        validated_targets = _validated_target_bindings(
+            operation,
+            target_bindings,
+            expected_producers=producer_map.get(operation.id, {}),
+        )
+        proof = None
+        if host_path is not None or validated_targets:
+            proof = BindingProof(
+                algorithm="sha256",
+                digest=_binding_digest(
+                    host_path,
+                    validated_targets,
+                    spec_digest=spec_digest,
+                    operation_digest=operation_digest,
+                    session_id=session_id,
+                    provider=provider,
+                ),
+            )
+        bound = BoundOperation(
+            operation=operation,
+            spec_digest=spec_digest,
+            operation_digest=operation_digest,
+            session_id=session_id,
+            provider=provider,
+            host_path=host_path,
+            target_bindings=validated_targets,
+            proof=proof,
+        )
+        if proof is None:
+            return bound
+        issued_at = self._clock()
+        capability = OperationCapability(
+            capability_id=secrets.token_urlsafe(24),
+            direction=(host_path.direction if host_path is not None else "cad"),
+            root_id=host_path.root_id if host_path is not None else "",
+            canonical_path=host_path.canonical_path if host_path is not None else "",
+            spec_digest=spec_digest,
+            operation_digest=operation_digest,
+            session_id=session_id,
+            provider=provider,
+            overwrite=host_path.overwrite if host_path is not None else False,
+            issued_at=issued_at,
+            expires_at=issued_at + self.policy.capability_ttl_seconds,
+            binding_digest=proof.digest,
+        )
+        self.ledger.issue(capability)
+        return replace(bound, capability=capability)
+
+    def validate_legacy_output_requests(
+        self, operations: tuple[LegacyOutputOperation, ...]
+    ) -> None:
+        """Validate deprecated output paths before any Fusion identity read."""
+
+        if len({operation.id for operation in operations}) != len(operations):
+            raise AuthorityDeniedError("legacy output operation ids must be unique")
+        for operation in operations:
+            if operation.kind == "legacy.capture" and operation.format != "png":
+                raise AuthorityDeniedError("legacy capture format must be png")
+            _resolve_host_path(
+                self.policy,
+                direction="export",
+                root_id=None,
+                requested_path=operation.path,
+                format_name=operation.format,
+                overwrite=operation.overwrite,
+                explicit_ref=False,
+            )
 
     def prepare_legacy_output_graph(
         self,
@@ -562,6 +751,8 @@ class AuthorityBroker:
         *,
         session_id: str,
         provider: str,
+        target_bindings_by_operation: dict[str, tuple[CadTargetBinding, ...]]
+        | None = None,
     ) -> PreparedOperationGraph:
         """Bind all deprecated v1 outputs before the first provider dispatch."""
 
@@ -569,8 +760,13 @@ class AuthorityBroker:
             raise AuthorityDeniedError("session id is required for operation authority")
         if not provider.strip():
             raise AuthorityDeniedError("provider is required for operation authority")
-        if len({operation.id for operation in operations}) != len(operations):
-            raise AuthorityDeniedError("legacy output operation ids must be unique")
+        self.validate_legacy_output_requests(operations)
+        provided_targets = target_bindings_by_operation or {}
+        operation_ids = {operation.id for operation in operations}
+        if set(provided_targets) != operation_ids:
+            raise AuthorityDeniedError(
+                "legacy host outputs require one live target proof per operation"
+            )
         spec_digest = _json_digest(
             {
                 "schema_version": "fusion_agent.legacy_host_io.v1",
@@ -591,11 +787,9 @@ class AuthorityBroker:
                 overwrite=operation.overwrite,
                 explicit_ref=False,
             )
-            target_bindings = _legacy_target_bindings(
+            target_bindings = _validated_legacy_target_bindings(
                 operation,
-                spec_digest,
-                session_id=session_id,
-                provider=provider,
+                provided_targets.get(operation.id, ()),
             )
             proof = BindingProof(
                 algorithm="sha256",
@@ -692,14 +886,32 @@ class AuthorityBroker:
 
     def validate(self, bound: BoundOperation) -> None:
         operation = bound.operation
-        if not isinstance(
-            operation, (ImportOperation, ExportOperation, LegacyOutputOperation)
-        ):
-            if bound.host_path is not None or bound.capability is not None:
-                raise AuthorityDeniedError("non-I/O operation carries host authority")
+        requires_authority = isinstance(operation, LegacyOutputOperation) or (
+            not isinstance(operation, LegacyOutputOperation)
+            and _operation_requires_authority(operation)
+        )
+        if not requires_authority:
+            if (
+                bound.host_path is not None
+                or bound.capability is not None
+                or bound.proof is not None
+                or bound.target_bindings
+            ):
+                raise AuthorityDeniedError(
+                    "read-only operation carries mutation authority"
+                )
             return
-        if bound.host_path is None or bound.capability is None or bound.proof is None:
-            raise AuthorityDeniedError("host I/O requires a complete bound capability")
+        if bound.capability is None or bound.proof is None:
+            raise AuthorityDeniedError(
+                "mutating operation requires a complete bound capability"
+            )
+        requires_host_path = isinstance(
+            operation, (ImportOperation, ExportOperation, LegacyOutputOperation)
+        )
+        if requires_host_path and bound.host_path is None:
+            raise AuthorityDeniedError("host I/O requires a bound host path")
+        if not requires_host_path and bound.host_path is not None:
+            raise AuthorityDeniedError("CAD-only operation carries host authority")
         if _model_digest(operation) != bound.operation_digest:
             raise AuthorityDeniedError("operation changed after authority was issued")
         if isinstance(operation, LegacyOutputOperation):
@@ -718,14 +930,14 @@ class AuthorityBroker:
             raise AuthorityDeniedError("operation binding proof does not match")
         capability = bound.capability
         expected_capability = (
-            bound.host_path.direction,
-            bound.host_path.root_id,
-            bound.host_path.canonical_path,
+            bound.host_path.direction if bound.host_path is not None else "cad",
+            bound.host_path.root_id if bound.host_path is not None else "",
+            bound.host_path.canonical_path if bound.host_path is not None else "",
             bound.spec_digest,
             bound.operation_digest,
             bound.session_id,
             bound.provider,
-            bound.host_path.overwrite,
+            bound.host_path.overwrite if bound.host_path is not None else False,
             expected_binding,
         )
         actual_capability = (
@@ -741,7 +953,8 @@ class AuthorityBroker:
         )
         if actual_capability != expected_capability:
             raise AuthorityDeniedError("capability is not bound to this operation")
-        revalidate_host_path(bound.host_path)
+        if bound.host_path is not None:
+            revalidate_host_path(bound.host_path)
 
     def _bind_host_path(self, operation: OperationSpec) -> HostPathBinding | None:
         if isinstance(operation, ImportOperation):
@@ -995,18 +1208,53 @@ def _canonical_target(path: Path, direction: Direction) -> tuple[Path, bool]:
 
 def _resource_fingerprint(path: Path, *, direction: Direction, existed: bool) -> str:
     if direction == "import" or existed:
-        stat = path.stat()
-        payload = {
-            "device": int(stat.st_dev),
-            "inode": int(stat.st_ino),
-            "size": int(stat.st_size),
-            "mtime_ns": int(stat.st_mtime_ns),
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise AuthorityDeniedError(
+                "host resource could not be opened safely"
+            ) from exc
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise AuthorityDeniedError("host resource must be a regular file")
+            content_digest: str | None = None
+            if direction == "import":
+                digest = hashlib.sha256()
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                content_digest = digest.hexdigest()
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            current = path.lstat()
+        except OSError as exc:
+            raise AuthorityDeniedError("host resource changed during binding") from exc
+        identity = (int(before.st_dev), int(before.st_ino))
+        if identity != (int(after.st_dev), int(after.st_ino)) or identity != (
+            int(current.st_dev),
+            int(current.st_ino),
+        ):
+            raise AuthorityDeniedError("host resource changed during binding")
+        if int(before.st_size) != int(after.st_size) or int(before.st_mtime_ns) != int(
+            after.st_mtime_ns
+        ):
+            raise AuthorityDeniedError("host resource changed during binding")
+        payload: dict[str, object] = {
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "size": int(before.st_size),
+            "mtime_ns": int(before.st_mtime_ns),
         }
+        if content_digest is not None:
+            payload["sha256"] = content_digest
     else:
-        stat = path.parent.stat()
+        parent_stat = path.parent.stat()
         payload = {
-            "parent_device": int(stat.st_dev),
-            "parent_inode": int(stat.st_ino),
+            "parent_device": int(parent_stat.st_dev),
+            "parent_inode": int(parent_stat.st_ino),
             "destination_absent": True,
         }
     return _json_digest(payload)
@@ -1121,68 +1369,291 @@ def _is_contained(root: Path, target: Path) -> bool:
 def _validated_target_bindings(
     operation: OperationSpec,
     bindings: tuple[CadTargetBinding, ...],
+    *,
+    expected_producers: dict[tuple[str, str], str] | None = None,
 ) -> tuple[CadTargetBinding, ...]:
-    if not isinstance(operation, ExportOperation):
+    if not _operation_requires_authority(operation):
         if bindings:
             raise AuthorityDeniedError(
-                "non-export operation carries CAD target authority"
+                "read-only operation carries CAD target authority"
             )
         return ()
-    if len(bindings) != 1:
-        raise AuthorityDeniedError(
-            "host export requires exactly one resolved CAD target binding"
-        )
-    binding = bindings[0]
-    expected_ref = str(operation.target_ref)
-    if (
-        binding.reference_kind != "export_target"
-        or binding.requested_ref != expected_ref
-    ):
-        raise AuthorityDeniedError("CAD target binding does not match export reference")
-    if not all(
-        isinstance(value, str) and value.strip()
-        for value in (
-            binding.document_identity,
-            binding.entity_identity,
-            binding.fingerprint,
-        )
-    ):
-        raise AuthorityDeniedError("CAD target binding identity proof is incomplete")
-    if not re.fullmatch(r"[0-9a-f]{64}", binding.fingerprint):
-        raise AuthorityDeniedError("CAD target binding fingerprint is invalid")
+    expected_targets = cad_operation_target_requirements(operation)
+    if isinstance(operation, ExportOperation):
+        if len(bindings) != 1:
+            raise AuthorityDeniedError(
+                "export operation requires exactly one resolved CAD target binding"
+            )
+        binding = bindings[0]
+        expected_ref = str(operation.target_ref)
+        if (
+            binding.reference_kind != "export_target"
+            or binding.requested_ref != expected_ref
+        ):
+            raise AuthorityDeniedError(
+                "CAD target binding does not match export reference"
+            )
+    else:
+        expected = (("active_document", "active_document"), *expected_targets)
+        if len(bindings) != len(expected):
+            raise AuthorityDeniedError(
+                "mutating operation lacks exact document/entity target bindings"
+            )
+        if not all(
+            _binding_matches_requirement(binding, requirement)
+            for binding, requirement in zip(bindings, expected, strict=True)
+        ):
+            raise AuthorityDeniedError(
+                "CAD target bindings do not match the operation references"
+            )
+        document_identity = bindings[0].document_identity
+        if any(
+            binding.document_identity != document_identity for binding in bindings[1:]
+        ):
+            raise AuthorityDeniedError(
+                "CAD target bindings do not belong to the bound document"
+            )
+        if expected_producers is not None:
+            for binding, requirement in zip(
+                bindings[1:], expected_targets, strict=True
+            ):
+                expected_producer = expected_producers.get(requirement)
+                if binding.producer_operation_id != expected_producer:
+                    raise AuthorityDeniedError(
+                        "CAD target binding producer proof does not match the validated graph"
+                    )
+    for binding in bindings:
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                binding.document_identity,
+                binding.entity_identity,
+                binding.fingerprint,
+            )
+        ):
+            raise AuthorityDeniedError(
+                "CAD target binding identity proof is incomplete"
+            )
+        if not all(
+            re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in (
+                binding.document_identity,
+                binding.entity_identity,
+                binding.fingerprint,
+            )
+        ):
+            raise AuthorityDeniedError("CAD target binding proof is invalid")
     return bindings
 
 
-def _legacy_target_bindings(
-    operation: LegacyOutputOperation,
-    spec_digest: str,
-    *,
-    session_id: str,
-    provider: str,
-) -> tuple[CadTargetBinding, ...]:
-    document_identity = _json_digest(
-        {
-            "scope": "legacy-output-session",
-            "session_id": session_id,
-            "provider": provider,
-            "spec_digest": spec_digest,
-        }
-    )
-    return (
-        CadTargetBinding(
-            reference_kind=operation.kind,
-            requested_ref=operation.target_identity,
-            document_identity=document_identity,
-            entity_identity=operation.target_identity,
-            fingerprint=_json_digest(
-                {
-                    "reference_kind": operation.kind,
-                    "requested_ref": operation.target_identity,
-                    "spec_digest": spec_digest,
-                }
+def _binding_matches_requirement(
+    binding: CadTargetBinding,
+    requirement: tuple[str, str],
+) -> bool:
+    reference_kind, requested_ref = requirement
+    if binding.requested_ref != requested_ref:
+        return False
+    if reference_kind == "parameter_target":
+        return binding.reference_kind in {"parameter_existing", "parameter_absent"}
+    return binding.reference_kind == reference_kind
+
+
+def cad_operation_target_requirements(
+    operation: OperationSpec,
+) -> tuple[tuple[str, str], ...]:
+    """Return every pre-existing CAD reference a mutation can dereference.
+
+    The ordered registry is shared by authority issuance and provider target
+    resolution.  Result names and newly-created output names are deliberately
+    excluded; they are bound by the producing operation digest.  Unknown
+    operation kinds fail closed so a new mutator cannot silently inherit only
+    document-level authority.
+    """
+
+    kind = str(operation.kind)
+
+    def one(reference_kind: str, value: Any) -> tuple[tuple[str, str], ...]:
+        if value is None:
+            return ()
+        return ((reference_kind, str(value)),)
+
+    def many(reference_kind: str, values: Any) -> tuple[tuple[str, str], ...]:
+        return tuple((reference_kind, str(value)) for value in values or ())
+
+    if kind == "parameter.set":
+        return one("parameter_target", getattr(operation, "name"))
+    if kind == "io.import":
+        return ()
+    if kind == "component.create":
+        return one("component", getattr(operation, "parent_ref", None))
+    if kind == "sketch.create":
+        return one("component", getattr(operation, "component_ref"))
+    if kind in {"sketch.rectangle", "sketch.circle"}:
+        return one("sketch", getattr(operation, "sketch_ref"))
+    if kind == "feature.extrude":
+        return (
+            *one("component", getattr(operation, "component_ref")),
+            *one("profile", getattr(operation, "profile_ref")),
+            *one(
+                "body",
+                getattr(operation, "target_body_ref", None)
+                if getattr(operation, "operation", None) != "new_body"
+                else None,
             ),
-        ),
+        )
+    if kind in {"sketch.constraint", "sketch.dimension"}:
+        sketch_ref = str(getattr(operation, "sketch_ref"))
+        return (
+            ("sketch", sketch_ref),
+            *tuple(
+                ("sketch_entity", f"{sketch_ref}::{entity_ref}")
+                for entity_ref in getattr(operation, "entity_refs")
+            ),
+        )
+    if kind == "feature.revolve":
+        return (
+            *one("component", getattr(operation, "component_ref")),
+            *one("profile", getattr(operation, "profile_ref")),
+            *one("axis", getattr(operation, "axis_ref")),
+            *one(
+                "body",
+                getattr(operation, "target_body_ref", None)
+                if getattr(operation, "operation", None) != "new_body"
+                else None,
+            ),
+        )
+    if kind == "feature.sweep":
+        return (
+            *one("component", getattr(operation, "component_ref")),
+            *one("profile", getattr(operation, "profile_ref")),
+            *one("path", getattr(operation, "path_ref")),
+            *one(
+                "body",
+                getattr(operation, "target_body_ref", None)
+                if getattr(operation, "operation", None) != "new_body"
+                else None,
+            ),
+        )
+    if kind == "feature.loft":
+        return (
+            *one("component", getattr(operation, "component_ref")),
+            *many("profile", getattr(operation, "profile_refs")),
+            *many("path", getattr(operation, "guide_refs")),
+            *one(
+                "body",
+                getattr(operation, "target_body_ref", None)
+                if getattr(operation, "operation", None) != "new_body"
+                else None,
+            ),
+        )
+    if kind == "feature.pattern":
+        return (
+            *many("geometry", getattr(operation, "target_refs")),
+            *one("axis", getattr(operation, "axis_ref", None)),
+            *one("path", getattr(operation, "path_ref", None)),
+        )
+    if kind == "feature.mirror":
+        return (
+            *many("geometry", getattr(operation, "target_refs")),
+            *one("plane", getattr(operation, "plane_ref")),
+        )
+    if kind == "feature.boolean":
+        return (
+            *one("body", getattr(operation, "target_ref")),
+            *many("body", getattr(operation, "tool_refs")),
+        )
+    if kind == "assembly.joint":
+        return (
+            *one("occurrence", getattr(operation, "parent_ref")),
+            *one("occurrence", getattr(operation, "child_ref")),
+        )
+    if kind == "assembly.rigid_group":
+        return many("occurrence", getattr(operation, "occurrence_refs"))
+    if kind in {"experimental.sheet_metal", "experimental.cam"}:
+        return one("geometry", getattr(operation, "target_ref"))
+    if kind == "io.export":
+        return one("export_target", getattr(operation, "target_ref"))
+    if kind.startswith("analysis."):
+        return ()
+    raise AuthorityDeniedError(
+        f"operation target binding registry does not support {kind}"
     )
+
+
+def cad_graph_target_producers(
+    spec: CadSpecV2,
+) -> dict[str, dict[tuple[str, str], str]]:
+    """Bind in-graph references to a unique, declared producer operation.
+
+    Only outputs whose identity can be resolved after materialization are
+    registered.  A consumer must transitively depend on the producer; a name
+    collision cannot silently turn a planned output into an external target.
+    """
+
+    produced: dict[tuple[str, str], str] = {}
+    dependencies: dict[str, frozenset[str]] = {}
+    result: dict[str, dict[tuple[str, str], str]] = {}
+    for operation in spec.operations:
+        ancestors: set[str] = set()
+        for dependency in operation.depends_on:
+            ancestors.add(str(dependency))
+            ancestors.update(dependencies.get(str(dependency), frozenset()))
+        dependencies[operation.id] = frozenset(ancestors)
+
+        operation_producers: dict[tuple[str, str], str] = {}
+        for requirement in cad_operation_target_requirements(operation):
+            producer = produced.get(requirement)
+            if producer is None:
+                continue
+            if producer not in ancestors:
+                raise AuthorityDeniedError(
+                    f"operation {operation.id} references planned target "
+                    f"{requirement[1]!r} without a declared dependency on {producer}"
+                )
+            operation_producers[requirement] = producer
+        result[operation.id] = operation_producers
+
+        for output in cad_operation_produced_targets(operation):
+            previous = produced.get(output)
+            if previous is not None:
+                raise AuthorityDeniedError(
+                    f"CAD graph target {output[1]!r} has multiple producers: "
+                    f"{previous}, {operation.id}"
+                )
+            produced[output] = operation.id
+    return result
+
+
+def cad_operation_produced_targets(
+    operation: OperationSpec,
+) -> tuple[tuple[str, str], ...]:
+    kind = str(operation.kind)
+    if kind == "component.create":
+        return (("component", str(getattr(operation, "name"))),)
+    if kind == "sketch.create":
+        return (("sketch", str(getattr(operation, "name"))),)
+    if kind in {"sketch.rectangle", "sketch.circle"}:
+        return (("profile", str(getattr(operation, "result_ref"))),)
+    if (
+        kind
+        in {
+            "feature.extrude",
+            "feature.revolve",
+            "feature.sweep",
+            "feature.loft",
+        }
+        and getattr(operation, "operation", None) == "new_body"
+    ):
+        result_name = str(getattr(operation, "result_name"))
+        return (("body", result_name), ("geometry", result_name))
+    if kind == "io.import":
+        component_name = str(getattr(operation, "component_name"))
+        return (("component", component_name),)
+    return ()
+
+
+def _operation_requires_authority(operation: OperationSpec) -> bool:
+    return not str(operation.kind).startswith("analysis.")
 
 
 def _validated_legacy_target_bindings(
@@ -1194,11 +1665,15 @@ def _validated_legacy_target_bindings(
             "legacy host output requires exactly one target binding"
         )
     binding = bindings[0]
-    if (
-        binding.reference_kind != operation.kind
-        or binding.requested_ref != operation.target_identity
-        or binding.entity_identity != operation.target_identity
-    ):
+    expected_kind = (
+        "export_target" if operation.kind == "legacy.export" else "active_document"
+    )
+    expected_ref = (
+        operation.target_identity
+        if operation.kind == "legacy.export"
+        else "active_document"
+    )
+    if binding.reference_kind != expected_kind or binding.requested_ref != expected_ref:
         raise AuthorityDeniedError(
             "legacy output target binding does not match the operation"
         )
@@ -1213,13 +1688,15 @@ def _validated_legacy_target_bindings(
         raise AuthorityDeniedError("legacy output target identity proof is incomplete")
     if not re.fullmatch(r"[0-9a-f]{64}", binding.document_identity):
         raise AuthorityDeniedError("legacy document binding fingerprint is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", binding.entity_identity):
+        raise AuthorityDeniedError("legacy entity binding fingerprint is invalid")
     if not re.fullmatch(r"[0-9a-f]{64}", binding.fingerprint):
         raise AuthorityDeniedError("legacy target binding fingerprint is invalid")
     return bindings
 
 
 def _binding_digest(
-    host_path: HostPathBinding,
+    host_path: HostPathBinding | None,
     targets: tuple[CadTargetBinding, ...],
     *,
     spec_digest: str,
@@ -1229,7 +1706,7 @@ def _binding_digest(
 ) -> str:
     return _json_digest(
         {
-            "host_path": asdict(host_path),
+            "host_path": asdict(host_path) if host_path is not None else None,
             "targets": [asdict(target) for target in targets],
             "spec_digest": spec_digest,
             "operation_digest": operation_digest,
@@ -1277,5 +1754,7 @@ __all__ = [
     "LegacyOutputOperation",
     "OperationCapability",
     "PreparedOperationGraph",
+    "cad_graph_target_producers",
+    "cad_operation_target_requirements",
     "revalidate_host_path",
 ]

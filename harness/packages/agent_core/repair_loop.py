@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -181,9 +180,19 @@ class RepairLoop:
     ) -> bool:
         if not self.executor or not spec.components:
             return False
+        activate_bound = getattr(self.executor, "activate_component_bound", None)
+        if not callable(activate_bound):
+            return False
         target = spec.components[0].name
         try:
-            return bool(await self.executor.activate_component(target))
+            return bool(
+                await activate_bound(
+                    spec,
+                    target,
+                    context or ExecutionContext(),
+                    issue,
+                )
+            )
         except Exception:
             return False
 
@@ -192,9 +201,12 @@ class RepairLoop:
     ) -> bool:
         if not self.executor:
             return False
+        replay_bound = getattr(self.executor, "replay_features_bound", None)
+        if not callable(replay_bound):
+            return False
         try:
             execution_context = context or ExecutionContext()
-            return bool(await self.executor.replay_features(spec, execution_context))
+            return bool(await replay_bound(spec, execution_context))
         except Exception:
             return False
 
@@ -203,14 +215,12 @@ class RepairLoop:
     ) -> bool:
         if not self.executor:
             return False
+        replay_bound = getattr(self.executor, "replay_exports_bound", None)
+        if not callable(replay_bound):
+            return False
         try:
-            missing = (issue.details or {}).get("missing", [])
-            for export_path in missing or []:
-                if not isinstance(export_path, str):
-                    continue
-                Path(export_path).parent.mkdir(parents=True, exist_ok=True)
             execution_context = context or ExecutionContext()
-            return bool(await self.executor.replay_exports(spec, execution_context))
+            return bool(await replay_bound(spec, issue, execution_context))
         except Exception:
             return False
 

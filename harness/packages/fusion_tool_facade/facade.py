@@ -556,19 +556,27 @@ class FusionFacade:
         isolate_prefix: str | None = None,
         width: int = 1600,
         height: int = 1100,
+        operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Capture a Fusion viewport image."""
 
+        payload: dict[str, Any] = {
+            "name": name,
+            "path": str(path),
+            "view": view,
+            "isolate_prefix": isolate_prefix,
+            "width": width,
+            "height": height,
+        }
+        if document_binding is not None:
+            payload["document_binding"] = dict(document_binding)
+        if host_path_binding is not None:
+            payload["host_path_binding"] = dict(host_path_binding)
         return await self._call(
             "capture_viewport",
-            {
-                "name": name,
-                "path": str(path),
-                "view": view,
-                "isolate_prefix": isolate_prefix,
-                "width": width,
-                "height": height,
-            },
+            payload,
         )
 
     async def analyze_interference(self, target: str | None = None) -> dict[str, Any]:
@@ -596,19 +604,49 @@ class FusionFacade:
 
         return await self._call("validate_named_objects", {})
 
-    async def export_step(self, target: str, path: Path | str) -> dict[str, Any]:
+    async def export_step(
+        self,
+        target: str,
+        path: Path | str,
+        *,
+        operation_id: str | None = None,
+        target_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Export a STEP file after verification."""
 
-        return await self._call(
-            "export_step", {"target": target, "path": str(path), "format": "step"}
-        )
+        payload: dict[str, Any] = {
+            "target": target,
+            "path": str(path),
+            "format": "step",
+        }
+        if target_binding is not None:
+            payload["binding"] = dict(target_binding)
+        if host_path_binding is not None:
+            payload["host_path_binding"] = dict(host_path_binding)
+        return await self._call("export_step", payload)
 
-    async def export_stl(self, target: str, path: Path | str) -> dict[str, Any]:
+    async def export_stl(
+        self,
+        target: str,
+        path: Path | str,
+        *,
+        operation_id: str | None = None,
+        target_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Export an STL file after verification."""
 
-        return await self._call(
-            "export_stl", {"target": target, "path": str(path), "format": "stl"}
-        )
+        payload: dict[str, Any] = {
+            "target": target,
+            "path": str(path),
+            "format": "stl",
+        }
+        if target_binding is not None:
+            payload["binding"] = dict(target_binding)
+        if host_path_binding is not None:
+            payload["host_path_binding"] = dict(host_path_binding)
+        return await self._call("export_stl", payload)
 
     async def _call(
         self, facade_operation: str, args: dict[str, Any]

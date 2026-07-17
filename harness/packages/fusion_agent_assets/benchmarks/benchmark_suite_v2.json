@@ -89,18 +89,6 @@
       "expectations": {"expected_status": "read_succeeded", "should_succeed": true, "max_call_count": 4}
     },
     {
-      "id": "screenshot_verified",
-      "prompt": "Capture and verify a PNG screenshot of the benchmark fixture.",
-      "category": "screenshot",
-      "risk": "read_only",
-      "timeout_seconds": 120.0,
-      "fixture_id": "active_document",
-      "script_id": "capture_screenshot",
-      "oracle_id": "screenshot",
-      "execution_paths": ["safe_harness", "native_fast"],
-      "expectations": {"expected_status": "read_succeeded", "should_succeed": true, "max_call_count": 5}
-    },
-    {
       "id": "additive_cube",
       "prompt": "Create a named 10 mm additive cube in the isolated benchmark document and verify its health and bounds.",
       "category": "additive_modeling",

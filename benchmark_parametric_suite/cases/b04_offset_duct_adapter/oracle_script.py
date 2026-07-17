@@ -16,11 +16,29 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(entity):
-    box = entity.preciseBoundingBox if hasattr(entity, "preciseBoundingBox") else entity.boundingBox
+    box = (
+        entity.preciseBoundingBox
+        if hasattr(entity, "preciseBoundingBox")
+        else entity.boundingBox
+    )
     return {
         "min": [box.minPoint.x * 10.0, box.minPoint.y * 10.0, box.minPoint.z * 10.0],
         "max": [box.maxPoint.x * 10.0, box.maxPoint.y * 10.0, box.maxPoint.z * 10.0],
@@ -71,10 +89,12 @@ def _circle_signatures(sketch):
     result = []
     for circle in _items(sketch.sketchCurves.sketchCircles):
         center = circle.centerSketchPoint.geometry
-        result.append({
-            "center_mm": [center.x * 10.0, center.y * 10.0],
-            "diameter_mm": circle.radius * 20.0,
-        })
+        result.append(
+            {
+                "center_mm": [center.x * 10.0, center.y * 10.0],
+                "diameter_mm": circle.radius * 20.0,
+            }
+        )
     return result
 
 
@@ -86,20 +106,24 @@ def run(_context: str):
         raise RuntimeError("B04 oracle requires an active Fusion design")
 
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     bodies = _items(root.bRepBodies)
     body = bodies[0] if len(bodies) == 1 else None
     checks = []
 
     def check(check_id, passed, expected, observed, evidence=None):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-            "evidence": evidence or {},
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+                "evidence": evidence or {},
+            }
+        )
 
     check(
         "document.marked_unsaved",
@@ -111,14 +135,23 @@ def run(_context: str):
         "assembly.root_only",
         design.allComponents.count == 1 and root.allOccurrences.count == 0,
         {"components": 1, "occurrences": 0},
-        {"components": design.allComponents.count, "occurrences": root.allOccurrences.count},
+        {
+            "components": design.allComponents.count,
+            "occurrences": root.allOccurrences.count,
+        },
     )
     check("topology.body_count", len(bodies) == 1, 1, len(bodies))
     check(
         "topology.single_visible_solid_lump",
-        body is not None and body.isValid and body.isSolid and body.isVisible and body.lumps.count == 1,
+        body is not None
+        and body.isValid
+        and body.isSolid
+        and body.isVisible
+        and body.lumps.count == 1,
         {"valid": True, "solid": True, "visible": True, "lumps": 1},
-        None if body is None else {
+        None
+        if body is None
+        else {
             "valid": body.isValid,
             "solid": body.isSolid,
             "visible": body.isVisible,
@@ -159,11 +192,13 @@ def run(_context: str):
     for name, expected_value in expected_parameters.items():
         actual_value = parameter_values.get(name, {}).get("value")
         if not _close(actual_value, expected_value, 0.0001):
-            parameter_failures.append({
-                "name": name,
-                "expected": expected_value,
-                "actual": actual_value,
-            })
+            parameter_failures.append(
+                {
+                    "name": name,
+                    "expected": expected_value,
+                    "actual": actual_value,
+                }
+            )
     check(
         "parameters.exact_values",
         len(parameter_values) == 19 and not parameter_failures,
@@ -227,26 +262,41 @@ def run(_context: str):
 
     loft_data = []
     for loft in _items(root.features.loftFeatures):
-        loft_data.append({
-            "name": loft.name,
-            "valid": loft.isValid,
-            "solid": loft.isSolid,
-            "sections": loft.loftSections.count,
-            "message": loft.errorOrWarningMessage,
-        })
+        loft_data.append(
+            {
+                "name": loft.name,
+                "valid": loft.isValid,
+                "solid": loft.isSolid,
+                "sections": loft.loftSections.count,
+                "message": loft.errorOrWarningMessage,
+            }
+        )
     loft_by_name = {item["name"]: item for item in loft_data}
     check(
         "features.outer_and_inner_lofts",
         set(loft_by_name) == {"LF01_Outer_Transition", "LF02_Inner_Passage_Tool"}
-        and all(item["valid"] and item["solid"] and item["sections"] == 2 and not item["message"] for item in loft_data),
-        {"names": ["LF01_Outer_Transition", "LF02_Inner_Passage_Tool"], "sections_each": 2},
+        and all(
+            item["valid"]
+            and item["solid"]
+            and item["sections"] == 2
+            and not item["message"]
+            for item in loft_data
+        ),
+        {
+            "names": ["LF01_Outer_Transition", "LF02_Inner_Passage_Tool"],
+            "sections_each": 2,
+        },
         loft_data,
     )
 
     lower_outer_sketch = _named(root.sketches, "SK02_Outer_Lower_86x56")
     lower_inner_sketch = _named(root.sketches, "SK05_Inner_Inlet_80x50")
-    lower_outer_extent = None if lower_outer_sketch is None else _line_extent_mm(lower_outer_sketch)
-    lower_inner_extent = None if lower_inner_sketch is None else _line_extent_mm(lower_inner_sketch)
+    lower_outer_extent = (
+        None if lower_outer_sketch is None else _line_extent_mm(lower_outer_sketch)
+    )
+    lower_inner_extent = (
+        None if lower_inner_sketch is None else _line_extent_mm(lower_inner_sketch)
+    )
     section_ok = (
         lower_outer_extent is not None
         and lower_inner_extent is not None
@@ -264,20 +314,34 @@ def run(_context: str):
 
     outer_upper_sketch = _named(root.sketches, "SK03_Outer_Outlet_OD60")
     inner_upper_sketch = _named(root.sketches, "SK06_Inner_Outlet_ID54")
-    outer_upper_circles = [] if outer_upper_sketch is None else _circle_signatures(outer_upper_sketch)
-    inner_upper_circles = [] if inner_upper_sketch is None else _circle_signatures(inner_upper_sketch)
+    outer_upper_circles = (
+        [] if outer_upper_sketch is None else _circle_signatures(outer_upper_sketch)
+    )
+    inner_upper_circles = (
+        [] if inner_upper_sketch is None else _circle_signatures(inner_upper_sketch)
+    )
     circular_sections_ok = (
         len(outer_upper_circles) == 1
         and len(inner_upper_circles) == 1
         and _close(outer_upper_circles[0]["diameter_mm"], 60.0)
         and _close(inner_upper_circles[0]["diameter_mm"], 54.0)
-        and all(_close(outer_upper_circles[0]["center_mm"][index], [14.0, 8.0][index]) for index in range(2))
-        and all(_close(inner_upper_circles[0]["center_mm"][index], [14.0, 8.0][index]) for index in range(2))
+        and all(
+            _close(outer_upper_circles[0]["center_mm"][index], [14.0, 8.0][index])
+            for index in range(2)
+        )
+        and all(
+            _close(inner_upper_circles[0]["center_mm"][index], [14.0, 8.0][index])
+            for index in range(2)
+        )
     )
     check(
         "ports.circular_section_signature",
         circular_sections_ok,
-        {"outer_diameter_mm": 60.0, "inner_diameter_mm": 54.0, "center_mm": [14.0, 8.0]},
+        {
+            "outer_diameter_mm": 60.0,
+            "inner_diameter_mm": 54.0,
+            "center_mm": [14.0, 8.0],
+        },
         {"outer": outer_upper_circles, "inner": inner_upper_circles},
     )
 
@@ -310,7 +374,10 @@ def run(_context: str):
         }
         check(
             "geometry.open_continuous_passage",
-            all(probe_observed[name] == specification[1] for name, specification in probe_specs.items()),
+            all(
+                probe_observed[name] == specification[1]
+                for name, specification in probe_specs.items()
+            ),
             {name: specification[1] for name, specification in probe_specs.items()},
             probe_observed,
         )
@@ -321,15 +388,26 @@ def run(_context: str):
             geometry = face.geometry
             face_box = face.boundingBox
             face_bbox = {
-                "min": [face_box.minPoint.x * 10.0, face_box.minPoint.y * 10.0, face_box.minPoint.z * 10.0],
-                "max": [face_box.maxPoint.x * 10.0, face_box.maxPoint.y * 10.0, face_box.maxPoint.z * 10.0],
+                "min": [
+                    face_box.minPoint.x * 10.0,
+                    face_box.minPoint.y * 10.0,
+                    face_box.minPoint.z * 10.0,
+                ],
+                "max": [
+                    face_box.maxPoint.x * 10.0,
+                    face_box.maxPoint.y * 10.0,
+                    face_box.maxPoint.z * 10.0,
+                ],
                 "size": [
                     (face_box.maxPoint.x - face_box.minPoint.x) * 10.0,
                     (face_box.maxPoint.y - face_box.minPoint.y) * 10.0,
                     (face_box.maxPoint.z - face_box.minPoint.z) * 10.0,
                 ],
             }
-            if geometry is not None and geometry.objectType == adsk.core.Plane.classType():
+            if (
+                geometry is not None
+                and geometry.objectType == adsk.core.Plane.classType()
+            ):
                 x_side = (
                     face_bbox["size"][0] < 0.1
                     and _close(math.fabs(face_bbox["min"][0]), 40.0)
@@ -346,13 +424,22 @@ def run(_context: str):
                 )
                 if x_side or y_side:
                     rectangular_port_faces.append(face_bbox)
-            if geometry is not None and geometry.objectType == adsk.core.Cylinder.classType():
-                cylinders.append({
-                    "radius_mm": geometry.radius * 10.0,
-                    "origin_mm": [geometry.origin.x * 10.0, geometry.origin.y * 10.0, geometry.origin.z * 10.0],
-                    "axis": [geometry.axis.x, geometry.axis.y, geometry.axis.z],
-                    "bbox": face_bbox,
-                })
+            if (
+                geometry is not None
+                and geometry.objectType == adsk.core.Cylinder.classType()
+            ):
+                cylinders.append(
+                    {
+                        "radius_mm": geometry.radius * 10.0,
+                        "origin_mm": [
+                            geometry.origin.x * 10.0,
+                            geometry.origin.y * 10.0,
+                            geometry.origin.z * 10.0,
+                        ],
+                        "axis": [geometry.axis.x, geometry.axis.y, geometry.axis.z],
+                        "bbox": face_bbox,
+                    }
+                )
         check(
             "ports.rectangular_opening_faces",
             len(rectangular_port_faces) == 4,
@@ -361,14 +448,16 @@ def run(_context: str):
         )
 
         outlet_inner_faces = [
-            item for item in cylinders
+            item
+            for item in cylinders
             if _close(item["radius_mm"], 27.0, 0.05)
             and _close(item["origin_mm"][0], 14.0, 0.05)
             and _close(item["origin_mm"][1], 8.0, 0.05)
             and math.fabs(item["axis"][2]) > 0.99
         ]
         top_outer_faces = [
-            item for item in cylinders
+            item
+            for item in cylinders
             if _close(item["radius_mm"], 41.0, 0.05)
             and _close(item["origin_mm"][0], 14.0, 0.05)
             and _close(item["origin_mm"][1], 8.0, 0.05)
@@ -377,13 +466,19 @@ def run(_context: str):
         check(
             "ports.outlet_offset_and_coaxiality",
             len(outlet_inner_faces) >= 1 and len(top_outer_faces) >= 1,
-            {"axis_xy_mm": [14.0, 8.0], "inner_radius_mm": 27.0, "flange_radius_mm": 41.0},
+            {
+                "axis_xy_mm": [14.0, 8.0],
+                "inner_radius_mm": 27.0,
+                "flange_radius_mm": 41.0,
+            },
             {"inner": outlet_inner_faces, "outer": top_outer_faces},
         )
 
         bottom_holes = [
-            item for item in cylinders
-            if _close(item["radius_mm"], 2.5, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in cylinders
+            if _close(item["radius_mm"], 2.5, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         expected_bottom_centers = [
             [-42.0, -27.0],
@@ -391,9 +486,15 @@ def run(_context: str):
             [-42.0, 27.0],
             [42.0, 27.0],
         ]
-        bottom_centers = [[item["origin_mm"][0], item["origin_mm"][1]] for item in bottom_holes]
+        bottom_centers = [
+            [item["origin_mm"][0], item["origin_mm"][1]] for item in bottom_holes
+        ]
         bottom_positions_ok = len(bottom_centers) == 4 and all(
-            any(_close(actual[0], expected[0], 0.1) and _close(actual[1], expected[1], 0.1) for actual in bottom_centers)
+            any(
+                _close(actual[0], expected[0], 0.1)
+                and _close(actual[1], expected[1], 0.1)
+                for actual in bottom_centers
+            )
             for expected in expected_bottom_centers
         )
         check(
@@ -404,19 +505,28 @@ def run(_context: str):
         )
 
         top_holes = [
-            item for item in cylinders
-            if _close(item["radius_mm"], 2.25, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in cylinders
+            if _close(item["radius_mm"], 2.25, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
-        top_centers = [[item["origin_mm"][0], item["origin_mm"][1]] for item in top_holes]
-        top_radii = [math.hypot(center[0] - 14.0, center[1] - 8.0) for center in top_centers]
+        top_centers = [
+            [item["origin_mm"][0], item["origin_mm"][1]] for item in top_holes
+        ]
+        top_radii = [
+            math.hypot(center[0] - 14.0, center[1] - 8.0) for center in top_centers
+        ]
         top_angles = sorted(
-            (math.degrees(math.atan2(center[1] - 8.0, center[0] - 14.0)) + 360.0) % 360.0
+            (math.degrees(math.atan2(center[1] - 8.0, center[0] - 14.0)) + 360.0)
+            % 360.0
             for center in top_centers
         )
         top_gaps = []
         if len(top_angles) == 6:
             for index in range(6):
-                top_gaps.append((top_angles[(index + 1) % 6] - top_angles[index]) % 360.0)
+                top_gaps.append(
+                    (top_angles[(index + 1) % 6] - top_angles[index]) % 360.0
+                )
         top_positions_ok = (
             len(top_centers) == 6
             and all(_close(radius, 36.0, 0.1) for radius in top_radii)
@@ -425,11 +535,23 @@ def run(_context: str):
         check(
             "bolts.top_bolt_circle_6x",
             top_positions_ok,
-            {"count": 6, "diameter_mm": 4.5, "circle_diameter_mm": 72.0, "angular_step_deg": 60.0},
-            {"count": len(top_centers), "centers_mm": top_centers, "radii_mm": top_radii, "gaps_deg": top_gaps},
+            {
+                "count": 6,
+                "diameter_mm": 4.5,
+                "circle_diameter_mm": 72.0,
+                "angular_step_deg": 60.0,
+            },
+            {
+                "count": len(top_centers),
+                "centers_mm": top_centers,
+                "radii_mm": top_radii,
+                "gaps_deg": top_gaps,
+            },
         )
 
-        bottom_pattern = _named(root.features.rectangularPatternFeatures, "RP01_Bottom_Bolt_2x2")
+        bottom_pattern = _named(
+            root.features.rectangularPatternFeatures, "RP01_Bottom_Bolt_2x2"
+        )
         bottom_pattern_data = None
         if bottom_pattern is not None:
             bottom_pattern_data = {
@@ -504,13 +626,21 @@ def run(_context: str):
             "body_volume_mm3": None if body is None else body.volume * 1000.0,
             "faces": None if body is None else body.faces.count,
             "edges": None if body is None else body.edges.count,
-            "sketch_visibility": {item["name"]: item["visible"] for item in sketch_data},
+            "sketch_visibility": {
+                item["name"]: item["visible"] for item in sketch_data
+            },
             "construction_visibility": construction_visibility,
             "parameter_expressions": {
                 name: value["expression"] for name, value in parameter_values.items()
             },
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

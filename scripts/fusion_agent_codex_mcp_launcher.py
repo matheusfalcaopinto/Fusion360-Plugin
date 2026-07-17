@@ -35,6 +35,10 @@ def resolve_dev_harness_root(root: Path | None = None) -> Path | None:
     configured = os.getenv("FUSION_AGENT_HARNESS_ROOT")
     if not configured:
         return None
+    if list((root / "wheels").glob("fusion_agent_harness-*.whl")):
+        raise RuntimeError(
+            "FUSION_AGENT_HARNESS_ROOT is forbidden when a release wheel is bundled"
+        )
     candidate = Path(configured).resolve()
     if is_harness_root(candidate):
         return candidate
@@ -62,18 +66,25 @@ def resolve_python(plugin: Path, harness_root: Path | None = None) -> Path:
     """Resolve the Python interpreter that should host the MCP server."""
 
     configured = os.getenv("FUSION_AGENT_PYTHON")
+    release_bundle = bool(list((plugin / "wheels").glob("fusion_agent_harness-*.whl")))
     candidates = [
-        Path(configured) if configured else None,
         plugin / ".venv" / "bin" / "python",
         plugin / ".venv" / "Scripts" / "python.exe",
+        Path(configured) if configured and not release_bundle else None,
         harness_root / ".venv" / "bin" / "python" if harness_root else None,
         harness_root / ".venv" / "Scripts" / "python.exe" if harness_root else None,
         Path(sys.executable),
     ]
     for candidate in candidates:
         if candidate and candidate.exists():
-            return candidate.resolve()
-    return Path(sys.executable).resolve()
+            return Path(os.path.abspath(candidate))
+    return Path(os.path.abspath(sys.executable))
+
+
+def _same_runtime(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+        os.path.abspath(right)
+    )
 
 
 def bundled_wheels(plugin: Path) -> list[Path]:
@@ -101,13 +112,42 @@ def plugin_version(plugin: Path) -> str:
     return str(value or "unknown")
 
 
-def installed_server_available(python: Path) -> bool:
+def _server_command(python: Path, harness_root: Path | None = None) -> list[str]:
+    if harness_root is None:
+        return [str(python), "-I", "-B", "-m", "fusion_agent_mcp.server"]
+    search_paths = [
+        str(harness_root / "packages"),
+        str(harness_root / "apps"),
+    ]
+    bootstrap = (
+        "import runpy,sys;"
+        f"sys.path[:0]={search_paths!r};"
+        "runpy.run_module('fusion_agent_mcp.server',run_name='__main__')"
+    )
+    return [str(python), "-I", "-B", "-c", bootstrap]
+
+
+def _server_import_command(python: Path, harness_root: Path | None = None) -> list[str]:
+    if harness_root is None:
+        bootstrap = "import fusion_agent_mcp.server"
+    else:
+        search_paths = [
+            str(harness_root / "packages"),
+            str(harness_root / "apps"),
+        ]
+        bootstrap = (
+            f"import sys;sys.path[:0]={search_paths!r};import fusion_agent_mcp.server"
+        )
+    return [str(python), "-I", "-B", "-c", bootstrap]
+
+
+def installed_server_available(python: Path, harness_root: Path | None = None) -> bool:
     """Return whether the target interpreter can import the MCP server."""
 
-    if python == Path(sys.executable).resolve():
+    if harness_root is None and _same_runtime(python, Path(sys.executable)):
         return importlib.util.find_spec("fusion_agent_mcp.server") is not None
     completed = subprocess.run(
-        [str(python), "-c", "import fusion_agent_mcp.server"],
+        _server_import_command(python, harness_root),
         text=True,
         capture_output=True,
         check=False,
@@ -145,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         if harness_root:
             print(f"pythonpath={os.environ['PYTHONPATH']}")
         print(f"bundled_wheels={len(bundled_wheels(root))}")
-        server_available = installed_server_available(python)
+        server_available = installed_server_available(python, harness_root)
         print(f"installed_server_available={server_available}")
         print(f"fusion_agent_codex={os.environ['FUSION_AGENT_CODEX']}")
         print(
@@ -153,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if server_available else 1
 
-    if python == Path(sys.executable).resolve():
+    if _same_runtime(python, Path(sys.executable)):
         os.chdir(harness_root or root)
         if harness_root:
             sys.path[:0] = [str(harness_root / "packages"), str(harness_root / "apps")]
@@ -161,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return subprocess.call(
-        [str(python), "-m", "fusion_agent_mcp.server"],
+        _server_command(python, harness_root),
         cwd=str(harness_root or root),
         env=os.environ,
     )

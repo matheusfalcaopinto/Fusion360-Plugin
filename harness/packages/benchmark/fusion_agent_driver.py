@@ -10,6 +10,7 @@ field is interpreted as code or a command.
 from __future__ import annotations
 
 import inspect
+import re
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from benchmark.models import BenchmarkCase, BenchmarkRunConfig, BenchmarkSuite
 from benchmark.public import (
     AdapterExecution,
     AdapterPreflight,
+    BenchmarkEvidenceEnvelope,
     NormalizedPublicMetrics,
     PublicBenchmarkConfig,
     PublicBenchmarkTask,
@@ -224,12 +226,10 @@ class FusionAgentCodexPublicDriver:
             cases = [definition.benchmark_case() for definition in _TASK_DEFINITIONS]
             for case in cases:
                 validate_case_registry(case)
-        except Exception as exc:  # code/registry packaging error; never dispatch
+        except Exception:  # code/registry packaging error; never dispatch
             return AdapterPreflight(
                 ready=False,
-                reason=_bounded_reason(
-                    f"internal_public_registry_invalid:{type(exc).__name__}:{exc}"
-                ),
+                reason="internal_public_registry_invalid",
             )
 
         revision = self._observed_revision()
@@ -259,7 +259,7 @@ class FusionAgentCodexPublicDriver:
         try:
             bridge = _runtime_bridge(runtime)
             await bridge.preflight(["safe_harness"], cases)
-        except Exception as exc:
+        except Exception:
             return AdapterPreflight(
                 ready=False,
                 observed_revision=revision.observed_git_commit,
@@ -269,11 +269,7 @@ class FusionAgentCodexPublicDriver:
                     "execution_profile": "normal_equivalent",
                     "fixture_isolation": "preflight_only_no_dispatch",
                 },
-                reason=_bounded_reason(
-                    "real_public_capabilities_unavailable:"
-                    "no real benchmark action was dispatched:"
-                    f"{type(exc).__name__}:{exc}"
-                ),
+                reason="real_public_capabilities_unavailable",
             )
         finally:
             await _close_runtime(runtime)
@@ -311,16 +307,11 @@ class FusionAgentCodexPublicDriver:
             # Recheck immediately before BenchmarkRunner can prepare a fixture.
             await bridge.preflight(["safe_harness"], [definition.benchmark_case()])
             return await self._run_definition(definition, config, bridge=bridge)
-        except BenchmarkExecutionError as exc:
-            if "REAL_BENCHMARK_CAPABILITY_MISSING" in str(exc):
-                return AdapterExecution(
-                    state="not_run",
-                    reason=_bounded_reason(
-                        "real_public_capabilities_unavailable:"
-                        f"no real benchmark action was dispatched:{exc}"
-                    ),
-                )
-            raise
+        except BenchmarkExecutionError:
+            return AdapterExecution(
+                state="not_run",
+                reason="real_public_capabilities_unavailable",
+            )
         finally:
             await _close_runtime(runtime)
 
@@ -397,15 +388,28 @@ class FusionAgentCodexPublicDriver:
             payload_bytes=int(trial.metrics["bytes_transferred"]),
             install_status="workspace_pinned_internal",
         )
+        artifact_persisted = run.report_path.is_file()
         return AdapterExecution(
             state="completed",
             metrics=metrics,
             independent_oracle=True,
+            evidence_envelope=(
+                BenchmarkEvidenceEnvelope(
+                    producer="fusion_agent_codex",
+                    run_identity=run.report.run_id,
+                    fixture_identity=definition.task_id,
+                    oracle_producer="public_fusion_contract",
+                    oracle_independent=True,
+                    complete=True,
+                )
+                if artifact_persisted
+                else None
+            ),
             evidence={
                 "internal_run_id": run.report.run_id,
                 "internal_trial_id": trial.trial_id,
                 "internal_status": trial.status,
-                "internal_report_path": str(run.report_path),
+                "internal_artifact_persisted": artifact_persisted,
                 "execution_path": trial.execution_path,
                 "execution_profile": "normal_equivalent",
                 "arbitrary_code_allowed": False,
@@ -457,12 +461,10 @@ def _context_error(context: Any) -> str | None:
     return None
 
 
-def _bounded_reason(value: str) -> str:
-    return value[:500]
-
-
 def _optional_string(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:+-]{1,160}", value):
+        return value
+    return None
 
 
 def _optional_bool(value: Any) -> bool | None:

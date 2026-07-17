@@ -9,6 +9,8 @@ from fusion_tool_facade.typed_backend import (
     FAUST_CAPABILITY_PROOFS,
     FAUST_IMPLEMENTED_CAPABILITIES,
     FaustTypedBackend,
+    _faust_calls,
+    _numeric_unit,
 )
 
 
@@ -89,9 +91,10 @@ async def test_faust_backend_maps_only_curated_tools() -> None:
         "create_parameter", "add_constraint", "revolve", "execute_code", "delete_all"
     )
     backend = FaustTypedBackend.from_client(client, manifest)
-    result = await CapabilityExecutor(backend).execute(_spec())
-    assert result.success is True
-    assert [name for name, _ in client.calls] == ["create_parameter"]
+    with pytest.raises(ValueError, match="parameters"):
+        await CapabilityExecutor(backend).execute(_spec())
+    assert client.calls == []
+    assert "create_parameter" not in backend.adapter.policy.allowed_tools
     assert "execute_code" not in backend.adapter.policy.allowed_tools
     assert "delete_all" not in backend.adapter.policy.allowed_tools
 
@@ -107,7 +110,7 @@ async def test_faust_preflight_blocks_missing_later_capability_without_dispatch(
     assert client.calls == []
 
 
-def test_faust_reports_exact_manifest_capabilities() -> None:
+def test_faust_does_not_advertise_mutation_without_lossless_authority_binding() -> None:
     backend = FaustTypedBackend.from_client(
         Client(),
         _manifest(
@@ -127,15 +130,9 @@ def test_faust_reports_exact_manifest_capabilities() -> None:
             "export_step",
         ),
     )
-    assert backend.capabilities == {"parameters"}
-    assert FAUST_IMPLEMENTED_CAPABILITIES == {"parameters"}
-    assert set(FAUST_CAPABILITY_PROOFS) == {"parameters"}
-    assert FAUST_CAPABILITY_PROOFS["parameters"].preserved_fields == (
-        "name",
-        "expression.value",
-        "expression.unit",
-        "comment",
-    )
+    assert backend.capabilities == set()
+    assert FAUST_IMPLEMENTED_CAPABILITIES == set()
+    assert FAUST_CAPABILITY_PROOFS == {}
 
 
 def test_faust_rejects_lossy_typed_references_before_dispatch() -> None:
@@ -144,7 +141,7 @@ def test_faust_rejects_lossy_typed_references_before_dispatch() -> None:
         client, _manifest("revolve", "sweep", "loft")
     )
     assert not ({"revolve", "sweep", "loft"} & backend.capabilities)
-    with pytest.raises(ValueError, match="lossless capability proof"):
+    with pytest.raises(ValueError, match="lossless document and target authority"):
         backend.preflight_operations(_lossy_spec().operations)
     assert client.calls == []
 
@@ -153,10 +150,36 @@ def test_faust_rejects_nonliteral_parameter_expressions_before_dispatch() -> Non
     payload = _spec().model_dump(mode="json")
     payload["operations"][0]["expression"] = "shaft_source"
     spec = CadSpecV2.model_validate(payload)
+    with pytest.raises(ValueError, match="literal numeric unit expression"):
+        _numeric_unit(spec.operations[0].expression)
+
+
+def test_faust_lossless_literal_compiler_is_a_non_dispatching_positive_control() -> (
+    None
+):
+    operation = _spec().operations[0]
+
+    assert _faust_calls(operation) == [
+        (
+            "create_parameter",
+            {
+                "name": "shaft_diameter",
+                "value": 10.0,
+                "unit": "mm",
+                "comment": "lossless Faust literal",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_faust_direct_execute_cannot_bypass_empty_capability_surface() -> None:
     client = Client()
     backend = FaustTypedBackend.from_client(client, _manifest("create_parameter"))
-
-    with pytest.raises(ValueError, match="literal numeric unit expression"):
-        backend.preflight_operations(spec.operations)
-
+    with pytest.raises(ValueError, match="lossless document and target authority"):
+        backend.preflight_operations(list(_spec().operations))
+    with pytest.raises(RuntimeError, match="not preflighted"):
+        await backend.execute_operation(_spec().operations[0])
+    assert backend.capabilities == set()
+    assert backend.adapter.policy.allowed_tools == set()
     assert client.calls == []

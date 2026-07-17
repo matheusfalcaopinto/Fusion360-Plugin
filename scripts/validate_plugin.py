@@ -5,16 +5,32 @@ from __future__ import annotations
 import json
 import os
 import platform
+import stat
 import sys
 import tomllib
 import zipfile
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+_SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(_SCRIPT_DIRECTORY) not in sys.path:
+    # ``-I`` removes the script directory from ``sys.path``. Restore only the
+    # reviewed sibling directory so setup can import the integrity verifier
+    # without enabling user site packages or an ambient PYTHONPATH.
+    sys.path.insert(0, str(_SCRIPT_DIRECTORY))
+
 try:
-    from scripts.bundle_integrity import BundleIntegrityError, verify_wheel
+    from scripts.bundle_integrity import (
+        BundleIntegrityError,
+        valid_codex_cachebuster_version,
+        verify_wheel,
+    )
 except ModuleNotFoundError:  # Executed as ``python scripts/validate_plugin.py``.
-    from bundle_integrity import BundleIntegrityError, verify_wheel  # type: ignore[no-redef]
+    from bundle_integrity import (  # type: ignore[no-redef]
+        BundleIntegrityError,
+        valid_codex_cachebuster_version,
+        verify_wheel,
+    )
 
 
 REQUIRED_TOOLS = {
@@ -206,9 +222,13 @@ def _check_wheel(root: Path, wheel: Path, plugin_json: dict, errors: list[str]) 
             f"wheel name/version mismatch: expected {expected_name}, found {wheel.name}"
         )
     plugin_version = str(plugin_json.get("version") or "")
-    if plugin_version.split("+", 1)[0] != version:
+    if not valid_codex_cachebuster_version(
+        plugin_version, expected_base_version=version
+    ):
         errors.append(
-            f"plugin base version {plugin_version!r} does not match harness {version!r}"
+            "plugin version must match "
+            f"{version}+codex.<14-digit valid UTC timestamp>; found "
+            f"{plugin_version!r}"
         )
     try:
         verify_wheel(
@@ -285,7 +305,9 @@ def _check_fusion_data(
         "key",
         "token",
     }
-    if sensitive_query_names & {name.lower() for name, _ in parse_qsl(parsed.query)}:
+    if sensitive_query_names & {
+        name.lower() for name, _ in parse_qsl(parsed.query, keep_blank_values=True)
+    }:
         errors.append(
             "fusion_data.url must not contain token or secret query parameters"
         )
@@ -318,6 +340,19 @@ def _is_launcher_arg(value: object) -> bool:
     return text.endswith("scripts/fusion_agent_codex_mcp_launcher.py")
 
 
+def _path_is_reparse(path: Path) -> bool:
+    try:
+        junction_check = getattr(path, "is_junction", None)
+        return bool(
+            path.is_symlink()
+            or (callable(junction_check) and junction_check())
+            or getattr(path.lstat(), "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except OSError:
+        return True
+
+
 def _check_mcp_runtime_paths(
     root: Path,
     command: str,
@@ -326,13 +361,15 @@ def _check_mcp_runtime_paths(
 ) -> None:
     """Require one exact launcher and contain rewritten installed paths."""
 
-    if len(args) != 1:
-        errors.append(".mcp.json fusion_agent.args must contain only the launcher path")
+    if len(args) != 3 or args[:2] != ["-I", "-B"]:
+        errors.append(
+            ".mcp.json fusion_agent.args must contain -I, -B, and only the launcher path"
+        )
         return
     expected_launcher = (
         root / "scripts" / "fusion_agent_codex_mcp_launcher.py"
     ).resolve()
-    raw_launcher = Path(str(args[0]))
+    raw_launcher = Path(str(args[2]))
     launcher = (
         raw_launcher.resolve()
         if raw_launcher.is_absolute()
@@ -346,11 +383,21 @@ def _check_mcp_runtime_paths(
         if command not in {"python", "python3"}:
             errors.append("portable .mcp.json command must be python or python3")
         return
-    runtime = raw_command.resolve()
-    runtime_root = (root / ".venv").resolve()
-    if not runtime.is_file() or not runtime.is_relative_to(runtime_root):
+    runtime = Path(os.path.abspath(raw_command))
+    runtime_root = root / ".venv"
+    scripts_root = runtime_root / ("Scripts" if os.name == "nt" else "bin")
+    expected_runtime = scripts_root / ("python.exe" if os.name == "nt" else "python")
+    if (
+        os.path.normcase(str(runtime)) != os.path.normcase(str(expected_runtime))
+        or not runtime_root.is_dir()
+        or not scripts_root.is_dir()
+        or _path_is_reparse(runtime_root)
+        or _path_is_reparse(scripts_root)
+        or not runtime.is_file()
+        or (os.name == "nt" and _path_is_reparse(runtime))
+    ):
         errors.append(
-            "installed .mcp.json Python must be contained by the plugin .venv"
+            "installed .mcp.json Python must be contained in the exact non-reparse plugin .venv"
         )
 
 

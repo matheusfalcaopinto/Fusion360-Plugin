@@ -2,11 +2,13 @@
 
 ## Status
 
-future v2.5
+future v2.5; not executable in 0.4.1
 
 ## Purpose
 
 Generate a simple drawing/documentation package from a validated part or assembly.
+This design note is not an advertised 0.4.1 capability. Real PDF export remains
+`deny_io` and must not be dispatched by the 0.4.1 runtime.
 
 ## Inputs
 
@@ -24,32 +26,24 @@ Generate a simple drawing/documentation package from a validated part or assembl
 
 ## Tool facade operations
 
-- create_drawing_from_design
-- create_base_view
-- create_projected_view
-- add_basic_dimensions
-- export_drawing_pdf
+- none in 0.4.1
 
 ## Procedure
 
-1. Validate source model.
-2. Create drawing.
-3. Add base/projected views.
-4. Add dimensions/hole callouts.
-5. Export PDF.
-6. Validate drawing exists.
+1. Validate the request as a future capability proposal.
+2. Return an unsupported/fail-closed result before provider dispatch.
+3. Do not create a drawing or export a PDF in 0.4.1.
 
 ## Acceptance tests
 
-- drawing created
-- views present
-- PDF export success
+- zero provider calls
+- no output file created
+- future capability reported explicitly
 
 ## Common failure modes
 
-- VIEW_LAYOUT_FAILED
-- DIMENSION_SELECTION_FAILED
-- EXPORT_FAILED
+- CAPABILITY_NOT_AVAILABLE
+- HOST_OUTPUT_DISABLED
 
 ## Memory hooks
 

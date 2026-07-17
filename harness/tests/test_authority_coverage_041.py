@@ -25,19 +25,28 @@ from cad_spec.v2 import CadSpecV2
 
 
 def _prepare_graph(broker: AuthorityBroker, spec: CadSpecV2, **kwargs):
-    targets = {
-        operation.id: (
-            CadTargetBinding(
-                reference_kind="export_target",
-                requested_ref=str(operation.target_ref),
-                document_identity="document:coverage-fixture",
-                entity_identity="entity:coverage-fixture",
-                fingerprint="c" * 64,
-            ),
-        )
-        for operation in spec.operations
-        if operation.kind == "io.export"
-    }
+    targets = {}
+    for operation in spec.operations:
+        if operation.kind == "io.export":
+            targets[operation.id] = (
+                CadTargetBinding(
+                    reference_kind="export_target",
+                    requested_ref=str(operation.target_ref),
+                    document_identity="d" * 64,
+                    entity_identity="e" * 64,
+                    fingerprint="c" * 64,
+                ),
+            )
+        elif not operation.kind.startswith("analysis."):
+            targets[operation.id] = (
+                CadTargetBinding(
+                    reference_kind="active_document",
+                    requested_ref="active_document",
+                    document_identity="d" * 64,
+                    entity_identity="e" * 64,
+                    fingerprint="f" * 64,
+                ),
+            )
     return broker.prepare_graph(spec, target_bindings_by_operation=targets, **kwargs)
 
 
@@ -354,11 +363,23 @@ def test_policy_environment_and_safe_summary_expose_ids_not_paths(
 
     assert broker.policy == policy
     assert policy.io_enabled
-    assert policy.root_ids == {
-        "import": ("approved-imports",),
-        "export": ("approved-exports",),
-    }
+    assert policy.root_ids == {"import": ("approved-imports",)}
     assert str(tmp_path) not in json.dumps(policy.safe_summary())
+
+
+def test_export_only_policy_is_parsed_but_does_not_enable_real_io(
+    tmp_path: Path,
+) -> None:
+    payload = _policy_payload(tmp_path / "imports", tmp_path / "exports")
+    payload["import_roots"] = []
+    path = _policy_file(tmp_path, payload)
+
+    policy = AuthorityPolicy.load(path)
+
+    assert [root.id for root in policy.export_roots] == ["approved-exports"]
+    assert policy.io_enabled is False
+    assert policy.root_ids == {"import": ()}
+    assert policy.safe_summary()["output_enabled"] is False
 
 
 def test_memory_ledger_enforces_collision_expiry_replay_and_terminal_states() -> None:
@@ -437,8 +458,60 @@ def test_disk_ledger_rejects_collision_corruption_expiry_and_invalid_state(
         ledger._disk_record("invalid")
 
 
+def test_disk_ledger_startup_reconciliation_is_fail_closed_and_persistent(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "ledger"
+    ledger = CapabilityLedger(root)
+
+    claimed = _capability("claimed-before-restart")
+    claimed_without_marker = _capability("claimed-without-marker")
+    interrupted_claim = _capability("claim-marker-before-state")
+    unclaimed = _capability("unclaimed")
+    consumed = _capability("consumed")
+    for capability in (
+        claimed,
+        claimed_without_marker,
+        interrupted_claim,
+        unclaimed,
+        consumed,
+    ):
+        ledger.issue(capability)
+
+    ledger.claim(claimed, now=2.0)
+    ledger.claim(claimed_without_marker, now=2.0)
+    ledger._claim_path(claimed_without_marker.capability_id).unlink()
+    ledger._claim_path(interrupted_claim.capability_id).touch()
+    ledger.claim(consumed, now=2.0)
+    ledger.transition(consumed, "consumed")
+    outside = tmp_path / "outside.json"
+    outside.write_text("sentinel", encoding="utf-8")
+    forged = ledger._disk_record(unclaimed.capability_id)
+    forged.update({"capability_id": "../outside", "state": "claimed"})
+    (root / "forged.json").write_text(json.dumps(forged), encoding="utf-8")
+
+    restarted = CapabilityLedger(root)
+    assert restarted.reconcile_startup() == 3
+
+    assert restarted.state(claimed.capability_id) == "unknown"
+    assert restarted.state(claimed_without_marker.capability_id) == "unknown"
+    assert restarted.state(interrupted_claim.capability_id) == "unknown"
+    assert restarted.state(unclaimed.capability_id) == "issued"
+    assert restarted.state(consumed.capability_id) == "consumed"
+    assert outside.read_text(encoding="utf-8") == "sentinel"
+
+    # The terminal reconciliation itself is durable and can never resurrect a
+    # capability on a subsequent restart or through a replayed claim.
+    reopened = CapabilityLedger(root)
+    assert reopened.reconcile_startup() == 0
+    assert reopened.state(claimed.capability_id) == "unknown"
+    with pytest.raises(AuthorityDeniedError, match="replay"):
+        reopened.claim(claimed, now=3.0)
+
+
 def test_ledger_private_boundaries_fail_closed_without_storage() -> None:
     ledger = CapabilityLedger()
+    assert ledger.reconcile_startup() == 0
     with pytest.raises(RuntimeError, match="memory-only"):
         ledger._record_path("id")
     with pytest.raises(RuntimeError, match="memory-only"):
@@ -449,7 +522,7 @@ def test_ledger_private_boundaries_fail_closed_without_storage() -> None:
         )
 
 
-def test_broker_non_io_graph_has_no_host_authority_and_requires_identity(
+def test_broker_non_io_graph_has_document_authority_and_requires_identity(
     tmp_path: Path,
 ) -> None:
     broker = AuthorityBroker(_policy(tmp_path), ledger=CapabilityLedger())
@@ -463,13 +536,16 @@ def test_broker_non_io_graph_has_no_host_authority_and_requires_identity(
     )
     bound = graph.operations[0]
     assert bound.host_path is None
-    assert bound.capability is None
-    assert bound.proof is None
+    assert bound.capability is not None
+    assert bound.capability.direction == "cad"
+    assert bound.proof is not None
+    assert bound.target_bindings[0].reference_kind == "active_document"
     broker.validate(bound)
+    broker.claim(bound)
     broker.complete(bound, outcome="consumed")
     broker.revoke(bound)
     broker.fail(bound, outcome_unknown=False)
-    with pytest.raises(AuthorityDeniedError, match="no capability"):
+    with pytest.raises(AuthorityDeniedError, match="replay"):
         broker.claim(bound)
 
     forged = replace(
@@ -486,8 +562,53 @@ def test_broker_non_io_graph_has_no_host_authority_and_requires_identity(
             resource_fingerprint="x",
         ),
     )
-    with pytest.raises(AuthorityDeniedError, match="non-I/O"):
+    with pytest.raises(AuthorityDeniedError, match="CAD-only"):
         broker.validate(forged)
+
+
+def test_broker_rejects_target_proofs_for_operations_outside_the_validated_graph(
+    tmp_path: Path,
+) -> None:
+    broker = AuthorityBroker(_policy(tmp_path), ledger=CapabilityLedger())
+
+    with pytest.raises(AuthorityDeniedError, match="unknown operations"):
+        broker.prepare_graph(
+            _component_spec(),
+            session_id="session",
+            provider="provider",
+            target_bindings_by_operation={"not_in_spec": ()},
+        )
+
+
+def test_mutating_cad_operation_requires_single_use_document_capability(
+    tmp_path: Path,
+) -> None:
+    broker = AuthorityBroker(_policy(tmp_path), ledger=CapabilityLedger())
+    spec = _component_spec()
+    binding = CadTargetBinding(
+        reference_kind="active_document",
+        requested_ref="active_document",
+        document_identity="d" * 64,
+        entity_identity="e" * 64,
+        fingerprint="f" * 64,
+    )
+
+    graph = broker.prepare_graph(
+        spec,
+        session_id="document-bound-session",
+        provider="provider",
+        target_bindings_by_operation={"create_component": (binding,)},
+    )
+    bound = graph.operations[0]
+
+    assert bound.host_path is None
+    assert bound.target_bindings == (binding,)
+    assert bound.capability is not None
+    assert bound.capability.direction == "cad"
+    assert bound.proof is not None
+    broker.claim(bound)
+    broker.complete(bound, outcome="consumed")
+    assert broker.ledger.state(bound.capability.capability_id) == "consumed"
 
 
 def test_broker_lifecycle_covers_issued_claimed_consumed_and_revoked(

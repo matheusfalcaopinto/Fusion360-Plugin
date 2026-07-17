@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -16,10 +17,16 @@ from pydantic import BaseModel, Field
 
 from agent_core.authority import (
     AuthorityBroker,
-    AuthorityDeniedError,
     AuthorityPolicy,
+    HostOutputDisabledError,
+    REAL_HOST_OUTPUT_DENIED_MESSAGE,
 )
-from agent_core.executor import ExecutionContext, ExecutionResult, Executor
+from agent_core.executor import (
+    ExecutionContext,
+    ExecutionResult,
+    Executor,
+    require_legacy_execution_allowed,
+)
 from agent_core.fusion_scripts import (
     compact_snapshot_script,
     hub_inventory_script,
@@ -37,6 +44,7 @@ from agent_core.guardrails import (
 )
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
 from agent_core.repair_loop import RepairLoop
+from agent_core.request_context import ExecutionMode, validate_execution_mode
 from cad_spec.models import CadSpec
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.backend import create_fusion_client
@@ -61,13 +69,13 @@ from skills.router import SkillRouter
 from telemetry.journal import SessionJournal
 from telemetry.trace import JsonlTraceLogger
 from verifier.geometry import GeometryVerifier
-from verifier.result_models import VerificationResult
+from verifier.result_models import EvidenceEnvelope, VerificationResult
 
 
 class SessionOptions(BaseModel):
     """Session configuration."""
 
-    mode: str = "mock"
+    mode: ExecutionMode = "mock"
     project: str = "default"
     max_repairs: int = 5
     workspace_root: Path = Path("workspace")
@@ -75,7 +83,7 @@ class SessionOptions(BaseModel):
     manifest_dir: Path = Path("manifests")
     dry_run: bool = False
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = {"arbitrary_types_allowed": True, "validate_assignment": True}
 
 
 class SessionResult(BaseModel):
@@ -121,6 +129,19 @@ class CaptureViewportResult(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
+def _requests_host_output(spec: CadSpec) -> bool:
+    """Detect legacy export/capture before a real facade can be constructed."""
+
+    return bool(
+        spec.outputs
+        or any(
+            feature.type in {"export", "capture_viewport"}
+            for component in spec.components
+            for feature in component.features
+        )
+    )
+
+
 class SessionController:
     """Coordinate memory retrieval, planning, execution, verification, and journaling."""
 
@@ -139,24 +160,16 @@ class SessionController:
         self._owns_real_client = real_client is None
         self.manifest_store = manifest_store
         if authority_broker is None:
-            try:
-                authority_broker = AuthorityBroker(AuthorityPolicy.from_environment())
-            except AuthorityDeniedError:
-                authority_broker = AuthorityBroker(AuthorityPolicy.deny_all())
+            # Only FusionAgentRuntime reads the startup environment and injects
+            # configured authority.  Standalone controllers cannot acquire I/O
+            # grants from process-global state.
+            authority_broker = AuthorityBroker(AuthorityPolicy.deny_all())
         self.authority_broker = authority_broker
         self.authority_provider = authority_provider
         self._safe_change_locks: dict[str, asyncio.Lock] = {}
-        captured = (
-            dict(environment_snapshot)
-            if environment_snapshot is not None
-            else {
-                "launcher_python": os.getenv("FUSION_AGENT_PYTHON") or "",
-                "fusion_mcp_endpoint": os.getenv("FUSION_MCP_ENDPOINT") or "",
-                "default_mode": os.getenv("FUSION_AGENT_DEFAULT_MODE") or "",
-                "require_real": os.getenv("FUSION_AGENT_REQUIRE_REAL") or "",
-                "allow_dry_run": os.getenv("FUSION_AGENT_ALLOW_DRY_RUN") or "",
-            }
-        )
+        # FusionAgentRuntime/CLI startup owns environment capture. A standalone
+        # controller without an injected snapshot receives no ambient authority.
+        captured = dict(environment_snapshot or {})
         self._environment_snapshot = MappingProxyType(captured)
 
     def _real_client(self) -> Any:
@@ -230,14 +243,20 @@ class SessionController:
     ) -> SessionResult:
         """Run an already validated legacy CadSpec without replanning it.
 
-        This compatibility boundary ensures that a caller-supplied CadSpec v1
-        is the document that is executed.  It is never replaced by a new plan
-        derived from the spec's intent.
+        This compatibility boundary preserves parsing, mock execution, and
+        dry-run behavior for a caller-supplied CadSpec v1. Real execution is
+        fail-closed until the complete graph is normalized to bound CadSpec v2.
         """
 
         options = options or SessionOptions(mode=mode, project=project or "default")
         options.mode = mode
         options.project = project or options.project
+        # A live facade negotiates its tool manifest during construction. Deny
+        # the unbound v1 graph before that first provider read, not merely
+        # before the first CAD mutation inside Executor.
+        if mode != "mock" and not options.dry_run and _requests_host_output(spec):
+            raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
+        require_legacy_execution_allowed(mode=mode, dry_run=options.dry_run)
         prompt_text = user_prompt or spec.intent
         session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         workspace_root = options.workspace_root
@@ -430,11 +449,14 @@ class SessionController:
     ) -> CaptureViewportResult:
         """Capture the active Fusion viewport through the safe facade."""
 
+        mode = validate_execution_mode(mode)
         options = options or SessionOptions(mode=mode, project=project or "default")
         options.mode = mode
         options.project = project or options.project
         if output_dir is not None:
             options.output_dir = Path(output_dir)
+        if mode != "mock":
+            raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
         # A real capture destination must already exist beneath an approved
         # export root. Creating a caller-selected directory before authority
         # validation would itself be an unauthorized host mutation.
@@ -470,7 +492,12 @@ class SessionController:
         )
         status = "success"
         verification = VerificationResult.pass_result(
-            metrics={"capture": capture_payload.get("screenshot", capture_payload)}
+            evidence=_non_verification_receipt(
+                producer="session_controller.capture_viewport",
+                receipt_id=f"capture:{session_id}",
+                scope="viewport_capture",
+            ),
+            metrics={"capture": capture_payload.get("screenshot", capture_payload)},
         )
         cad_spec_path = journal.write_text("cad_spec.json", "{}\n")
         journal.write_text("prompt.md", f"capture {view} viewport")
@@ -500,6 +527,7 @@ class SessionController:
     ):
         """Discover and save native MCP tools."""
 
+        mode = validate_execution_mode(mode)
         options = options or SessionOptions(mode=mode)
         client = MockMcpClient() if mode == "mock" else self._real_client()
         manifest_store = self._manifest_store(options.manifest_dir)
@@ -776,6 +804,22 @@ class SessionController:
         bound_targets, binding_errors = bind_safe_change_targets(
             targets, baseline_snapshot
         )
+        if operation == "visibility":
+            for target_index, target in enumerate(targets):
+                desired = (
+                    target.get("visible")
+                    if "visible" in target
+                    else target.get("value")
+                )
+                if not isinstance(desired, bool):
+                    binding_errors.append(
+                        {
+                            "target_index": target_index,
+                            "kind": "body",
+                            "match_count": 0,
+                            "reason": "visibility_value_must_be_boolean",
+                        }
+                    )
         classification = classify_safe_change(
             operation,
             bound_targets if operation == "delete" else targets,
@@ -822,6 +866,9 @@ class SessionController:
         preview_dir = options.output_dir / "safe_change_previews"
         preview_dir.mkdir(parents=True, exist_ok=True)
         preview_path = preview_dir / f"{preview_id}.json"
+        requirements = _normalize_safe_change_requirements(
+            policy.get("requirements") or []
+        )
         payload = {
             "schema_version": "safe_change_preview.v2",
             "preview_id": preview_id,
@@ -843,11 +890,10 @@ class SessionController:
             "bound_targets": bound_targets,
             "binding_errors": binding_errors,
             "inspection_budget": _snapshot_budget(policy),
-            "requirements": _normalize_safe_change_requirements(
-                policy.get("requirements") or []
-            ),
+            "requirements": requirements,
             "negative_impact": False,
         }
+        payload["preview_digest"] = _safe_change_preview_digest(payload)
         _atomic_write_json(preview_path, payload)
         return {**payload, "preview_path": str(preview_path)}
 
@@ -940,6 +986,22 @@ class SessionController:
                     preview,
                     f"preview_{preview.get('preview_status') or 'invalid'}",
                     "This preview cannot be replayed. Create a new preview after inspecting the active design.",
+                )
+            preview_digest = str(preview.get("preview_digest") or "")
+            if len(
+                preview_digest
+            ) != 64 or preview_digest != _safe_change_preview_digest(preview):
+                preview.update(
+                    {
+                        "preview_status": "stale",
+                        "stale_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                _atomic_write_json(preview_path, preview)
+                return _aborted_change(
+                    preview,
+                    "preview_integrity_failed",
+                    "No mutation was dispatched. Create a new preview from the current design state.",
                 )
 
             operation = normalize_operation(preview["operation"])
@@ -1061,15 +1123,23 @@ class SessionController:
                 if operation == "delete":
                     batch_targets.append(dict(binding))
                 else:
+                    desired = (
+                        target.get("visible")
+                        if "visible" in target
+                        else target.get("value")
+                    )
                     batch_targets.append(
                         {
-                            **target,
-                            "entity_token": binding.get("entity_token")
-                            or target.get("entity_token"),
-                            "key": binding.get("key") or target.get("key"),
-                            "path": binding.get("path") or target.get("path"),
+                            **binding,
+                            "desired_visible": desired,
                         }
                     )
+            dispatch_operation_id = f"safe-change:{preview_id}"
+            operation_binding = _safe_change_operation_binding(
+                preview,
+                batch_targets,
+                dispatch_operation_id=dispatch_operation_id,
+            )
             session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             facade = None
             if mode != "mock":
@@ -1091,8 +1161,16 @@ class SessionController:
 
             claim_path = preview_path.with_suffix(".claim")
             try:
-                claim_fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(claim_fd)
+                _create_safe_change_claim(
+                    claim_path,
+                    {
+                        "schema_version": "safe_change_claim.v1",
+                        "preview_id": preview_id,
+                        "preview_digest": preview_digest,
+                        "operation_binding": operation_binding,
+                        "dispatch_operation_id": dispatch_operation_id,
+                    },
+                )
             except FileExistsError:
                 return _aborted_change(
                     preview,
@@ -1105,7 +1183,8 @@ class SessionController:
                     "preview_status": "applying",
                     "dispatch_phase": "claimed",
                     "applying_at": datetime.now(timezone.utc).isoformat(),
-                    "dispatch_operation_id": f"safe-change:{preview_id}",
+                    "dispatch_operation_id": dispatch_operation_id,
+                    "operation_binding": operation_binding,
                     "preapply_snapshot_id": preapply.get("snapshot_id"),
                     "preapply_snapshot_path": preapply.get("snapshot_path"),
                     "preapply_guard": guard,
@@ -1127,9 +1206,25 @@ class SessionController:
             else:
                 try:
                     script = (
-                        safe_delete_apply_script({"targets": batch_targets})
+                        safe_delete_apply_script(
+                            {
+                                "targets": batch_targets,
+                                "document_identity": preview["document_identity"],
+                                "state_fingerprint": preview["state_fingerprint"],
+                                "preview_digest": preview_digest,
+                                "operation_binding": operation_binding,
+                            }
+                        )
                         if operation == "delete"
-                        else safe_visibility_apply_script({"targets": batch_targets})
+                        else safe_visibility_apply_script(
+                            {
+                                "targets": batch_targets,
+                                "document_identity": preview["document_identity"],
+                                "state_fingerprint": preview["state_fingerprint"],
+                                "preview_digest": preview_digest,
+                                "operation_binding": operation_binding,
+                            }
+                        )
                     )
                     preview.update(
                         {
@@ -1246,7 +1341,13 @@ class SessionController:
 
             diff = diff_snapshots(before_snapshot, after_snapshot)
             verification = _safe_change_verification(
-                preview, applied, diff, len(batch_targets)
+                preview,
+                applied,
+                diff,
+                len(batch_targets),
+                expected_targets=batch_targets,
+                operation_binding=operation_binding,
+                operation=operation,
             )
             verification["mutation_status"] = "observed_in_readback"
             if transport["mutation_outcome"] == "unknown":
@@ -1278,6 +1379,8 @@ class SessionController:
                 "error_code": (
                     "MUTATION_OUTCOME_UNKNOWN"
                     if status == "mutation_outcome_unknown"
+                    else "INVALID_NUMERIC_EVIDENCE"
+                    if verification.get("invalid_numeric_evidence")
                     else None
                 ),
                 "after_snapshot_path": after["snapshot_path"],
@@ -1291,6 +1394,7 @@ class SessionController:
         trace_logger: JsonlTraceLogger,
         session_id: str,
     ) -> FusionFacade:
+        mode = validate_execution_mode(mode)
         if mode == "mock":
             client = MockMcpClient()
             policy = ToolPolicy.from_manifest(MOCK_NATIVE_TOOLS)
@@ -1348,11 +1452,18 @@ class SessionController:
         )
 
 
-def _simulated_verification(spec) -> VerificationResult:
+def _simulated_verification(spec: CadSpec) -> VerificationResult:
     """Return a deterministic pass result for dry-run sessions."""
 
+    spec_sha256 = hashlib.sha256(spec.to_json_text().encode("utf-8")).hexdigest()
     return VerificationResult(
         passed=True,
+        evidence=_non_verification_receipt(
+            producer="session_controller.dry_run",
+            receipt_id=f"dry-run:{spec_sha256}",
+            scope="dry_run_simulation",
+            provenance={"cad_spec_sha256": spec_sha256},
+        ),
         metrics={
             "simulated": True,
             "planned_components": len(spec.components),
@@ -1370,27 +1481,51 @@ def _simulated_verification(spec) -> VerificationResult:
     )
 
 
+def _non_verification_receipt(
+    *,
+    producer: str,
+    receipt_id: str,
+    scope: str,
+    provenance: dict[str, str] | None = None,
+) -> EvidenceEnvelope:
+    """Build explicit evidence for a completed non-verification operation."""
+
+    receipt_provenance = {
+        "evidence_kind": "non_verification_receipt",
+        "scope": scope,
+        **(provenance or {}),
+    }
+    return EvidenceEnvelope(
+        producer=producer,
+        provenance=receipt_provenance,
+        document_identity=f"receipt:{receipt_id}",
+        complete=True,
+        counts_exact=True,
+        truncated=False,
+        stop_reason="complete",
+        metrics_finite=True,
+        assertion_ids=[],
+        assertion_count=0,
+        evaluated_count=0,
+    )
+
+
 def _read_json_path(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _snapshot_is_complete(snapshot: dict) -> bool:
-    """Return whether a snapshot is safe to use as a mutation oracle.
-
-    Snapshot v1 did not expose the new completeness fields, so it remains
-    compatible when it was not explicitly payload-capped. Snapshot v2 fails
-    closed on any incomplete traversal, inexact count, or truncation.
-    """
+    """Return whether a snapshot carries explicit exact mutation evidence."""
 
     if not isinstance(snapshot, dict) or not snapshot:
         return False
-    if "complete" not in snapshot:
-        return not bool(snapshot.get("payload_capped", False))
     return bool(
-        snapshot.get("complete")
-        and snapshot.get("counts_exact", False)
-        and not snapshot.get("truncated", False)
-        and not snapshot.get("stop_reason")
+        snapshot.get("schema_version") == "compact_snapshot.v2"
+        and snapshot.get("complete") is True
+        and snapshot.get("counts_exact") is True
+        and snapshot.get("truncated") is False
+        and snapshot.get("payload_capped") is False
+        and snapshot.get("stop_reason") is None
     )
 
 
@@ -1415,6 +1550,85 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
     os.replace(temporary, path)
+
+
+def _safe_change_preview_digest(preview: dict[str, Any]) -> str:
+    """Bind a preview to its immutable authority and evidence inputs."""
+
+    payload = {
+        key: preview.get(key)
+        for key in (
+            "schema_version",
+            "preview_id",
+            "project",
+            "mode",
+            "operation",
+            "targets",
+            "policy",
+            "baseline_id",
+            "document_identity",
+            "state_fingerprint",
+            "bound_targets",
+            "inspection_budget",
+            "requirements",
+        )
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_change_operation_binding(
+    preview: dict[str, Any],
+    batch_targets: list[dict[str, Any]],
+    *,
+    dispatch_operation_id: str,
+) -> str:
+    """Bind one claimed batch to its preview, document, baseline, and targets."""
+
+    payload = {
+        "preview_digest": preview.get("preview_digest"),
+        "preview_id": preview.get("preview_id"),
+        "operation": preview.get("operation"),
+        "document_identity": preview.get("document_identity"),
+        "state_fingerprint": preview.get("state_fingerprint"),
+        "dispatch_operation_id": dispatch_operation_id,
+        "targets": batch_targets,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _create_safe_change_claim(path: Path, payload: dict[str, Any]) -> None:
+    """Create one durable, exclusive claim before the provider mutation boundary."""
+
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        offset = 0
+        while offset < len(encoded):
+            offset += os.write(descriptor, encoded[offset:])
+        os.fsync(descriptor)
+    except Exception:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+    else:
+        os.close(descriptor)
 
 
 def _binding_identities(bindings: list[dict]) -> list[tuple[str, ...]]:
@@ -1529,19 +1743,44 @@ def _safe_change_verification(
     applied: dict,
     diff: dict,
     expected_target_count: int,
+    *,
+    expected_targets: list[dict[str, Any]] | None = None,
+    operation_binding: str | None = None,
+    operation: str | None = None,
 ) -> dict[str, object]:
-    actual_count = int(
-        applied.get("deleted_count", applied.get("changed_count", 0)) or 0
+    raw_count = (
+        applied.get("deleted_count")
+        if "deleted_count" in applied
+        else applied.get("changed_count")
     )
+    count_valid = bool(
+        isinstance(raw_count, int)
+        and not isinstance(raw_count, bool)
+        and raw_count >= 0
+    )
+    actual_count = raw_count if count_valid else None
+    readback_complete = diff.get("numeric_evidence_valid") is True
+    sink_proof_valid = bool(
+        expected_targets is None
+        or _safe_change_sink_proof(
+            applied,
+            expected_targets,
+            operation_binding=operation_binding,
+            operation=operation,
+        )
+    )
+    invalid_numeric_evidence = not count_valid or not readback_complete
+    incomplete_evidence = invalid_numeric_evidence or not sink_proof_valid
     assertions = [
-        {"id": "readback_complete", "passed": True},
+        {"id": "readback_complete", "passed": readback_complete},
+        {"id": "bound_target_effect", "passed": sink_proof_valid},
         {
             "id": "no_visible_regression",
-            "passed": not bool(diff.get("negative_impact")),
+            "passed": readback_complete and not bool(diff.get("negative_impact")),
         },
         {
             "id": "expected_target_count",
-            "passed": actual_count == expected_target_count,
+            "passed": count_valid and actual_count == expected_target_count,
             "expected": expected_target_count,
             "actual": actual_count,
         },
@@ -1579,7 +1818,9 @@ def _safe_change_verification(
             "partial" if any(item["covered"] for item in required_results) else "none"
         )
     assertion_status = (
-        "passed"
+        "incomplete"
+        if incomplete_evidence
+        else "passed"
         if assertions and all(item["passed"] for item in assertions)
         else "failed"
     )
@@ -1607,12 +1848,59 @@ def _safe_change_verification(
         "intent_coverage": coverage,
         "verification_level": verification_level,
         "contract_verified": contract_verified,
+        "invalid_numeric_evidence": invalid_numeric_evidence,
+        "invalid_sink_evidence": not sink_proof_valid,
         "verification": {
             "assertions": assertions,
             "requirements": requirement_results,
-            "readback_complete": True,
+            "readback_complete": readback_complete,
         },
     }
+
+
+def _safe_change_sink_proof(
+    applied: dict[str, Any],
+    expected_targets: list[dict[str, Any]],
+    *,
+    operation_binding: str | None,
+    operation: str | None,
+) -> bool:
+    """Require exact sink-issued identity proofs for every claimed target."""
+
+    if (
+        not operation_binding
+        or applied.get("operation_binding") != operation_binding
+        or operation not in {"visibility", "delete"}
+    ):
+        return False
+    rows = applied.get("deleted" if operation == "delete" else "changed")
+    if not isinstance(rows, list) or len(rows) != len(expected_targets):
+        return False
+
+    expected: list[tuple[str, str]] = []
+    for target in expected_targets:
+        token = target.get("entity_token") or target.get("token")
+        fingerprint = target.get("binding_fingerprint")
+        if not isinstance(token, str) or not token:
+            return False
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return False
+        expected.append(
+            (hashlib.sha256(token.encode("utf-8")).hexdigest(), fingerprint)
+        )
+
+    actual: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return False
+        identity_digest = row.get("entity_identity_digest")
+        fingerprint = row.get("binding_fingerprint")
+        if not isinstance(identity_digest, str) or len(identity_digest) != 64:
+            return False
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return False
+        actual.append((identity_digest, fingerprint))
+    return len(set(actual)) == len(actual) and sorted(actual) == sorted(expected)
 
 
 def _aborted_change(preview: dict, reason: str, recovery: str) -> dict:

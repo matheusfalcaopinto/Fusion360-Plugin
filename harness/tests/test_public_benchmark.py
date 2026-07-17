@@ -128,10 +128,7 @@ async def test_revision_mismatch_fails_closed_before_execution() -> None:
     assert adapter.preflight_calls == 1
     assert adapter.execute_calls == 0
     assert all(item.state == "not_run" for item in report.results)
-    assert all(
-        item.reason and item.reason.startswith("revision_mismatch:")
-        for item in report.results
-    )
+    assert {item.reason for item in report.results} == {"revision_mismatch"}
 
 
 @pytest.mark.asyncio

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 BenchmarkDriver = Literal["internal", "codex_e2e"]
@@ -104,7 +105,7 @@ class BenchmarkRunConfig(_StrictModel):
 class ExecutionObservation(_StrictModel):
     """Normalized output from an internal route or a Codex subprocess."""
 
-    status: str
+    status: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,120}$")
     execution_success: bool
     duration_ms: float = Field(ge=0)
     execution_ms: float = Field(default=0, ge=0)
@@ -144,6 +145,30 @@ class ExecutionObservation(_StrictModel):
     observation: dict[str, Any] = Field(default_factory=dict)
     trace: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator(
+        "duration_ms",
+        "execution_ms",
+        "planning_ms",
+        "setup_ms",
+        "queue_wait_ms",
+        "connection_ms",
+        "call_ms",
+        "verification_ms",
+        "teardown_ms",
+        "restoration_ms",
+    )
+    @classmethod
+    def _finite_duration(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("numeric evidence must be finite")
+        return value
+
+    @field_validator("observation", "trace")
+    @classmethod
+    def _finite_evidence(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _require_finite_tree(value)
+        return value
+
 
 class OracleResult(_StrictModel):
     """Independent correctness verdict for one trial."""
@@ -153,6 +178,12 @@ class OracleResult(_StrictModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
     message: str = ""
+
+    @field_validator("metrics")
+    @classmethod
+    def _finite_metrics(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _require_finite_tree(value)
+        return value
 
 
 class BenchmarkTrial(_StrictModel):
@@ -182,6 +213,12 @@ class BenchmarkTrial(_StrictModel):
     journal_path: Path | None = None
 
     model_config = ConfigDict(extra="forbid", strict=True, arbitrary_types_allowed=True)
+
+    @field_validator("metrics")
+    @classmethod
+    def _finite_metrics(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _require_finite_tree(value)
+        return value
 
 
 class BenchmarkResult(BaseModel):
@@ -247,3 +284,19 @@ class BenchmarkRun(BaseModel):
     environment_path: Path
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+def _require_finite_tree(value: Any) -> None:
+    if value is None or isinstance(value, (bool, str, int, Path)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("numeric evidence must be finite")
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            _require_finite_tree(child)
+        return
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            _require_finite_tree(child)

@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
+from benchmark.filesystem import path_is_file, read_bytes, read_text
 
 from .models import ArtifactRef, CausalSuite
 
@@ -23,36 +24,42 @@ class CausalSuiteError(ValueError):
 
 def load_causal_suite(path: Path | str) -> CausalSuite:
     suite_path = Path(path).expanduser()
-    if not suite_path.is_file():
-        raise CausalSuiteError(f"causal suite does not exist: {suite_path}")
+    if not path_is_file(suite_path):
+        raise CausalSuiteError("causal suite does not exist")
     if suite_path.suffix.lower() != ".json":
         raise CausalSuiteError("causal suite must be a JSON file")
     try:
-        payload = json.loads(suite_path.read_text(encoding="utf-8"))
+        payload = json.loads(read_text(suite_path))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CausalSuiteError(f"cannot read causal suite: {exc}") from exc
+        raise CausalSuiteError("cannot read causal suite") from exc
     if not isinstance(payload, dict):
         raise CausalSuiteError("causal suite root must be an object")
     try:
-        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        schema = json.loads(read_text(SCHEMA_PATH))
     except (OSError, json.JSONDecodeError) as exc:
-        raise CausalSuiteError(f"bundled causal schema is unavailable: {exc}") from exc
-    errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda item: list(item.path))
+        raise CausalSuiteError("bundled causal schema is unavailable") from exc
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(payload),
+        key=lambda item: list(item.path),
+    )
     if errors:
         first = errors[0]
         location = ".".join(str(part) for part in first.absolute_path) or "$"
-        raise CausalSuiteError(f"causal suite schema violation at {location}: {first.message}")
+        raise CausalSuiteError(f"causal suite schema violation at {location}")
     try:
         suite = CausalSuite.model_validate(payload)
     except ValidationError as exc:
-        raise CausalSuiteError(f"causal suite semantic validation failed: {exc}") from exc
+        raise CausalSuiteError("causal suite semantic validation failed") from exc
     _verify_artifacts(suite, suite_path.parent.resolve())
     return suite
 
 
 def suite_fingerprint(suite: CausalSuite) -> str:
     canonical = json.dumps(
-        suite.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        suite.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 
@@ -61,20 +68,22 @@ def resolve_artifact(suite_path: Path | str, artifact: ArtifactRef) -> Path:
     root = Path(suite_path).expanduser().resolve().parent
     relative = Path(artifact.path)
     if relative.is_absolute() or relative.drive:
-        raise CausalSuiteError(f"artifact path must be relative: {artifact.path}")
+        raise CausalSuiteError("artifact path must be relative")
     candidate = (root / relative).resolve()
     try:
         candidate.relative_to(root)
     except ValueError as exc:
-        raise CausalSuiteError(f"artifact escapes suite directory: {artifact.path}") from exc
+        raise CausalSuiteError("artifact escapes suite directory") from exc
     return candidate
 
 
 def _verify_artifacts(suite: CausalSuite, root: Path) -> None:
     try:
-        plan_schema = json.loads(PLAN_SCHEMA_PATH.read_text(encoding="utf-8"))
+        plan_schema = json.loads(read_text(PLAN_SCHEMA_PATH))
     except (OSError, json.JSONDecodeError) as exc:
-        raise CausalSuiteError(f"bundled planner artifact schema is unavailable: {exc}") from exc
+        raise CausalSuiteError(
+            "bundled planner artifact schema is unavailable"
+        ) from exc
     arm_by_id = {arm.id: arm for arm in suite.arms}
     for case in suite.cases:
         refs: Iterable[ArtifactRef] = [
@@ -86,23 +95,20 @@ def _verify_artifacts(suite: CausalSuite, root: Path) -> None:
             relative = Path(artifact.path)
             if relative.is_absolute() or relative.drive:
                 raise CausalSuiteError(
-                    f"case {case.id}: artifact path must be relative: {artifact.path}"
+                    f"case {case.id}: artifact path must be relative"
                 )
             candidate = (root / relative).resolve()
             try:
                 candidate.relative_to(root)
             except ValueError as exc:
                 raise CausalSuiteError(
-                    f"case {case.id}: artifact escapes suite directory: {artifact.path}"
+                    f"case {case.id}: artifact escapes suite directory"
                 ) from exc
-            if not candidate.is_file():
-                raise CausalSuiteError(f"case {case.id}: artifact is missing: {artifact.path}")
+            if not path_is_file(candidate):
+                raise CausalSuiteError(f"case {case.id}: artifact is missing")
             digest = _sha256_file(candidate)
             if digest != artifact.sha256:
-                raise CausalSuiteError(
-                    f"case {case.id}: artifact hash mismatch for {artifact.path}: "
-                    f"expected {artifact.sha256}, got {digest}"
-                )
+                raise CausalSuiteError(f"case {case.id}: artifact hash mismatch")
         planner = case.planner_isolated.artifacts
         signatures = {(item.plan.sha256, item.script.sha256) for item in planner}
         if len(signatures) != 2:
@@ -120,11 +126,7 @@ def _verify_artifacts(suite: CausalSuite, root: Path) -> None:
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(read_bytes(path)).hexdigest()
 
 
 def _verify_plan_artifact(
@@ -136,21 +138,19 @@ def _verify_plan_artifact(
     expected_script_sha256: str,
 ) -> None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CausalSuiteError(f"planner artifact must be valid JSON: {path.name}: {exc}") from exc
-    errors = sorted(Draft202012Validator(schema).iter_errors(payload), key=lambda item: list(item.path))
+        raise CausalSuiteError("planner artifact must be valid JSON") from exc
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(payload),
+        key=lambda item: list(item.path),
+    )
     if errors:
         first = errors[0]
         location = ".".join(str(part) for part in first.absolute_path) or "$"
-        raise CausalSuiteError(
-            f"planner artifact schema violation in {path.name} at {location}: {first.message}"
-        )
+        raise CausalSuiteError(f"planner artifact schema violation at {location}")
     if payload["arm_id"] != expected_arm.id or payload["case_id"] != expected_case_id:
-        raise CausalSuiteError(
-            f"planner artifact identity mismatch in {path.name}: "
-            f"expected arm={expected_arm.id}, case={expected_case_id}"
-        )
+        raise CausalSuiteError("planner artifact identity mismatch")
     planner = payload["planner"]
     frozen_identity = (
         expected_arm.provider,
@@ -163,12 +163,10 @@ def _verify_plan_artifact(
         planner["reasoning_profile"],
     )
     if artifact_identity != frozen_identity:
-        raise CausalSuiteError(
-            f"planner identity mismatch in {path.name}: expected {frozen_identity}, got {artifact_identity}"
-        )
+        raise CausalSuiteError("planner identity mismatch")
     if payload["script_sha256"] != expected_script_sha256:
         raise CausalSuiteError(
-            f"planner artifact {path.name} is not bound to its frozen script SHA-256"
+            "planner artifact is not bound to its frozen script SHA-256"
         )
     _verify_build_graph(payload, path.name)
 
@@ -177,7 +175,9 @@ def _verify_build_graph(payload: dict[str, Any], filename: str) -> None:
     nodes = payload["build_graph"]
     ids = [node["id"] for node in nodes]
     if len(set(ids)) != len(ids):
-        raise CausalSuiteError(f"planner artifact {filename} contains duplicate build_graph ids")
+        raise CausalSuiteError(
+            f"planner artifact {filename} contains duplicate build_graph ids"
+        )
     known = set(ids)
     dependencies = {node["id"]: set(node["depends_on"]) for node in nodes}
     for node_id, required in dependencies.items():
@@ -197,7 +197,9 @@ def _verify_build_graph(payload: dict[str, Any], filename: str) -> None:
         if node_id in visited:
             return
         if node_id in visiting:
-            raise CausalSuiteError(f"planner artifact {filename}: build_graph contains a cycle")
+            raise CausalSuiteError(
+                f"planner artifact {filename}: build_graph contains a cycle"
+            )
         visiting.add(node_id)
         for dependency in dependencies[node_id]:
             visit(dependency)

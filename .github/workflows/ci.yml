@@ -21,18 +21,27 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install canonical harness
-        run: python -m pip install -e "./harness[test]"
+      - name: Verify wheel and dependency locks before installation
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root .
+      - name: Install hash-locked test environment
+        run: |
+          python -I -S -B scripts/run-isolated-pip.py download --require-hashes --only-binary=:all: --dest .dependency-wheelhouse -r harness/requirements/test.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-index --find-links .dependency-wheelhouse --require-hashes --only-binary=:all: -r harness/requirements/test.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-deps wheels/fusion_agent_harness-0.4.1-py3-none-any.whl
+      - name: Verify installed wheel and exact dependency set
+        run: |
+          python -I -S -B scripts/preinstall_verify.py --plugin-root . --verify-installed --dependency-lock test.lock --dependency-wheelhouse .dependency-wheelhouse
+          python -I -S -B scripts/run-isolated-pip.py check
       - name: Run complete test suite
-        run: python -m pytest -q -p no:cacheprovider
+        run: python -B -m pytest -q -p no:cacheprovider
       - name: Build deterministic wheel
-        run: python scripts/build-distribution.py
+        run: python -B scripts/build-distribution.py
       - name: Require tracked wheel to match canonical sources
         run: git diff --exit-code -- wheels
-      - name: Verify wheel before installation
-        run: python scripts/preinstall_verify.py --plugin-root .
+      - name: Reverify rebuilt wheel
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root .
       - name: Validate plugin bundle
-        run: python scripts/validate_plugin.py
+        run: python -I -B scripts/validate_plugin.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: fusion-agent-harness-${{ matrix.os }}-py${{ matrix.python-version }}
@@ -50,34 +59,37 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: Verify wheel and dependency locks before quality installation
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root .
       - name: Install frozen quality environment
         run: |
-          python -m pip install "uv==0.11.29"
-          python -m uv sync --frozen --project harness --extra test --extra dev
+          python -I -S -B scripts/run-isolated-pip.py download --require-hashes --only-binary=:all: --dest .quality-wheelhouse -r harness/requirements/quality.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-index --find-links .quality-wheelhouse --require-hashes --only-binary=:all: -r harness/requirements/quality.lock
+          python -I -S -B scripts/run-isolated-pip.py install --no-compile --no-deps wheels/fusion_agent_harness-0.4.1-py3-none-any.whl
+      - name: Verify frozen quality environment before imports
+        run: python -I -S -B scripts/preinstall_verify.py --plugin-root . --verify-installed --dependency-lock quality.lock --dependency-wheelhouse .quality-wheelhouse
       - name: Ruff formatting and lint
         run: |
-          python -m uv run --frozen --project harness --extra test --extra dev python -m ruff format --check harness scripts tests
-          python -m uv run --frozen --project harness --extra test --extra dev python -m ruff check harness scripts tests
+          python -B -m ruff format --check harness scripts tests
+          python -B -m ruff check harness scripts tests
       - name: Compile first-party Python
-        run: python -m uv run --frozen --project harness --extra test --extra dev python -m compileall -q harness/apps harness/packages harness/tests scripts tests
+        run: python -B -m compileall -q harness/apps harness/packages harness/tests scripts tests
       - name: Type-check configured first-party boundaries
-        run: python -m uv run --frozen --project harness --extra test --extra dev python -m mypy
+        run: python -B -m mypy
       - name: pip-audit and locked dependency checks
         run: |
-          python -m uv lock --check --project harness
-          python -m uv run --frozen --project harness --extra test --extra dev python -m pip check
-          python -m uv run --frozen --project harness --extra test --extra dev python -m pip_audit
+          python -B -m uv lock --check --project harness
+          python -I -S -B scripts/run-isolated-pip.py check
+          python -B -m pip_audit -r harness/requirements/quality.lock
       - name: Coverage gate
         run: >-
-          python -m uv run --frozen --project harness --extra test --extra dev
-          python -m pytest -q -p no:cacheprovider
+          python -B -m pytest -q -p no:cacheprovider
           --cov=harness/apps --cov=harness/packages --cov-branch
           --cov-report=term-missing --cov-report=json:coverage.json
           --cov-fail-under=70
       - name: Require 90 percent on critical 0.4.1 boundaries
         run: >-
-          python -m uv run --frozen --project harness --extra test --extra dev
-          python scripts/check-coverage-gate.py --coverage-json coverage.json
+          python -B scripts/check-coverage-gate.py --coverage-json coverage.json
       - name: Compare candidate performance with reviewed baseline
         shell: bash
         env:
@@ -87,12 +99,11 @@ jobs:
           baseline_root="$(mktemp -d)"
           git archive --format=tar --output="$RUNNER_TEMP/fusion-agent-baseline.tar" "$BASELINE_SHA"
           tar -xf "$RUNNER_TEMP/fusion-agent-baseline.tar" -C "$baseline_root"
-          python -m uv run --frozen --project harness --extra test --extra dev python scripts/measure-performance.py --source-root "$baseline_root" --git-commit "$BASELINE_SHA" --output "$RUNNER_TEMP/performance-baseline.json"
-          python -m uv run --frozen --project harness --extra test --extra dev python scripts/measure-performance.py --source-root . --git-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/performance-candidate.json"
-          python -m uv run --frozen --project harness --extra test --extra dev python scripts/check-performance-gate.py --baseline "$RUNNER_TEMP/performance-baseline.json" --candidate "$RUNNER_TEMP/performance-candidate.json" --candidate-commit "$GITHUB_SHA"
+          python -B scripts/measure-performance.py --source-root "$baseline_root" --git-commit "$BASELINE_SHA" --output "$RUNNER_TEMP/performance-baseline.json"
+          python -B scripts/measure-performance.py --source-root . --git-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/performance-candidate.json"
+          python -B scripts/check-performance-gate.py --baseline "$RUNNER_TEMP/performance-baseline.json" --candidate "$RUNNER_TEMP/performance-candidate.json" --candidate-commit "$GITHUB_SHA"
       - name: Validate GitHub workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
       - name: Validate immutable workflow policy
         run: >-
-          python -m uv run --frozen --project harness --extra test --extra dev
-          python -m pytest -q tests/test_release_hardening_041.py -k github_actions
+          python -B -m pytest -q tests/test_release_hardening_041.py -k github_actions

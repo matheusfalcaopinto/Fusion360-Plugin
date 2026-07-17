@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from agent_core.guardrails import (  # noqa: E402
     classify_safe_change,
     diff_snapshots,
 )
+from agent_core.authority import HostOutputDisabledError  # noqa: E402
 from agent_core.planner import PlanningRequest, RuleBasedPlanner  # noqa: E402
 from fusion_mcp_adapter.manifest_store import ManifestStore  # noqa: E402
 from fusion_mcp_adapter.tool_result import ToolDefinition, ToolManifest  # noqa: E402
@@ -96,6 +98,25 @@ def test_safe_change_diff_limits_no_drift_claim_to_observed_scope() -> None:
     assert diff["drift_conclusion"] == "no_drift_in_observed_scope"
 
 
+@pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf, True])
+def test_safe_change_diff_never_accepts_invalid_bbox_evidence(invalid: object) -> None:
+    snapshot = {
+        "complete": True,
+        "counts_exact": True,
+        "truncated": False,
+        "visible_occurrence_paths": ["root/A"],
+        "visible_body_keys": ["A/body#1"],
+        "visible_component_keys": ["A"],
+        "visible_body_bbox_mm": {"size_mm": [100.0, invalid, 20.0]},
+    }
+
+    diff = diff_snapshots(snapshot, snapshot)
+
+    assert diff["numeric_evidence_valid"] is False
+    assert diff["global_fingerprint_complete"] is False
+    assert diff["drift_conclusion"] == "incomplete_invalid_numeric_evidence"
+
+
 def test_duplicate_body_names_are_ambiguous_without_component_scope() -> None:
     snapshot = {"duplicate_body_names": {"Bolt": 3}}
 
@@ -108,24 +129,31 @@ def test_duplicate_body_names_are_ambiguous_without_component_scope() -> None:
     assert result["ambiguous_target_warnings"]
 
 
-def test_vendor_capture_fails_when_file_missing(tmp_path: Path) -> None:
+def test_vendor_capture_is_deny_io_before_file_or_provider_check(
+    tmp_path: Path,
+) -> None:
     async def run() -> None:
         facade = object.__new__(VendorFusionFacade)
         facade._last_scene = {}
         facade._uses_crud_profile = lambda: True
+        calls = 0
 
-        async def fake_execute_script_json(_script: str) -> dict:
+        async def fake_execute_script_json(_script: str, **_kwargs: object) -> dict:
+            nonlocal calls
+            calls += 1
             return {
                 "success": True,
                 "screenshot": {"path": str(tmp_path / "missing.png"), "bytes": 0},
             }
 
         facade._execute_script_json = fake_execute_script_json
-        with pytest.raises(RuntimeError, match="local file does not exist"):
+        with pytest.raises(HostOutputDisabledError, match="disabled by deny_io"):
             await facade.capture_viewport(
                 name="missing",
                 path=tmp_path / "missing.png",
                 view="isometric",
             )
+        assert calls == 0
+        assert not (tmp_path / "missing.png").exists()
 
     asyncio.run(run())

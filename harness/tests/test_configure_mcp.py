@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,9 @@ def test_installed_config_requires_python_inside_plugin_venv(tmp_path: Path) -> 
             require_contained_runtime=True,
         )
 
-    contained_python = plugin / ".venv" / "Scripts" / "python.exe"
+    contained_python = (
+        plugin / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
     contained_python.parent.mkdir(parents=True)
     contained_python.write_text("", encoding="utf-8")
     module.configure(
@@ -63,8 +66,27 @@ def test_installed_config_requires_python_inside_plugin_venv(tmp_path: Path) -> 
     payload = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))
     assert (
         Path(payload["mcpServers"]["fusion_agent"]["command"])
-        == contained_python.resolve()
+        == contained_python.absolute()
     )
+    assert payload["mcpServers"]["fusion_agent"]["args"][:2] == ["-I", "-B"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink regression")
+def test_installed_config_rejects_symlinked_venv_root(tmp_path: Path) -> None:
+    plugin, _external_python = _plugin(tmp_path)
+    module = _module()
+    external_venv = tmp_path / "external-venv"
+    external_python = external_venv / "bin" / "python"
+    external_python.parent.mkdir(parents=True)
+    external_python.write_text("", encoding="utf-8")
+    (plugin / ".venv").symlink_to(external_venv, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="non-reparse"):
+        module.configure(
+            plugin,
+            plugin / ".venv" / "bin" / "python",
+            require_contained_runtime=True,
+        )
 
 
 def test_fusion_data_is_optional_oauth_and_write_prompted(tmp_path: Path) -> None:

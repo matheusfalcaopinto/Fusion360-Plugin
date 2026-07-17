@@ -8,6 +8,8 @@ rejected so capability negotiation can fail before any Fusion dispatch.
 
 from __future__ import annotations
 
+import math
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -23,7 +25,11 @@ from typing_extensions import TypeAliasType
 
 from cad_spec.models import CadSpec
 from cad_spec.naming_policy import validate_name
-from cad_spec.unit_policy import expression_to_mm, validate_dimension_expression
+from cad_spec.unit_policy import (
+    expression_to_mm,
+    validate_dimension_expression,
+    validate_non_negative_dimension_expression,
+)
 
 
 def _reference_type(name: str, kind: str) -> Any:
@@ -125,10 +131,122 @@ class AssertionSpec(StrictModel):
     @classmethod
     def _validate_tolerance(cls, value: str | None) -> str | None:
         return (
-            validate_dimension_expression(value, "assertion tolerance")
-            if value
+            validate_non_negative_dimension_expression(value, "assertion tolerance")
+            if value is not None
             else value
         )
+
+    @model_validator(mode="after")
+    def _validate_assertion_contract(self) -> "AssertionSpec":
+        if self.kind != "custom_oracle" and not self.target_ref:
+            raise ValueError(f"{self.kind} assertion requires target_ref")
+        if self.kind in {"entity_exists", "export_exists"}:
+            if self.expected is not None and not isinstance(self.expected, bool):
+                raise ValueError(f"{self.kind} expected must be boolean")
+        elif self.kind in {"entity_count", "interference_count"}:
+            expected = self.expected
+            if self.kind == "entity_count" and isinstance(expected, dict):
+                if not set(expected) <= {"count", "category"}:
+                    raise ValueError(
+                        "entity_count expected contains unsupported fields"
+                    )
+                category = expected.get("category")
+                if category is not None and (
+                    not isinstance(category, str) or not category.strip()
+                ):
+                    raise ValueError("entity_count category must be non-empty text")
+                expected = expected.get("count")
+            if (
+                not isinstance(expected, int)
+                or isinstance(expected, bool)
+                or expected < 0
+            ):
+                raise ValueError(
+                    f"{self.kind} expected count must be a non-negative integer"
+                )
+        elif self.kind == "physical_property_range":
+            _validate_physical_property_range(self.expected)
+        elif self.kind in {"dimension_equals", "parameter_equals"}:
+            if self.expected is None or isinstance(self.expected, bool):
+                raise ValueError(
+                    f"{self.kind} assertion requires a typed expected value"
+                )
+            if isinstance(self.expected, int | float | Decimal):
+                _finite_float(self.expected, f"{self.kind} expected value")
+        if self.tolerance is not None and self.kind not in {
+            "dimension_equals",
+            "parameter_equals",
+        }:
+            raise ValueError(f"{self.kind} assertion does not support tolerance")
+        return self
+
+
+def _validate_physical_property_range(value: Any) -> None:
+    if not isinstance(value, dict) or not value:
+        raise ValueError("physical_property_range expected must be a non-empty object")
+    property_name = value.get("property")
+    if property_name is not None and (
+        not isinstance(property_name, str) or not property_name.strip()
+    ):
+        raise ValueError("physical_property_range property must be non-empty text")
+    bound_names = [
+        key
+        for key in value
+        if isinstance(key, str)
+        and (key in {"min", "max"} or key.startswith("min_") or key.startswith("max_"))
+    ]
+    if not bound_names:
+        raise ValueError("physical_property_range requires at least one bound")
+    if property_name is not None and any("_" in key for key in bound_names):
+        raise ValueError(
+            "physical_property_range with property must use min/max bounds"
+        )
+    suffix_bound_names = [key for key in bound_names if "_" in key]
+    if property_name is None:
+        if len(suffix_bound_names) != len(bound_names):
+            raise ValueError(
+                "physical_property_range without property must use suffixed bounds"
+            )
+        suffixes = {key.split("_", 1)[1] for key in suffix_bound_names}
+        if len(suffixes) != 1:
+            raise ValueError("physical_property_range bounds must address one property")
+    allowed = set(bound_names)
+    if property_name is not None:
+        allowed.add("property")
+    if set(value) != allowed:
+        raise ValueError("physical_property_range contains unsupported fields")
+    normalized: dict[str, float] = {}
+    for key in bound_names:
+        bound = value[key]
+        if not isinstance(bound, int | float | Decimal) or isinstance(bound, bool):
+            raise ValueError(f"physical_property_range {key} must be finite")
+        normalized[key] = _finite_float(bound, f"physical_property_range {key}")
+    pairs: list[tuple[str, str]] = [("min", "max")]
+    suffixes = {
+        key.removeprefix("min_") for key in bound_names if key.startswith("min_")
+    }
+    pairs.extend((f"min_{suffix}", f"max_{suffix}") for suffix in suffixes)
+    for lower, upper in pairs:
+        if (
+            lower in normalized
+            and upper in normalized
+            and normalized[lower] > normalized[upper]
+        ):
+            raise ValueError("physical_property_range minimum exceeds maximum")
+
+
+def _finite_float(value: int | float | Decimal, path: str) -> float:
+    """Convert a non-boolean number while failing closed on float overflow."""
+
+    if isinstance(value, bool):
+        raise ValueError(f"{path} must be finite")
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{path} must be finite") from exc
+    if not math.isfinite(normalized):
+        raise ValueError(f"{path} must be finite")
+    return normalized
 
 
 class OperationBase(StrictModel):
@@ -227,6 +345,20 @@ class SketchCircleOperation(OperationBase):
         return validate_dimension_expression(value, "circle diameter")
 
 
+def _validate_feature_target_body(operation: Any, label: str) -> Any:
+    target = operation.target_body_ref
+    if operation.operation != "new_body":
+        if target is None:
+            raise ValueError(f"{label} {operation.operation} requires target_body_ref")
+        if operation.result_name != target:
+            raise ValueError(
+                f"{label} {operation.operation} result_name must equal target_body_ref"
+            )
+    elif target is not None:
+        raise ValueError(f"{label} new_body cannot declare target_body_ref")
+    return operation
+
+
 class ExtrudeOperation(OperationBase):
     kind: Literal["feature.extrude"]
     component_ref: ComponentRef
@@ -234,12 +366,17 @@ class ExtrudeOperation(OperationBase):
     distance: str
     operation: Literal["new_body", "join", "cut", "intersect"] = "new_body"
     direction: Literal["positive", "negative", "symmetric"] = "positive"
+    target_body_ref: BodyRef | None = None
     result_name: str
 
     @field_validator("distance")
     @classmethod
     def _validate_distance(cls, value: str) -> str:
         return validate_dimension_expression(value, "extrude distance")
+
+    @model_validator(mode="after")
+    def _validate_target_body(self) -> "ExtrudeOperation":
+        return _validate_feature_target_body(self, "extrude")
 
 
 class SketchConstraintOperation(OperationBase):
@@ -282,12 +419,17 @@ class RevolveOperation(OperationBase):
     axis_ref: AxisRef
     angle: str = "360 deg"
     operation: Literal["new_body", "join", "cut", "intersect"] = "new_body"
+    target_body_ref: BodyRef | None = None
     result_name: str
 
     @field_validator("angle")
     @classmethod
     def _validate_angle(cls, value: str) -> str:
         return validate_dimension_expression(value, "revolve angle")
+
+    @model_validator(mode="after")
+    def _validate_target_body(self) -> "RevolveOperation":
+        return _validate_feature_target_body(self, "revolve")
 
 
 class SweepOperation(OperationBase):
@@ -297,7 +439,12 @@ class SweepOperation(OperationBase):
     path_ref: PathRef
     orientation: Literal["perpendicular", "parallel"] = "perpendicular"
     operation: Literal["new_body", "join", "cut", "intersect"] = "new_body"
+    target_body_ref: BodyRef | None = None
     result_name: str
+
+    @model_validator(mode="after")
+    def _validate_target_body(self) -> "SweepOperation":
+        return _validate_feature_target_body(self, "sweep")
 
 
 class LoftOperation(OperationBase):
@@ -306,7 +453,12 @@ class LoftOperation(OperationBase):
     profile_refs: list[ProfileRef] = Field(min_length=2)
     guide_refs: list[PathRef] = Field(default_factory=list)
     operation: Literal["new_body", "join", "cut", "intersect"] = "new_body"
+    target_body_ref: BodyRef | None = None
     result_name: str
+
+    @model_validator(mode="after")
+    def _validate_target_body(self) -> "LoftOperation":
+        return _validate_feature_target_body(self, "loft")
 
 
 class PatternOperation(OperationBase):
@@ -947,6 +1099,7 @@ def _append_typed_hole_cut_operations(
                     "profile_ref": profile_ref,
                     "distance": distance,
                     "operation": "cut",
+                    "target_body_ref": target_body,
                     # Autodesk returns the modified target in CutFeature.bodies;
                     # preserving its exact name avoids reference drift.
                     "result_name": target_body,

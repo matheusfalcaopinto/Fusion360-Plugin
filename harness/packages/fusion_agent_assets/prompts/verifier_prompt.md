@@ -22,6 +22,8 @@ Verification rules:
 - occurrence_contract requires exact named occurrences and repeated component usage; extra visible source/helper occurrences are failures unless explicitly allowed.
 - interference_free requires zero unapproved interference pairs. Analysis errors are failures.
 - physical_properties requires positive mass and volume for every contracted target unless the spec provides a stricter tolerance.
-- screenshots_exist requires existing non-empty image files at the requested output paths.
-- Screenshots can support review, but they do not override failed measurements or missing contracts.
+- screenshots_exist is compatibility-only for mock/dry-run receipts in 0.4.1
+  and must never be required by a real session.
+- Real capture/export returns `HOST_OUTPUT_DISABLED`; use typed inspection
+  evidence and never reinterpret the denial as incomplete screenshot proof.
 ```

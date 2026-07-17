@@ -519,7 +519,7 @@ class BenchmarkRunner:
                 safe_harness_baseline_p90_ms=baseline_safe_p90,
                 allow_current_safe_baseline=False,
             )
-            error_payload = {"type": type(exc).__name__, "message": str(exc)}
+            error_payload = _public_benchmark_error(exc, run_id=run_id)
             traces.setdefault("run_abort", {"event": "run_aborted", **error_payload})
             aborted_report = BenchmarkReport(
                 status="aborted",
@@ -541,14 +541,16 @@ class BenchmarkRunner:
                     traces=traces,
                     oracles=oracles,
                 )
-            except BaseException as artifact_exc:
+            except BaseException:
                 if hasattr(exc, "add_note"):
                     exc.add_note(
-                        f"failed to persist aborted benchmark {run_id}: {artifact_exc}"
+                        f"failed to persist sanitized aborted benchmark {run_id}"
                     )
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            wrapped = BenchmarkExecutionError(f"{exc} (aborted_run_id={run_id})")
+            wrapped = BenchmarkExecutionError(
+                f"benchmark execution failed (aborted_run_id={run_id})"
+            )
             wrapped.benchmark_run_id = run_id  # type: ignore[attr-defined]
             raise wrapped from exc
 
@@ -744,15 +746,13 @@ class BenchmarkRunner:
                     finish = await cleanup_task
                 except BaseException as cleanup_exc:
                     raise BenchmarkExecutionError(
-                        f"real trial teardown failed for {context.trial_id}: "
-                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                        f"real trial teardown failed for {context.trial_id}"
                     ) from cleanup_exc
                 if failure is None:
                     failure = cancellation
             except BaseException as cleanup_exc:
                 raise BenchmarkExecutionError(
-                    f"real trial teardown failed for {context.trial_id}: "
-                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                    f"real trial teardown failed for {context.trial_id}"
                 ) from cleanup_exc
             teardown_ms = (time.perf_counter() - teardown_started) * 1000
 
@@ -1012,7 +1012,7 @@ def _validate_real_finish(
     if violations:
         suffix = ""
         if prior_failure is not None:
-            suffix = f"; prior failure: {type(prior_failure).__name__}: {prior_failure}"
+            suffix = "; a prior trial failure was recorded"
         raise BenchmarkExecutionError(
             f"real trial teardown containment failed for {context.trial_id}: "
             + "; ".join(violations)
@@ -1142,3 +1142,13 @@ def suite_file_digest(path: Path | str) -> str:
     """Small public helper for CI artifact provenance."""
 
     return hashlib.sha256(read_bytes(path)).hexdigest()
+
+
+def _public_benchmark_error(exc: BaseException, *, run_id: str) -> dict[str, Any]:
+    material = f"{run_id}:{type(exc).__name__}".encode("utf-8")
+    return {
+        "code": "BENCHMARK_EXECUTION_FAILED",
+        "generic_message": "The benchmark run failed. Inspect private local diagnostics.",
+        "correlation_id": hashlib.sha256(material).hexdigest()[:16],
+        "retryable": False,
+    }

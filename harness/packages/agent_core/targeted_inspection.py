@@ -141,6 +141,19 @@ def _safe(callable_obj, default=None):
         return default
 
 
+def _required_read(callable_obj, default=None):
+    try:
+        return callable_obj()
+    except BaseException:
+        _stop("fusion_api_read_failed")
+        if not any(
+            isinstance(item, dict) and item.get("code") == "FUSION_API_READ_FAILED"
+            for item in _WARNINGS
+        ):
+            _WARNINGS.append({"code": "FUSION_API_READ_FAILED"})
+        return default
+
+
 def _elapsed_ms():
     return int((time.perf_counter() - _STARTED) * 1000.0)
 
@@ -179,11 +192,11 @@ def _reserve(value):
 def _iter_collection(collection):
     if _STOP_REASON:
         return
-    count = int(_safe(lambda: collection.count, 0) or 0)
+    count = int(_required_read(lambda: collection.count, 0) or 0)
     for index in range(count):
         if not _consume_entity():
             return
-        entity = _safe(lambda i=index: collection.item(i))
+        entity = _required_read(lambda i=index: collection.item(i))
         if entity is not None:
             yield entity
 
@@ -439,14 +452,15 @@ def _walk_occurrences(collection):
 def _local_item_by_name(collection, name):
     if collection is None or not name or not _consume_entity():
         return None
-    direct = _safe(lambda: collection.itemByName(name))
+    item_by_name = _safe(lambda: collection.itemByName)
+    direct = _required_read(lambda: item_by_name(name)) if callable(item_by_name) else None
     if direct is not None:
         return direct
-    count = int(_safe(lambda: collection.count, 0) or 0)
+    count = int(_required_read(lambda: collection.count, 0) or 0)
     for index in range(count):
         if not _consume_entity():
             return None
-        candidate = _safe(lambda i=index: collection.item(i))
+        candidate = _required_read(lambda i=index: collection.item(i))
         if candidate is not None and _safe(lambda c=candidate: c.name, "") == name:
             return candidate
     return None

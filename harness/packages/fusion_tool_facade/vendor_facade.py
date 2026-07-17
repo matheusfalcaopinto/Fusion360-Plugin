@@ -6,10 +6,16 @@ import re
 import json
 import hashlib
 import hmac
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_core.authority import (
+    HostOutputDisabledError,
+    REAL_HOST_OUTPUT_DENIED_MESSAGE,
+)
 from agent_core.request_context import current_request_context
 from cad_spec.unit_policy import expression_to_mm
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
@@ -51,6 +57,28 @@ _CRUD_SIGNATURE_TOOLS = {"fusion_mcp_read", "fusion_mcp_execute"}
 _UNIT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in|deg|rad)\s*$", re.IGNORECASE)
 
 
+def _require_secure_host_io_platform(
+    direction: str, *, overwrite: bool = False
+) -> None:
+    """Reject unsupported host I/O before the first Fusion provider call."""
+
+    if direction == "import":
+        if os.name == "nt":
+            return
+        if (
+            os.name == "posix"
+            and sys.platform.startswith("linux")
+            and callable(getattr(os, "memfd_create", None))
+            and isinstance(getattr(os, "MFD_ALLOW_SEALING", None), int)
+        ):
+            return
+        raise RuntimeError("sealed host import staging is unavailable on this platform")
+    if direction != "export":
+        raise ValueError(f"unsupported host I/O direction: {direction}")
+    del overwrite
+    raise HostOutputDisabledError(REAL_HOST_OUTPUT_DENIED_MESSAGE)
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedFusionOperation:
     """One repository-owned Fusion script compiled during graph preflight.
@@ -88,6 +116,7 @@ def is_vendor_manifest(tool_names: set[str]) -> bool:
 
 CRUD_INSPECT_SCRIPT = r"""
 import json
+import hashlib
 import re
 import adsk.core
 import adsk.fusion
@@ -139,8 +168,8 @@ def _bbox_payload_mm(box):
             round((min_point[2] + max_point[2]) / 2.0, 6),
         ]
         return {"min_mm": min_point, "max_mm": max_point, "center_mm": center, "size_mm": size}
-    except Exception as exc:
-        return {"error": str(exc)}
+    except Exception:
+        return {"error_code": "BOUNDING_BOX_UNAVAILABLE"}
 
 
 def _transform_payload(transform):
@@ -218,8 +247,10 @@ def _occurrence_payloads(occurrences):
         if _occurrence_geometry_is_useful(name, component_name, parent_name):
             try:
                 payload["bounding_box"] = _bbox_payload_mm(occurrence.boundingBox)
-            except Exception as exc:
-                payload["bounding_box"] = {"error": str(exc)}
+            except Exception:
+                payload["bounding_box"] = {
+                    "error_code": "BOUNDING_BOX_UNAVAILABLE"
+                }
             transform = None
             try:
                 transform = occurrence.transform2
@@ -1206,6 +1237,13 @@ class VendorFusionFacade:
         self.active_component = "root"
         self._last_scene: dict[str, Any] = {}
 
+    def require_secure_host_io_platform(
+        self, direction: str, *, overwrite: bool = False
+    ) -> None:
+        """Fail before transport when a path-only provider cannot be confined."""
+
+        _require_secure_host_io_platform(direction, overwrite=overwrite)
+
     async def inspect_design(
         self, inspection_options: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -1219,7 +1257,7 @@ class VendorFusionFacade:
             except RuntimeError as exc:
                 message = str(exc)
                 if _is_command_dialog_error(message):
-                    state = _blocked_inspection_state(message)
+                    state = _blocked_inspection_state("COMMAND_DIALOG_ACTIVE")
                     self._last_scene = state
                     return {
                         "state": state,
@@ -1249,9 +1287,7 @@ class VendorFusionFacade:
         # the entity/time/byte budgets. Fail closed instead of presenting an
         # unbounded snapshot as safe baseline evidence.
         normalized_options = _normalize_inspection_options(inspection_options)
-        state = _blocked_inspection_state(
-            "Bounded inspection requires the Fusion CRUD execute profile."
-        )
+        state = _blocked_inspection_state("BOUNDED_INSPECTION_UNAVAILABLE")
         meta = {
             "schema_version": "bounded_inspection.v1",
             "sections_requested": normalized_options["sections"],
@@ -1289,15 +1325,21 @@ class VendorFusionFacade:
         comment: str | None = None,
         *,
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a named parameter using value/unit payload fields."""
 
         if self._uses_crud_profile():
             _split_unit_expression(expression)
+            payload: dict[str, Any] = {
+                "name": name,
+                "expression": expression,
+                "comment": comment or "",
+            }
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
             result = await self._execute_script_json(
-                _crud_create_parameter_script(
-                    {"name": name, "expression": expression, "comment": comment or ""}
-                ),
+                _crud_create_parameter_script(payload),
                 operation_id=operation_id,
             )
             self.parameters[name] = expression
@@ -1334,13 +1376,20 @@ class VendorFusionFacade:
         return result
 
     async def create_component(
-        self, name: str, *, operation_id: str | None = None
+        self,
+        name: str,
+        *,
+        operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create and mark a component as active."""
 
         if self._uses_crud_profile():
+            payload: dict[str, Any] = {"name": name}
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
             result = await self._execute_script_json(
-                _crud_create_component_script({"name": name}),
+                _crud_create_component_script(payload),
                 operation_id=operation_id,
             )
             self.active_component = name
@@ -1366,14 +1415,27 @@ class VendorFusionFacade:
         name: str,
         *,
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        target_bindings: list[dict[str, str]] | None = None,
+        target_binding_descriptors: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Create a sketch on a principal plane."""
 
         if self._uses_crud_profile():
+            payload: dict[str, Any] = {
+                "component": component,
+                "plane": plane,
+                "name": name,
+            }
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
+            if target_bindings:
+                payload["target_bindings"] = [dict(item) for item in target_bindings]
+                payload["target_binding_descriptors"] = list(
+                    target_binding_descriptors or []
+                )
             return await self._execute_script_json(
-                _crud_create_sketch_script(
-                    {"component": component, "plane": plane, "name": name}
-                ),
+                _crud_create_sketch_script(payload),
                 operation_id=operation_id,
             )
 
@@ -1389,28 +1451,38 @@ class VendorFusionFacade:
         width: str,
         height: str,
         *,
+        result_ref: str | None = None,
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        target_bindings: list[dict[str, str]] | None = None,
+        target_binding_descriptors: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Draw a rectangle after converting dimensions to centimeters."""
 
         center_cm = [_expr_to_cm(value, self.parameters) for value in center]
+        resolved_result_ref = result_ref or f"{sketch}:rectangle:0"
         if self._uses_crud_profile():
+            payload: dict[str, Any] = {
+                "sketch": sketch,
+                "center_x": center_cm[0] if center_cm else 0.0,
+                "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
+                "width": _expr_to_cm(width, self.parameters),
+                "height": _expr_to_cm(height, self.parameters),
+                "result_ref": resolved_result_ref,
+            }
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
+            if target_bindings:
+                payload["target_bindings"] = [dict(item) for item in target_bindings]
+                payload["target_binding_descriptors"] = list(
+                    target_binding_descriptors or []
+                )
             execution = await self._execute_script_json(
-                _crud_draw_rectangle_script(
-                    {
-                        "sketch": sketch,
-                        "center_x": center_cm[0] if center_cm else 0.0,
-                        "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
-                        "width": _expr_to_cm(width, self.parameters),
-                        "height": _expr_to_cm(height, self.parameters),
-                    }
-                ),
+                _crud_draw_rectangle_script(payload),
                 operation_id=operation_id,
             )
-            return {
-                "profile_ref": f"{sketch}:rectangle:0",
-                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
-            }
+            execution.setdefault("profile_ref", resolved_result_ref)
+            return execution
 
         result = await self._call(
             "draw_rectangle",
@@ -1421,7 +1493,7 @@ class VendorFusionFacade:
                 "origin_y": center_cm[1] if len(center_cm) > 1 else 0.0,
             },
         )
-        result.setdefault("profile_ref", f"{sketch}:rectangle:0")
+        result.setdefault("profile_ref", resolved_result_ref)
         return result
 
     async def draw_constrained_circle(
@@ -1430,27 +1502,37 @@ class VendorFusionFacade:
         center: list[str],
         diameter: str,
         *,
+        result_ref: str | None = None,
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        target_bindings: list[dict[str, str]] | None = None,
+        target_binding_descriptors: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Draw a circle after converting diameter to radius centimeters."""
 
         center_cm = [_expr_to_cm(value, self.parameters) for value in center]
+        resolved_result_ref = result_ref or f"{sketch}:circle:0"
         if self._uses_crud_profile():
+            payload: dict[str, Any] = {
+                "sketch": sketch,
+                "center_x": center_cm[0] if center_cm else 0.0,
+                "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
+                "radius": _expr_to_cm(diameter, self.parameters) / 2.0,
+                "result_ref": resolved_result_ref,
+            }
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
+            if target_bindings:
+                payload["target_bindings"] = [dict(item) for item in target_bindings]
+                payload["target_binding_descriptors"] = list(
+                    target_binding_descriptors or []
+                )
             execution = await self._execute_script_json(
-                _crud_draw_circle_script(
-                    {
-                        "sketch": sketch,
-                        "center_x": center_cm[0] if center_cm else 0.0,
-                        "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
-                        "radius": _expr_to_cm(diameter, self.parameters) / 2.0,
-                    }
-                ),
+                _crud_draw_circle_script(payload),
                 operation_id=operation_id,
             )
-            return {
-                "profile_ref": f"{sketch}:circle:0",
-                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
-            }
+            execution.setdefault("profile_ref", resolved_result_ref)
+            return execution
 
         result = await self._call(
             "draw_circle",
@@ -1460,7 +1542,7 @@ class VendorFusionFacade:
                 "center_y": center_cm[1] if len(center_cm) > 1 else 0.0,
             },
         )
-        result.setdefault("profile_ref", f"{sketch}:circle:0")
+        result.setdefault("profile_ref", resolved_result_ref)
         return result
 
     async def extrude_profile(
@@ -1472,34 +1554,44 @@ class VendorFusionFacade:
         distance: str,
         operation: str,
         body_name: str,
+        target_body_ref: str | None = None,
         shape: str = "rectangle",
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        target_bindings: list[dict[str, str]] | None = None,
+        target_binding_descriptors: list[dict[str, Any]] | None = None,
         **shape_inputs: Any,
     ) -> dict[str, Any]:
         """Extrude the most recent vendor sketch and rename the created body."""
 
         _ = component, profile_ref, name
         if self._uses_crud_profile():
+            payload: dict[str, Any] = {
+                "sketch": profile_ref.split(":", maxsplit=1)[0],
+                "distance": distance,
+                "operation": operation,
+                "feature_name": name,
+                "body_name": body_name,
+                "target_body_ref": target_body_ref,
+            }
+            if document_binding is not None:
+                payload["document_binding"] = dict(document_binding)
+            if target_bindings:
+                payload["target_bindings"] = [dict(item) for item in target_bindings]
+                payload["target_binding_descriptors"] = list(
+                    target_binding_descriptors or []
+                )
             execution = await self._execute_script_json(
-                _crud_extrude_script(
-                    {
-                        "sketch": profile_ref.split(":", maxsplit=1)[0],
-                        "distance": distance,
-                        "operation": operation,
-                        "feature_name": name,
-                        "body_name": body_name,
-                    }
-                ),
+                _crud_extrude_script(payload),
                 operation_id=operation_id,
             )
-            self.body_dimensions_cm[body_name] = _shape_dimensions_cm(
-                shape, distance, shape_inputs, self.parameters
-            )
-            return {
-                "body": {"name": body_name},
-                "feature": {"name": name},
-                "fusion_agent_transport": execution.get("fusion_agent_transport", {}),
-            }
+            if operation == "new_body":
+                self.body_dimensions_cm[body_name] = _shape_dimensions_cm(
+                    shape, distance, shape_inputs, self.parameters
+                )
+            execution.setdefault("body", {"name": body_name})
+            execution.setdefault("feature", {"name": name})
+            return execution
 
         result = await self._call(
             "extrude",
@@ -2188,6 +2280,9 @@ class VendorFusionFacade:
         joints: list[dict[str, Any]],
         *,
         operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        target_bindings: list[dict[str, str]] | None = None,
+        target_binding_descriptors: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Create assembly joint contracts through the Fusion CRUD bridge."""
 
@@ -2195,8 +2290,16 @@ class VendorFusionFacade:
             raise RuntimeError(
                 "assembly joint creation requires the Fusion CRUD script profile"
             )
+        payload: dict[str, Any] = {"joints": joints}
+        if document_binding is not None:
+            payload["document_binding"] = dict(document_binding)
+        if target_bindings:
+            payload["target_bindings"] = [dict(item) for item in target_bindings]
+            payload["target_binding_descriptors"] = list(
+                target_binding_descriptors or []
+            )
         result = await self._execute_script_json(
-            _crud_create_assembly_joints_script({"joints": joints}),
+            _crud_create_assembly_joints_script(payload),
             operation_id=operation_id,
         )
         self._last_scene.setdefault("joints", {}).update(result.get("joints", {}))
@@ -2211,14 +2314,22 @@ class VendorFusionFacade:
         isolate_prefix: str | None = None,
         width: int = 1600,
         height: int = 1100,
+        operation_id: str | None = None,
+        document_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Capture a viewport image through the Fusion CRUD bridge."""
 
+        overwrite = bool(
+            isinstance(host_path_binding, dict)
+            and host_path_binding.get("overwrite") is True
+        )
+        _require_secure_host_io_platform("export", overwrite=overwrite)
         if not self._uses_crud_profile():
             raise RuntimeError(
                 "viewport capture requires the Fusion CRUD script profile"
             )
-        payload = {
+        payload: dict[str, Any] = {
             "name": name,
             "path": str(path),
             "view": view,
@@ -2226,7 +2337,13 @@ class VendorFusionFacade:
             "width": int(width),
             "height": int(height),
         }
-        result = await self._execute_script_json(_crud_capture_viewport_script(payload))
+        if document_binding is not None:
+            payload["document_binding"] = dict(document_binding)
+        if host_path_binding is not None:
+            payload["host_path_binding"] = dict(host_path_binding)
+        result = await self._execute_script_json(
+            _crud_capture_viewport_script(payload), operation_id=operation_id
+        )
         screenshot = result.get("screenshot", result)
         captured_path = Path(str(screenshot.get("path") or path))
         if not captured_path.exists():
@@ -2352,33 +2469,39 @@ class VendorFusionFacade:
         path: Path | str,
         *,
         operation_id: str | None = None,
+        target_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Export a STEP file through the vendor tool."""
 
+        overwrite = bool(
+            isinstance(host_path_binding, dict)
+            and host_path_binding.get("overwrite") is True
+        )
+        _require_secure_host_io_platform("export", overwrite=overwrite)
         if self._uses_crud_profile():
-            plan = self.prepare_typed_operation(
-                "export",
-                {"target": target, "path": str(path), "format": "step"},
-            )
+            payload: dict[str, Any] = {
+                "target": target,
+                "path": str(path),
+                "format": "step",
+            }
+            if target_binding is not None:
+                payload["binding"] = dict(target_binding)
+            if host_path_binding is not None:
+                payload["host_path_binding"] = dict(host_path_binding)
+            plan = self.prepare_typed_operation("export", payload)
             return await self.execute_prepared_typed_operation(
                 plan,
                 operation_id=operation_id or f"export_step:{target}",
             )
-        return await self._call(
-            "export_step",
-            {"body_name": target, "file_path": str(path)},
-            options=(
-                McpCallOptions.for_mutation(operation_id=operation_id)
-                if operation_id
-                else None
-            ),
-        )
+        raise RuntimeError("secure host output requires the Fusion CRUD script profile")
 
     async def resolve_export_target_binding(
         self, target: str, format_name: str
     ) -> dict[str, Any]:
         """Resolve a live export target to hashed document/entity identity facts."""
 
+        _require_secure_host_io_platform("export")
         if not self._uses_crud_profile():
             raise RuntimeError(
                 "lossless export target binding requires the Fusion CRUD profile"
@@ -2387,33 +2510,64 @@ class VendorFusionFacade:
             _typed_export_binding_read_script({"target": target, "format": format_name})
         )
 
+    async def resolve_document_binding(self) -> dict[str, Any]:
+        """Resolve the live active document to a hashed, sink-checkable proof."""
+
+        if not self._uses_crud_profile():
+            raise RuntimeError(
+                "lossless document binding requires the Fusion CRUD profile"
+            )
+        return await self._execute_trusted_read_script_json(
+            _typed_document_binding_read_script({})
+        )
+
+    async def resolve_operation_target_bindings(
+        self, descriptors: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Resolve every referenced CAD entity without granting mutation authority."""
+
+        if not self._uses_crud_profile():
+            raise RuntimeError(
+                "lossless operation target binding requires the Fusion CRUD profile"
+            )
+        return await self._execute_trusted_read_script_json(
+            _typed_operation_binding_read_script(
+                {"target_binding_descriptors": descriptors}
+            )
+        )
+
     async def export_stl(
         self,
         target: str,
         path: Path | str,
         *,
         operation_id: str | None = None,
+        target_binding: dict[str, str] | None = None,
+        host_path_binding: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Export an STL file through the vendor tool."""
 
+        overwrite = bool(
+            isinstance(host_path_binding, dict)
+            and host_path_binding.get("overwrite") is True
+        )
+        _require_secure_host_io_platform("export", overwrite=overwrite)
         if self._uses_crud_profile():
-            plan = self.prepare_typed_operation(
-                "export",
-                {"target": target, "path": str(path), "format": "stl"},
-            )
+            payload: dict[str, Any] = {
+                "target": target,
+                "path": str(path),
+                "format": "stl",
+            }
+            if target_binding is not None:
+                payload["binding"] = dict(target_binding)
+            if host_path_binding is not None:
+                payload["host_path_binding"] = dict(host_path_binding)
+            plan = self.prepare_typed_operation("export", payload)
             return await self.execute_prepared_typed_operation(
                 plan,
                 operation_id=operation_id or f"export_stl:{target}",
             )
-        return await self._call(
-            "export_stl",
-            {"body_name": target, "file_path": str(path)},
-            options=(
-                McpCallOptions.for_mutation(operation_id=operation_id)
-                if operation_id
-                else None
-            ),
-        )
+        raise RuntimeError("secure host output requires the Fusion CRUD script profile")
 
     def prepare_typed_operation(
         self,
@@ -2456,7 +2610,8 @@ class VendorFusionFacade:
         builder = _TYPED_CRUD_SCRIPT_BUILDERS.get(plan.kind)
         if builder is None:
             raise ValueError(f"unknown typed Autodesk facade operation: {plan.kind}")
-        rebuilt = builder(json.loads(plan.payload_json))
+        payload = json.loads(plan.payload_json)
+        rebuilt = builder(payload)
         rebuilt_digest = hashlib.sha256(rebuilt.encode("utf-8")).hexdigest()
         if (
             not hmac.compare_digest(rebuilt_digest, plan.sha256)
@@ -2465,6 +2620,15 @@ class VendorFusionFacade:
             raise RuntimeError(
                 "prepared Autodesk facade operation failed integrity validation"
             )
+        if plan.kind == "import":
+            _require_secure_host_io_platform("import")
+        elif plan.kind == "export":
+            host_path_binding = payload.get("host_path_binding")
+            overwrite = bool(
+                isinstance(host_path_binding, dict)
+                and host_path_binding.get("overwrite") is True
+            )
+            _require_secure_host_io_platform("export", overwrite=overwrite)
         return await self._execute_script_json(
             rebuilt,
             operation_id=operation_id,
@@ -2660,7 +2824,7 @@ def _is_command_dialog_error(message: str) -> bool:
     return "command dialog is open" in message.lower()
 
 
-def _blocked_inspection_state(message: str) -> dict[str, Any]:
+def _blocked_inspection_state(code: str) -> dict[str, Any]:
     return {
         "active_document": None,
         "units": "unknown",
@@ -2687,7 +2851,11 @@ def _blocked_inspection_state(message: str) -> dict[str, Any]:
         "real_connection": True,
         "inspection_status": "blocked",
         "blocked_by_dialog": True,
-        "inspection_error": message,
+        "inspection_error": {
+            "code": code,
+            "generic_message": "The bounded Fusion inspection is unavailable.",
+            "retryable": code == "COMMAND_DIALOG_ACTIVE",
+        },
         "remediation": "Close the active Fusion command dialog and retry inspect.",
     }
 
@@ -2760,6 +2928,7 @@ def _crud_script(payload: dict[str, Any], body: str) -> str:
     payload_json = json.dumps(payload, sort_keys=True)
     return f"""
 import json
+import hashlib
 import re
 import adsk.core
 import adsk.fusion
@@ -2777,14 +2946,22 @@ def _design():
 
 
 def _component(design, name):
+    if str(name).casefold() in {{"root", "rootcomponent"}}:
+        return design.rootComponent
+    matches = []
     for index in range(design.allComponents.count):
         component = design.allComponents.item(index)
         if component and component.name == name:
-            return component
-    return design.rootComponent
+            matches.append(component)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"component binding is not unique: {{name}} ({{len(matches)}} matches)"
+        )
+    return matches[0]
 
 
 def _sketch(design, name):
+    matches = []
     for component_index in range(design.allComponents.count):
         component = design.allComponents.item(component_index)
         if not component:
@@ -2792,11 +2969,189 @@ def _sketch(design, name):
         for sketch_index in range(component.sketches.count):
             sketch = component.sketches.item(sketch_index)
             if sketch and sketch.name == name:
-                return sketch
-    raise RuntimeError(f"sketch not found: {{name}}")
+                matches.append(sketch)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"sketch binding is not unique: {{name}} ({{len(matches)}} matches)"
+        )
+    return matches[0]
+
+
+def _body(design, name):
+    matches = []
+    for component_index in range(design.allComponents.count):
+        component = design.allComponents.item(component_index)
+        if not component:
+            continue
+        for body_index in range(component.bRepBodies.count):
+            body = component.bRepBodies.item(body_index)
+            if body and body.name == name:
+                matches.append(body)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"body binding is not unique: {{name}} ({{len(matches)}} matches)"
+        )
+    return matches[0]
+
+
+def _profile(design, reference):
+    if not isinstance(reference, dict):
+        raise RuntimeError("profile target resolver is invalid")
+    sketch = _sketch(design, reference.get("sketch"))
+    index = int(reference.get("index", -1))
+    if index < 0 or index >= sketch.profiles.count:
+        raise RuntimeError("profile target index is out of range")
+    return sketch.profiles.item(index)
+
+
+def _walk_occurrences(occurrences):
+    found = []
+    for index in range(occurrences.count):
+        occurrence = occurrences.item(index)
+        if not occurrence:
+            continue
+        found.append(occurrence)
+        children = getattr(occurrence, "childOccurrences", None)
+        if children:
+            found.extend(_walk_occurrences(children))
+    return found
+
+
+def _occurrence(design, reference):
+    expected = str(reference or "")
+    matches = []
+    for occurrence in _walk_occurrences(design.rootComponent.occurrences):
+        values = {{
+            str(getattr(occurrence, "name", "") or ""),
+            str(getattr(occurrence, "fullPathName", "") or ""),
+            str(getattr(getattr(occurrence, "component", None), "name", "") or ""),
+        }}
+        if expected in values:
+            matches.append(occurrence)
+    if len(matches) != 1:
+        raise RuntimeError("occurrence target binding is not unique")
+    return matches[0]
+
+
+def _document_binding(design):
+    app = adsk.core.Application.get()
+    document = app.activeDocument
+    if not document:
+        raise RuntimeError("active Fusion document is unavailable")
+    data_file = getattr(document, "dataFile", None)
+    data_id = str(getattr(data_file, "id", "") or "")
+    version_id = str(getattr(data_file, "versionId", "") or "")
+    root_token = str(getattr(design.rootComponent, "entityToken", "") or "")
+    if not data_id and not root_token:
+        raise RuntimeError("active Fusion document has no stable identity")
+    document_identity = hashlib.sha256(json.dumps({{
+        "data_id": data_id,
+        "version_id": version_id,
+        "root_token": root_token,
+    }}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    entity_identity = hashlib.sha256(root_token.encode("utf-8")).hexdigest()
+    facts = {{
+        "reference_kind": "active_document",
+        "requested_ref": "active_document",
+        "document_identity": document_identity,
+        "entity_identity": entity_identity,
+    }}
+    return {{
+        **facts,
+        "fingerprint": hashlib.sha256(
+            json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }}
+
+
+def _require_document_binding(payload, design):
+    expected = payload.get("document_binding")
+    if expected is None:
+        return
+    if not isinstance(expected, dict) or expected != _document_binding(design):
+        raise RuntimeError("active Fusion document binding changed")
+
+
+def _binding_for_entity(design, reference_kind, requested_ref, entity):
+    token = str(getattr(entity, "entityToken", "") or "")
+    if not token:
+        raise RuntimeError("CAD target has no stable entity identity")
+    document_identity = _document_binding(design)["document_identity"]
+    facts = {{
+        "reference_kind": str(reference_kind),
+        "requested_ref": str(requested_ref),
+        "document_identity": document_identity,
+        "entity_identity": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "name": str(getattr(entity, "name", "") or ""),
+        "object_type": str(getattr(entity, "objectType", "") or ""),
+    }}
+    binding = {{
+        "reference_kind": facts["reference_kind"],
+        "requested_ref": facts["requested_ref"],
+        "document_identity": facts["document_identity"],
+        "entity_identity": facts["entity_identity"],
+        "fingerprint": hashlib.sha256(
+            json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }}
+    return binding, entity
+
+
+def _cad_entity_binding(design, reference_kind, requested_ref, resolver=None):
+    resolver = resolver if isinstance(resolver, dict) else {{
+        "kind": reference_kind,
+        "reference": requested_ref,
+    }}
+    resolver_kind = resolver.get("kind")
+    if resolver_kind == "component":
+        entity = _component(design, resolver.get("reference"))
+    elif resolver_kind == "sketch":
+        entity = _sketch(design, resolver.get("reference"))
+    elif resolver_kind == "profile":
+        entity = _profile(design, resolver.get("reference"))
+    elif resolver_kind in ("body", "geometry"):
+        entity = _body(design, resolver.get("reference"))
+    elif resolver_kind == "occurrence":
+        entity = _occurrence(design, resolver.get("reference"))
+    else:
+        raise RuntimeError("unsupported CAD target binding kind")
+    return _binding_for_entity(design, reference_kind, requested_ref, entity)
+
+
+def _require_target_bindings(payload, design):
+    expected = payload.get("target_bindings")
+    descriptors = payload.get("target_binding_descriptors")
+    if expected is None:
+        return ()
+    if not isinstance(expected, list) or not expected:
+        raise RuntimeError("CAD target bindings are invalid")
+    if descriptors is not None and (
+        not isinstance(descriptors, list) or len(descriptors) != len(expected)
+    ):
+        raise RuntimeError("CAD target binding descriptors are invalid")
+    actual = []
+    entities = []
+    for index, binding in enumerate(expected):
+        if not isinstance(binding, dict):
+            raise RuntimeError("CAD target binding is invalid")
+        descriptor = descriptors[index] if isinstance(descriptors, list) else {{}}
+        actual_binding, entity = _cad_entity_binding(
+            design,
+            binding.get("reference_kind"),
+            binding.get("requested_ref"),
+            descriptor.get("resolver"),
+        )
+        actual.append(actual_binding)
+        entities.append(entity)
+    if actual != expected:
+        raise RuntimeError("CAD target binding changed after capability issuance")
+    return tuple(entities)
 
 
 def run(_context: str):
+    design = _design()
+    _require_document_binding(PAYLOAD, design)
+    BOUND_TARGETS = _require_target_bindings(PAYLOAD, design)
 {body}
 """
 
@@ -2839,27 +3194,47 @@ def _crud_create_component_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
         """    design = _design()
-    app = adsk.core.Application.get()
     root = design.rootComponent
+    matches = []
     for component_index in range(design.allComponents.count):
         component = design.allComponents.item(component_index)
         if component and component.name == PAYLOAD["name"]:
-            print(json.dumps({"success": True, "component": {"name": PAYLOAD["name"], "already_exists": True}}, sort_keys=True))
-            return
+            matches.append(component)
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"component binding is not unique: {PAYLOAD['name']} ({len(matches)} matches)"
+        )
+    if len(matches) == 1:
+        print(json.dumps({
+            "success": True,
+            "component": {"name": PAYLOAD["name"], "already_exists": True},
+            "produced_target_bindings": [],
+        }, sort_keys=True))
+        return
     if root.occurrences.count == 0 and root.bRepBodies.count == 0 and root.sketches.count == 0:
         root.name = PAYLOAD["name"]
-        print(json.dumps({"success": True, "component": {"name": PAYLOAD["name"], "root_component": True}}, sort_keys=True))
+        component = root
+        binding, _entity = _binding_for_entity(
+            design, "component", PAYLOAD["name"], component
+        )
+        print(json.dumps({
+            "success": True,
+            "component": {"name": PAYLOAD["name"], "root_component": True},
+            "produced_target_bindings": [binding],
+        }, sort_keys=True))
         return
     transform = adsk.core.Matrix3D.create()
-    try:
-        occurrence = root.occurrences.addNewComponent(transform)
-    except RuntimeError:
-        doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
-        design = adsk.fusion.Design.cast(app.activeProduct)
-        root = design.rootComponent
-        occurrence = root.occurrences.addNewComponent(transform)
-    occurrence.component.name = PAYLOAD["name"]
-    print(json.dumps({"success": True, "component": {"name": PAYLOAD["name"]}}, sort_keys=True))
+    occurrence = root.occurrences.addNewComponent(transform)
+    component = occurrence.component
+    component.name = PAYLOAD["name"]
+    binding, _entity = _binding_for_entity(
+        design, "component", PAYLOAD["name"], component
+    )
+    print(json.dumps({
+        "success": True,
+        "component": {"name": PAYLOAD["name"]},
+        "produced_target_bindings": [binding],
+    }, sort_keys=True))
 """,
     )
 
@@ -2867,8 +3242,9 @@ def _crud_create_component_script(payload: dict[str, Any]) -> str:
 def _crud_create_sketch_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
-        """    design = _design()
-    component = _component(design, PAYLOAD["component"])
+        """    if len(BOUND_TARGETS) != 1:
+        raise RuntimeError("sketch creation requires one exact component binding")
+    component = BOUND_TARGETS[0]
     plane_name = PAYLOAD.get("plane", "XY").upper()
     plane = component.xYConstructionPlane
     if plane_name == "XZ":
@@ -2877,7 +3253,14 @@ def _crud_create_sketch_script(payload: dict[str, Any]) -> str:
         plane = component.yZConstructionPlane
     sketch = component.sketches.add(plane)
     sketch.name = PAYLOAD["name"]
-    print(json.dumps({"success": True, "sketch": {"name": sketch.name}}, sort_keys=True))
+    binding, _entity = _binding_for_entity(
+        design, "sketch", PAYLOAD["name"], sketch
+    )
+    print(json.dumps({
+        "success": True,
+        "sketch": {"name": sketch.name},
+        "produced_target_bindings": [binding],
+    }, sort_keys=True))
 """,
     )
 
@@ -2885,8 +3268,15 @@ def _crud_create_sketch_script(payload: dict[str, Any]) -> str:
 def _crud_draw_rectangle_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
-        """    design = _design()
-    sketch = _sketch(design, PAYLOAD["sketch"])
+        """    if len(BOUND_TARGETS) != 1:
+        raise RuntimeError("rectangle creation requires one exact sketch binding")
+    sketch = BOUND_TARGETS[0]
+    before_profile_tokens = set()
+    for profile_index in range(sketch.profiles.count):
+        profile = sketch.profiles.item(profile_index)
+        token = str(getattr(profile, "entityToken", "") or "")
+        if token:
+            before_profile_tokens.add(token)
     center = adsk.core.Point3D.create(PAYLOAD["center_x"], PAYLOAD["center_y"], 0)
     corner = adsk.core.Point3D.create(
         PAYLOAD["center_x"] + PAYLOAD["width"] / 2.0,
@@ -2894,7 +3284,31 @@ def _crud_draw_rectangle_script(payload: dict[str, Any]) -> str:
         0,
     )
     sketch.sketchCurves.sketchLines.addCenterPointRectangle(center, corner)
-    print(json.dumps({"success": True, "profile_ref": f"{PAYLOAD['sketch']}:rectangle:0"}, sort_keys=True))
+    new_profiles = []
+    for profile_index in range(sketch.profiles.count):
+        profile = sketch.profiles.item(profile_index)
+        token = str(getattr(profile, "entityToken", "") or "")
+        if token and token not in before_profile_tokens:
+            new_profiles.append((profile_index, profile))
+    produced = []
+    produced_profile_resolver = None
+    result_ref = str(PAYLOAD.get("result_ref") or f"{PAYLOAD['sketch']}:rectangle:0")
+    if len(new_profiles) == 1:
+        profile_index, profile = new_profiles[0]
+        binding, _entity = _binding_for_entity(
+            design, "profile", result_ref, profile
+        )
+        produced.append(binding)
+        produced_profile_resolver = {
+            "sketch": PAYLOAD["sketch"],
+            "index": profile_index,
+        }
+    print(json.dumps({
+        "success": True,
+        "profile_ref": result_ref,
+        "produced_profile_resolver": produced_profile_resolver,
+        "produced_target_bindings": produced,
+    }, sort_keys=True))
 """,
     )
 
@@ -2902,11 +3316,42 @@ def _crud_draw_rectangle_script(payload: dict[str, Any]) -> str:
 def _crud_draw_circle_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
-        """    design = _design()
-    sketch = _sketch(design, PAYLOAD["sketch"])
+        """    if len(BOUND_TARGETS) != 1:
+        raise RuntimeError("circle creation requires one exact sketch binding")
+    sketch = BOUND_TARGETS[0]
+    before_profile_tokens = set()
+    for profile_index in range(sketch.profiles.count):
+        profile = sketch.profiles.item(profile_index)
+        token = str(getattr(profile, "entityToken", "") or "")
+        if token:
+            before_profile_tokens.add(token)
     center = adsk.core.Point3D.create(PAYLOAD["center_x"], PAYLOAD["center_y"], 0)
     sketch.sketchCurves.sketchCircles.addByCenterRadius(center, PAYLOAD["radius"])
-    print(json.dumps({"success": True, "profile_ref": f"{PAYLOAD['sketch']}:circle:0"}, sort_keys=True))
+    new_profiles = []
+    for profile_index in range(sketch.profiles.count):
+        profile = sketch.profiles.item(profile_index)
+        token = str(getattr(profile, "entityToken", "") or "")
+        if token and token not in before_profile_tokens:
+            new_profiles.append((profile_index, profile))
+    produced = []
+    produced_profile_resolver = None
+    result_ref = str(PAYLOAD.get("result_ref") or f"{PAYLOAD['sketch']}:circle:0")
+    if len(new_profiles) == 1:
+        profile_index, profile = new_profiles[0]
+        binding, _entity = _binding_for_entity(
+            design, "profile", result_ref, profile
+        )
+        produced.append(binding)
+        produced_profile_resolver = {
+            "sketch": PAYLOAD["sketch"],
+            "index": profile_index,
+        }
+    print(json.dumps({
+        "success": True,
+        "profile_ref": result_ref,
+        "produced_profile_resolver": produced_profile_resolver,
+        "produced_target_bindings": produced,
+    }, sort_keys=True))
 """,
     )
 
@@ -2914,22 +3359,57 @@ def _crud_draw_circle_script(payload: dict[str, Any]) -> str:
 def _crud_extrude_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
-        """    design = _design()
-    sketch = _sketch(design, PAYLOAD["sketch"])
-    if sketch.profiles.count < 1:
-        raise RuntimeError(f"sketch has no profiles: {PAYLOAD['sketch']}")
-    operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
-    if PAYLOAD.get("operation") == "cut":
+        """    operation_name = PAYLOAD.get("operation")
+    target_body = None
+    if operation_name == "new_body":
+        if len(BOUND_TARGETS) != 2 or PAYLOAD.get("target_body_ref") is not None:
+            raise RuntimeError("new-body extrude requires exact component and profile bindings")
+        component, profile = BOUND_TARGETS
+        operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+        extrude = component.features.extrudeFeatures.addSimple(
+            profile,
+            adsk.core.ValueInput.createByString(PAYLOAD["distance"]),
+            operation,
+        )
+    elif operation_name in ("cut", "intersect"):
+        if len(BOUND_TARGETS) != 3 or not PAYLOAD.get("target_body_ref"):
+            raise RuntimeError("extrude modifier requires one exact target body binding")
+        component, profile, target_body = BOUND_TARGETS
+        if (
+            getattr(target_body, "parentComponent", None) is not component
+            or str(getattr(target_body, "name", "") or "") != PAYLOAD["target_body_ref"]
+        ):
+            raise RuntimeError("extrude target body binding does not belong to the component")
         operation = adsk.fusion.FeatureOperations.CutFeatureOperation
-    extrude = sketch.parentComponent.features.extrudeFeatures.addSimple(
-        sketch.profiles.item(0),
-        adsk.core.ValueInput.createByString(PAYLOAD["distance"]),
-        operation,
-    )
+        if operation_name == "intersect":
+            operation = adsk.fusion.FeatureOperations.IntersectFeatureOperation
+        extrude_features = component.features.extrudeFeatures
+        extrude_input = extrude_features.createInput(profile, operation)
+        extrude_input.setDistanceExtent(
+            False,
+            adsk.core.ValueInput.createByString(PAYLOAD["distance"]),
+        )
+        extrude_input.participantBodies = [target_body]
+        extrude = extrude_features.add(extrude_input)
+    else:
+        raise RuntimeError("unsupported lossless extrude operation")
     extrude.name = PAYLOAD["feature_name"]
-    if extrude.bodies.count:
-        extrude.bodies.item(0).name = PAYLOAD["body_name"]
-    print(json.dumps({"success": True, "feature": {"name": extrude.name}, "body": {"name": PAYLOAD["body_name"]}}, sort_keys=True))
+    produced = []
+    body = target_body
+    if operation_name == "new_body" and extrude.bodies.count:
+        body = extrude.bodies.item(0)
+        body.name = PAYLOAD["body_name"]
+        for reference_kind in ("body", "geometry"):
+            binding, _entity = _binding_for_entity(
+                design, reference_kind, PAYLOAD["body_name"], body
+            )
+            produced.append(binding)
+    print(json.dumps({
+        "success": True,
+        "feature": {"name": extrude.name},
+        "body": {"name": str(getattr(body, "name", "") or "")},
+        "produced_target_bindings": produced,
+    }, sort_keys=True))
 """,
     )
 
@@ -5318,26 +5798,26 @@ def _crud_set_component_metadata_script(payload: dict[str, Any]) -> str:
             raise RuntimeError(f"component not found for metadata: {item.get('component')}")
         try:
             component.partNumber = item.get("part_number", "")
-        except Exception as exc:
-            warnings.append({"component": component.name, "field": "partNumber", "error": str(exc)})
+        except Exception:
+            warnings.append({"component": component.name, "field": "partNumber", "error_code": "METADATA_WRITE_FAILED"})
         try:
             component.description = item.get("description", "")
-        except Exception as exc:
-            warnings.append({"component": component.name, "field": "description", "error": str(exc)})
+        except Exception:
+            warnings.append({"component": component.name, "field": "description", "error_code": "METADATA_WRITE_FAILED"})
         material = _material_by_name(item.get("physical_material"))
         if material:
             try:
                 component.material = material
-            except Exception as exc:
-                warnings.append({"component": component.name, "field": "material", "error": str(exc)})
+            except Exception:
+                warnings.append({"component": component.name, "field": "material", "error_code": "METADATA_WRITE_FAILED"})
         else:
-            warnings.append({"component": component.name, "field": "material", "error": "material not found"})
+            warnings.append({"component": component.name, "field": "material", "error_code": "MATERIAL_NOT_FOUND"})
         appearance = _appearance_by_name(item.get("appearance"))
         if appearance:
             try:
                 component.appearance = appearance
-            except Exception as exc:
-                warnings.append({"component": component.name, "field": "appearance", "error": str(exc)})
+            except Exception:
+                warnings.append({"component": component.name, "field": "appearance", "error_code": "METADATA_WRITE_FAILED"})
         for key, value in item.items():
             component.attributes.add("fusion_agent_metadata", str(key), json.dumps(value) if isinstance(value, (dict, list)) else str(value))
         updated[component.name] = dict(item)
@@ -5349,47 +5829,13 @@ def _crud_set_component_metadata_script(payload: dict[str, Any]) -> str:
 def _crud_create_assembly_joints_script(payload: dict[str, Any]) -> str:
     return _crud_script(
         payload,
-        """    design = _design()
+        """    joints = PAYLOAD.get("joints") or []
+    if len(joints) != 1 or len(BOUND_TARGETS) != 2:
+        raise RuntimeError("joint creation requires two exact occurrence bindings")
+    parent_occurrence, child_occurrence = BOUND_TARGETS
     root = design.rootComponent
     written = {}
     warnings = []
-
-    def _component_by_name(name):
-        for component_index in range(design.allComponents.count):
-            component = design.allComponents.item(component_index)
-            if component and component.name == name:
-                return component
-        return None
-
-    def _walk_occurrences(occurrences):
-        found = []
-        if not occurrences:
-            return found
-        for occurrence_index in range(occurrences.count):
-            occurrence = occurrences.item(occurrence_index)
-            if not occurrence:
-                continue
-            found.append(occurrence)
-            if occurrence.childOccurrences:
-                found.extend(_walk_occurrences(occurrence.childOccurrences))
-        return found
-
-    def _occurrence_for(value):
-        expected = str(value or "")
-        if not expected:
-            return None
-        for occurrence in _walk_occurrences(root.occurrences):
-            if occurrence.name == expected:
-                return occurrence
-        for occurrence in _walk_occurrences(root.occurrences):
-            if occurrence.component and occurrence.component.name == expected:
-                return occurrence
-        component = _component_by_name(expected)
-        if component:
-            for occurrence in _walk_occurrences(root.occurrences):
-                if occurrence.component == component:
-                    return occurrence
-        return None
 
     def _existing_native_joint(name):
         try:
@@ -5447,27 +5893,27 @@ def _crud_create_assembly_joints_script(payload: dict[str, Any]) -> str:
         native_joint.attributes.add("fusion_agent_joint_contracts", "contract", json.dumps(native_contract, sort_keys=True))
         return native_contract
 
-    def _create_native_as_built_joint(joint):
+    def _create_native_as_built_joint(joint, parent, child):
         name = joint["name"]
         existing = _existing_native_joint(name)
         if existing:
-            return _write_native_contract(existing, joint)
-        parent_occurrence = _occurrence_for(joint.get("parent"))
-        child_occurrence = _occurrence_for(joint.get("child"))
-        if not parent_occurrence:
-            raise RuntimeError(f"parent occurrence/component not found: {joint.get('parent')}")
-        if not child_occurrence:
-            raise RuntimeError(f"child occurrence/component not found: {joint.get('child')}")
+            existing_contract = dict(joint)
+            existing_contract["health"] = (
+                "ok" if getattr(existing, "isValid", True) else "failed"
+            )
+            existing_contract["native"] = True
+            existing_contract["creation_method"] = "existing_native_joint"
+            return existing_contract
         geometry = _joint_geometry()
         if geometry is None:
             raise RuntimeError("Fusion JointGeometry.createByPoint is unavailable")
-        joint_input = root.asBuiltJoints.createInput(parent_occurrence, child_occurrence, geometry)
+        joint_input = root.asBuiltJoints.createInput(parent, child, geometry)
         _set_motion(joint_input, joint.get("type"), joint.get("axis"))
         native_joint = root.asBuiltJoints.add(joint_input)
         native_joint.name = name
         return _write_native_contract(native_joint, joint)
 
-    for joint in PAYLOAD.get("joints") or []:
+    for joint in joints:
         contract = dict(joint)
         contract["health"] = "unproven"
         contract["creation_method"] = "fusion_attribute_contract"
@@ -5476,7 +5922,9 @@ def _crud_create_assembly_joints_script(payload: dict[str, Any]) -> str:
         except Exception as exc:
             raise RuntimeError(f"joint contract write failed for {joint.get('name')}: {exc}")
         try:
-            written[joint["name"]] = _create_native_as_built_joint(joint)
+            written[joint["name"]] = _create_native_as_built_joint(
+                joint, parent_occurrence, child_occurrence
+            )
         except Exception as exc:
             warnings.append({"joint": joint.get("name"), "message": f"native joint creation could not be proven: {exc}"})
             written[joint["name"]] = contract
@@ -5486,151 +5934,179 @@ def _crud_create_assembly_joints_script(payload: dict[str, Any]) -> str:
 
 
 def _crud_capture_viewport_script(payload: dict[str, Any]) -> str:
-    return _crud_script(
+    return _typed_crud_script(
         payload,
         """    app = adsk.core.Application.get()
     design = _design()
     viewport = app.activeViewport
     if not viewport:
         raise RuntimeError("active viewport is unavailable")
-    path = PAYLOAD["path"]
-    import os
-    directory = os.path.dirname(path)
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory)
+    final_path = _require_host_path_binding(PAYLOAD, "export")
+    directory = os.path.dirname(final_path)
+    if directory and not os.path.isdir(directory):
+        raise RuntimeError(f"capture directory does not exist on the Fusion host: {directory}")
+    stage = _prepare_export_stage(PAYLOAD, final_path)
 
     visibility = []
     prefix = PAYLOAD.get("isolate_prefix")
     try:
-        if prefix:
-            for component_index in range(design.allComponents.count):
-                component = design.allComponents.item(component_index)
-                if not component:
-                    continue
-                for body_index in range(component.bRepBodies.count):
-                    body = component.bRepBodies.item(body_index)
-                    if not body:
+        try:
+            if prefix:
+                for component_index in range(design.allComponents.count):
+                    component = design.allComponents.item(component_index)
+                    if not component:
                         continue
-                    visibility.append((body, body.isLightBulbOn))
-                    body.isLightBulbOn = body.name.startswith(prefix) or component.name.startswith(prefix)
-        view_name = str(PAYLOAD.get("view") or "isometric").lower()
-        if view_name == "front":
-            viewport.viewOrientation = adsk.core.ViewOrientations.FrontViewOrientation
-        elif view_name == "top":
-            viewport.viewOrientation = adsk.core.ViewOrientations.TopViewOrientation
-        elif view_name == "right":
-            viewport.viewOrientation = adsk.core.ViewOrientations.RightViewOrientation
-        else:
-            viewport.viewOrientation = adsk.core.ViewOrientations.IsoTopRightViewOrientation
-        viewport.fit()
-        ok = viewport.saveAsImageFile(path, int(PAYLOAD.get("width", 1600)), int(PAYLOAD.get("height", 1100)))
+                    for body_index in range(component.bRepBodies.count):
+                        body = component.bRepBodies.item(body_index)
+                        if not body:
+                            continue
+                        visibility.append((body, body.isLightBulbOn))
+                        body.isLightBulbOn = body.name.startswith(prefix) or component.name.startswith(prefix)
+            view_name = str(PAYLOAD.get("view") or "isometric").lower()
+            if view_name == "front":
+                viewport.viewOrientation = adsk.core.ViewOrientations.FrontViewOrientation
+            elif view_name == "top":
+                viewport.viewOrientation = adsk.core.ViewOrientations.TopViewOrientation
+            elif view_name == "right":
+                viewport.viewOrientation = adsk.core.ViewOrientations.RightViewOrientation
+            else:
+                viewport.viewOrientation = adsk.core.ViewOrientations.IsoTopRightViewOrientation
+            viewport.fit()
+            provider_path = _claim_output_stage(stage, require_empty=True)
+            ok = viewport.saveAsImageFile(provider_path, int(PAYLOAD.get("width", 1600)), int(PAYLOAD.get("height", 1100)))
+        finally:
+            for body, was_visible in visibility:
+                try:
+                    body.isLightBulbOn = was_visible
+                except Exception:
+                    pass
+        if not ok:
+            raise RuntimeError("viewport capture failed")
+        _require_host_path_binding(PAYLOAD, "export")
+        path = _promote_written_export(PAYLOAD, stage, final_path)
     finally:
-        for body, was_visible in visibility:
-            try:
-                body.isLightBulbOn = was_visible
-            except Exception:
-                pass
-    if not ok:
-        raise RuntimeError(f"viewport capture failed: {path}")
+        _discard_host_stage(stage)
     size = os.path.getsize(path) if os.path.exists(path) else 0
     if size <= 0:
-        raise RuntimeError(f"viewport capture is empty: {path}")
+        raise RuntimeError("viewport capture is empty")
     screenshot = {"name": PAYLOAD["name"], "path": path, "view": PAYLOAD.get("view", "isometric"), "bytes": size, "ok": True}
     design.rootComponent.attributes.add("fusion_agent_screenshots", PAYLOAD["name"], json.dumps(screenshot, sort_keys=True))
     print(json.dumps({"success": True, "screenshot": screenshot}, sort_keys=True))
 """,
+        include_host_output=True,
     )
 
 
 def _crud_analyze_interference_script(payload: dict[str, Any]) -> str:
-    return _crud_script(
+    return _typed_crud_script(
         payload,
         """    design = _design()
-    pairs = []
-    count = 0
-    error = None
-    try:
-        bodies = adsk.core.ObjectCollection.create()
+    binding = _active_document_binding(design)
+    target_ref = PAYLOAD.get("target")
+    components = []
+    if target_ref:
+        components.append(_component(design, target_ref))
+    else:
         for component_index in range(design.allComponents.count):
             component = design.allComponents.item(component_index)
-            if not component:
-                continue
-            for body_index in range(component.bRepBodies.count):
-                body = component.bRepBodies.item(body_index)
-                if body:
-                    bodies.add(body)
-        if bodies.count >= 2:
-            if not hasattr(design, "analyzeInterference"):
-                raise RuntimeError("Fusion interference analysis API is unavailable")
-            results = design.analyzeInterference(bodies)
-            count = int(results.count) if results else 0
-            if results:
-                for index in range(results.count):
-                    result = results.item(index)
-                    body_one = getattr(result, "entityOne", None)
-                    body_two = getattr(result, "entityTwo", None)
-                    pairs.append({
-                        "a": getattr(body_one, "name", ""),
-                        "b": getattr(body_two, "name", ""),
-                    })
-    except Exception as exc:
-        error = str(exc)
+            if component:
+                components.append(component)
+    bodies = adsk.core.ObjectCollection.create()
+    for component in components:
+        for body_index in range(component.bRepBodies.count):
+            body = component.bRepBodies.item(body_index)
+            if body:
+                bodies.add(body)
+    pairs = []
+    count = 0
+    if bodies.count >= 2:
+        if not hasattr(design, "analyzeInterference"):
+            raise RuntimeError("Fusion interference analysis API is unavailable")
+        results = design.analyzeInterference(bodies)
+        count = int(results.count) if results else 0
+        if results:
+            for index in range(results.count):
+                result = results.item(index)
+                body_one = getattr(result, "entityOne", None)
+                body_two = getattr(result, "entityTwo", None)
+                token_one = str(getattr(body_one, "entityToken", "") or "")
+                token_two = str(getattr(body_two, "entityToken", "") or "")
+                if not token_one or not token_two:
+                    raise RuntimeError("interference result has no stable entity identity")
+                pairs.append({
+                    "a_identity": _hashed_text(token_one),
+                    "b_identity": _hashed_text(token_two),
+                })
+    if len(pairs) != count:
+        raise RuntimeError("interference result enumeration is incomplete")
     interference = {"count": count, "pairs": pairs}
-    if error:
-        interference["error"] = error
-    print(json.dumps({"success": True, "interference": interference}, sort_keys=True))
+    envelope = {
+        "schema_version": "fusion_agent.evidence.v1",
+        "producer": "autodesk.interference",
+        "provenance": {"provider": "autodesk_http", "operation": "analysis.interference"},
+        "document_identity": binding["document_identity"],
+        "complete": True,
+        "counts_exact": True,
+        "truncated": False,
+        "stop_reason": None,
+        "metrics_finite": True,
+        "observed_count": count,
+    }
+    print(json.dumps({
+        "success": True,
+        "interference": interference,
+        "evidence_envelope": envelope,
+    }, sort_keys=True, allow_nan=False))
 """,
+        require_document_binding=False,
     )
 
 
 def _crud_measure_physical_properties_script(payload: dict[str, Any]) -> str:
-    return _crud_script(
+    return _typed_crud_script(
         payload,
         """    design = _design()
-
-    def _component_by_name(name):
-        for component_index in range(design.allComponents.count):
-            component = design.allComponents.item(component_index)
-            if component and component.name == name:
-                return component
-        return None
-
-    def _bbox_mm(body):
-        box = body.boundingBox
-        return [
-            abs(box.maxPoint.x - box.minPoint.x) * 10.0,
-            abs(box.maxPoint.y - box.minPoint.y) * 10.0,
-            abs(box.maxPoint.z - box.minPoint.z) * 10.0,
-        ]
-
-    def _fallback(component):
-        volume = 0.0
-        for body_index in range(component.bRepBodies.count):
-            body = component.bRepBodies.item(body_index)
-            if body:
-                bbox = _bbox_mm(body)
-                volume += bbox[0] * bbox[1] * bbox[2]
-        return {"mass_kg": max(volume / 1000.0 * 0.0027, 0.000001), "volume_mm3": max(volume, 0.001), "area_mm2": 0.0}
-
+    binding = _active_document_binding(design)
     targets = PAYLOAD.get("targets") or []
-    if not targets:
-        targets = [design.allComponents.item(index).name for index in range(design.allComponents.count) if design.allComponents.item(index)]
+    if not isinstance(targets, list) or not targets:
+        raise RuntimeError("physical property analysis requires explicit targets")
     measured = {}
     for target in targets:
-        component = _component_by_name(target)
-        if not component:
-            raise RuntimeError(f"physical property target component not found: {target}")
-        try:
-            props = component.physicalProperties
-            measured[target] = {
-                "mass_kg": float(props.mass),
-                "volume_mm3": float(props.volume) * 1000.0,
-                "area_mm2": float(props.area) * 100.0,
-            }
-        except Exception:
-            measured[target] = _fallback(component)
-    print(json.dumps({"success": True, "physical_properties": measured}, sort_keys=True))
+        component = _component(design, target)
+        token = str(getattr(component, "entityToken", "") or "")
+        if not token:
+            raise RuntimeError("physical property target has no stable entity identity")
+        props = component.physicalProperties
+        values = {
+            "mass_kg": float(props.mass),
+            "volume_mm3": float(props.volume) * 1000.0,
+            "area_mm2": float(props.area) * 100.0,
+        }
+        if any(not math.isfinite(value) or value < 0 for value in values.values()):
+            raise RuntimeError("physical property evidence is not finite")
+        measured[target] = {
+            **values,
+            "entity_identity": _hashed_text(token),
+        }
+    envelope = {
+        "schema_version": "fusion_agent.evidence.v1",
+        "producer": "autodesk.physical_properties",
+        "provenance": {"provider": "autodesk_http", "operation": "analysis.physical_properties"},
+        "document_identity": binding["document_identity"],
+        "complete": len(measured) == len(targets),
+        "counts_exact": True,
+        "truncated": False,
+        "stop_reason": None,
+        "metrics_finite": True,
+        "observed_count": len(measured),
+    }
+    print(json.dumps({
+        "success": True,
+        "physical_properties": measured,
+        "evidence_envelope": envelope,
+    }, sort_keys=True, allow_nan=False))
 """,
+        require_document_binding=False,
     )
 
 
@@ -5857,6 +6333,920 @@ def _document_identity(app, design):
     }, sort_keys=True, separators=(",", ":")))
 
 
+def _active_document_binding(design):
+    app = adsk.core.Application.get()
+    document_identity = _document_identity(app, design)
+    root_token = str(getattr(design.rootComponent, "entityToken", "") or "")
+    if not root_token:
+        raise RuntimeError("active Fusion root component has no stable identity")
+    entity_identity = _hashed_text(root_token)
+    facts = {
+        "reference_kind": "active_document",
+        "requested_ref": "active_document",
+        "document_identity": document_identity,
+        "entity_identity": entity_identity,
+    }
+    return {
+        **facts,
+        "fingerprint": _hashed_text(
+            json.dumps(facts, sort_keys=True, separators=(",", ":"))
+        ),
+    }
+
+
+def _require_document_binding(payload, design):
+    expected = payload.get("document_binding")
+    if expected is None:
+        return
+    if not isinstance(expected, dict):
+        raise RuntimeError("document binding is invalid")
+    actual = _active_document_binding(design)
+    required = {
+        "reference_kind",
+        "requested_ref",
+        "document_identity",
+        "entity_identity",
+        "fingerprint",
+    }
+    if set(expected) != required or any(
+        not isinstance(expected.get(key), str) or not expected.get(key)
+        for key in required
+    ):
+        raise RuntimeError("document binding is incomplete")
+    if expected != actual:
+        raise RuntimeError("active Fusion document binding changed")
+
+
+def _binding_entity(design, descriptor):
+    resolver = descriptor.get("resolver")
+    if not isinstance(resolver, dict):
+        raise RuntimeError("CAD target resolver is invalid")
+    kind = resolver.get("kind")
+    if kind == "component":
+        return _component(design, resolver.get("reference"))
+    if kind == "sketch":
+        return _sketch(design, resolver.get("reference"))
+    if kind in ("body", "geometry"):
+        return _body(design, resolver.get("reference"))
+    if kind == "profile":
+        return _profile(design, resolver.get("reference"))
+    if kind in ("sketch_entity", "path"):
+        return _sketch_entity(design, resolver.get("reference"))
+    if kind == "axis":
+        if resolver.get("component"):
+            component = _component(design, resolver.get("component"))
+        else:
+            body = _body(design, resolver.get("relative_to_body"))
+            component = body.parentComponent
+        return _axis(component, resolver.get("reference"))
+    if kind == "plane":
+        body = _body(design, resolver.get("relative_to_body"))
+        return _plane(body.parentComponent, resolver.get("reference"))
+    if kind == "occurrence":
+        return _occurrence(design, resolver.get("reference"))
+    raise RuntimeError("unsupported CAD target resolver kind")
+
+
+def _binding_for_entity(design, reference_kind, requested_ref, entity):
+    token = str(getattr(entity, "entityToken", "") or "")
+    if not token:
+        raise RuntimeError("CAD target has no stable entity identity")
+    reference_kind = str(reference_kind or "")
+    requested_ref = str(requested_ref or "")
+    if not reference_kind or not requested_ref:
+        raise RuntimeError("CAD target binding reference is incomplete")
+    document_identity = _active_document_binding(design)["document_identity"]
+    facts = {
+        "reference_kind": reference_kind,
+        "requested_ref": requested_ref,
+        "document_identity": document_identity,
+        "entity_identity": _hashed_text(token),
+        "name": str(getattr(entity, "name", "") or ""),
+        "object_type": str(getattr(entity, "objectType", "") or ""),
+    }
+    binding = {
+        "reference_kind": facts["reference_kind"],
+        "requested_ref": facts["requested_ref"],
+        "document_identity": facts["document_identity"],
+        "entity_identity": facts["entity_identity"],
+        "fingerprint": _hashed_text(
+            json.dumps(facts, sort_keys=True, separators=(",", ":"))
+        ),
+    }
+    return binding, entity
+
+
+def _cad_operation_target_binding(design, descriptor):
+    entity = _binding_entity(design, descriptor)
+    return _binding_for_entity(
+        design,
+        descriptor.get("reference_kind"),
+        descriptor.get("requested_ref"),
+        entity,
+    )
+
+
+def _require_target_bindings(payload, design):
+    expected = payload.get("target_bindings")
+    descriptors = payload.get("target_binding_descriptors")
+    if expected is None and descriptors is None:
+        return ()
+    if (
+        not isinstance(expected, list)
+        or not isinstance(descriptors, list)
+        or not expected
+        or len(expected) != len(descriptors)
+    ):
+        raise RuntimeError("CAD target bindings are incomplete")
+    resolved = [
+        _cad_operation_target_binding(design, descriptor)
+        for descriptor in descriptors
+    ]
+    actual = [binding for binding, _entity in resolved]
+    if actual != expected:
+        raise RuntimeError("CAD target binding changed after capability issuance")
+    return tuple(entity for _binding, entity in resolved)
+"""
+
+
+_HOST_IO_COMMON_HELPERS = r"""
+
+
+def _host_resource_fingerprint(path, direction, existed):
+    if direction == "import" or existed:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise RuntimeError("authorized host resource is not a regular file")
+            content_digest = None
+            if direction == "import":
+                digest = hashlib.sha256()
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                content_digest = digest.hexdigest()
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        current = os.lstat(path)
+        identity = (int(before.st_dev), int(before.st_ino))
+        if identity != (int(after.st_dev), int(after.st_ino)) or identity != (
+            int(current.st_dev), int(current.st_ino)
+        ):
+            raise RuntimeError("authorized host resource changed during validation")
+        if (
+            int(before.st_size) != int(after.st_size)
+            or int(before.st_mtime_ns) != int(after.st_mtime_ns)
+        ):
+            raise RuntimeError("authorized host resource changed during validation")
+        facts = {
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "size": int(before.st_size),
+            "mtime_ns": int(before.st_mtime_ns),
+        }
+        if content_digest is not None:
+            facts["sha256"] = content_digest
+    else:
+        parent_stat = os.stat(os.path.dirname(path))
+        facts = {
+            "parent_device": int(parent_stat.st_dev),
+            "parent_inode": int(parent_stat.st_ino),
+            "destination_absent": True,
+        }
+    return _hashed_text(json.dumps(facts, sort_keys=True, separators=(",", ":")))
+
+
+def _require_host_path_binding(payload, direction):
+    expected = payload.get("host_path_binding")
+    required = {
+        "direction",
+        "canonical_root",
+        "canonical_path",
+        "existed_at_issue",
+        "overwrite",
+        "resource_fingerprint",
+    }
+    if not isinstance(expected, dict) or set(expected) != required:
+        raise RuntimeError("host path binding is incomplete")
+    if expected.get("direction") != direction:
+        raise RuntimeError("host path binding direction changed")
+    root = os.path.realpath(expected["canonical_root"])
+    if root != expected["canonical_root"] or not os.path.isdir(root):
+        raise RuntimeError("approved host root changed")
+    requested = str(payload.get("path") or "")
+    if requested != expected["canonical_path"]:
+        raise RuntimeError("host path payload changed")
+    existed = os.path.exists(requested)
+    if existed:
+        canonical = os.path.realpath(requested)
+    else:
+        parent = os.path.realpath(os.path.dirname(requested))
+        canonical = os.path.join(parent, os.path.basename(requested))
+    if canonical != expected["canonical_path"]:
+        raise RuntimeError("authorized host path changed at the Fusion sink")
+    try:
+        contained = os.path.commonpath((root, canonical)) == root
+    except ValueError:
+        contained = False
+    if not contained:
+        raise RuntimeError("authorized host path escaped its approved root")
+    if existed is not expected["existed_at_issue"]:
+        raise RuntimeError("authorized host path existence changed")
+    fingerprint = _host_resource_fingerprint(canonical, direction, existed)
+    if fingerprint != expected["resource_fingerprint"]:
+        raise RuntimeError("authorized host resource changed")
+    return canonical
+
+
+def _require_written_host_path(payload, path):
+    expected = payload.get("host_path_binding") or {}
+    canonical = os.path.realpath(path)
+    if canonical != expected.get("canonical_path") or not os.path.isfile(canonical):
+        raise RuntimeError("Fusion wrote outside the bound host destination")
+    return canonical
+
+
+def _stage_provider_path(descriptor, path):
+    descriptor_stat = os.fstat(descriptor)
+    if os.name == "nt":
+        return path
+    if os.name != "posix":
+        raise RuntimeError("secure host staging is unavailable on this platform")
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        candidate = os.path.join(directory, str(descriptor))
+        try:
+            candidate_stat = os.stat(candidate)
+        except OSError:
+            continue
+        if (
+            int(candidate_stat.st_dev) == int(descriptor_stat.st_dev)
+            and int(candidate_stat.st_ino) == int(descriptor_stat.st_ino)
+        ):
+            return candidate
+    raise RuntimeError("secure descriptor-backed host staging is unavailable")
+
+
+def _new_windows_import_stage(path, prefix):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    if os.name != "nt":
+        raise RuntimeError("Windows import staging used on another platform")
+    parent = os.path.dirname(path)
+    suffix = os.path.splitext(path)[1]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    access = 0x80000000 | 0x40000000
+    share_read = 0x00000001
+    create_new = 1
+    temporary = 0x00000100
+    invalid_handle = wintypes.HANDLE(-1).value
+    descriptor = None
+    stage_path = None
+    for _attempt in range(128):
+        token = next(tempfile._get_candidate_names())
+        candidate = os.path.join(parent, f"{prefix}{token}{suffix}")
+        io_candidate = os.path.abspath(candidate)
+        if not io_candidate.startswith("\\\\?\\"):
+            if io_candidate.startswith("\\\\"):
+                io_candidate = "\\\\?\\UNC\\" + io_candidate[2:]
+            else:
+                io_candidate = "\\\\?\\" + io_candidate
+        handle = create_file(
+            io_candidate,
+            access,
+            share_read,
+            None,
+            create_new,
+            temporary,
+            None,
+        )
+        if handle != invalid_handle:
+            try:
+                descriptor = msvcrt.open_osfhandle(
+                    int(handle), os.O_RDWR | getattr(os, "O_BINARY", 0)
+                )
+            except BaseException:
+                kernel32.CloseHandle(handle)
+                raise
+            stage_path = candidate
+            break
+        if ctypes.get_last_error() not in (80, 183):
+            raise ctypes.WinError(ctypes.get_last_error())
+    if descriptor is None or stage_path is None:
+        raise RuntimeError("could not allocate sealed Windows import staging")
+    descriptor_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or int(getattr(descriptor_stat, "st_nlink", 1)) != 1
+    ):
+        os.close(descriptor)
+        if os.path.lexists(stage_path):
+            os.unlink(stage_path)
+        raise RuntimeError("host staging identity is invalid")
+    return {
+        "path": stage_path,
+        "provider_path": stage_path,
+        "descriptor": descriptor,
+        "device": int(descriptor_stat.st_dev),
+        "inode": int(descriptor_stat.st_ino),
+        "closed": False,
+        "stage_kind": "windows_import",
+        "sealed": False,
+    }
+
+
+def _new_linux_memfd_stage(path, prefix):
+    if os.name != "posix" or not sys.platform.startswith("linux"):
+        raise RuntimeError("Linux memfd staging used on another platform")
+    create_memfd = getattr(os, "memfd_create", None)
+    allow_sealing = getattr(os, "MFD_ALLOW_SEALING", None)
+    if not callable(create_memfd) or not isinstance(allow_sealing, int):
+        raise RuntimeError("sealed Linux memfd staging is unavailable")
+    suffix = os.path.splitext(path)[1]
+    flags = int(allow_sealing) | int(getattr(os, "MFD_CLOEXEC", 0))
+    descriptor = create_memfd(f"{prefix}{suffix}", flags)
+    descriptor_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or int(getattr(descriptor_stat, "st_nlink", -1)) != 0
+    ):
+        os.close(descriptor)
+        raise RuntimeError("anonymous host staging identity is invalid")
+    return {
+        "path": None,
+        "provider_path": _stage_provider_path(descriptor, None),
+        "descriptor": descriptor,
+        "device": int(descriptor_stat.st_dev),
+        "inode": int(descriptor_stat.st_ino),
+        "closed": False,
+        "stage_kind": "linux_memfd",
+        "sealed": False,
+    }
+
+
+def _new_host_stage(path, prefix):
+    if os.name == "nt":
+        return _new_windows_import_stage(path, prefix)
+    if os.name == "posix" and sys.platform.startswith("linux"):
+        return _new_linux_memfd_stage(path, prefix)
+    raise RuntimeError("sealed host staging is unavailable on this platform")
+
+
+def _stage_descriptor_stat(stage):
+    if not isinstance(stage, dict) or stage.get("closed"):
+        raise RuntimeError("host staging capability is closed")
+    descriptor = stage.get("descriptor")
+    if not isinstance(descriptor, int):
+        raise RuntimeError("host staging descriptor is missing")
+    descriptor_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or int(descriptor_stat.st_dev) != int(stage.get("device", -1))
+        or int(descriptor_stat.st_ino) != int(stage.get("inode", -1))
+    ):
+        raise RuntimeError("host staging descriptor identity changed")
+    provider_stat = os.stat(stage.get("provider_path") or "")
+    if (
+        int(provider_stat.st_dev) != int(descriptor_stat.st_dev)
+        or int(provider_stat.st_ino) != int(descriptor_stat.st_ino)
+    ):
+        raise RuntimeError("host staging provider path changed")
+    return descriptor_stat
+
+
+def _named_stage_matches(stage):
+    try:
+        named_stat = os.lstat(stage.get("path") or "")
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(named_stat.st_mode)
+        and not os.path.islink(stage.get("path") or "")
+        and int(named_stat.st_dev) == int(stage.get("device", -1))
+        and int(named_stat.st_ino) == int(stage.get("inode", -1))
+    )
+
+
+def _seal_linux_stage(stage):
+    if stage.get("stage_kind") != "linux_memfd":
+        raise RuntimeError("sealed Linux staging capability is required")
+    if stage.get("sealed"):
+        return
+    import fcntl
+
+    add_seals = getattr(fcntl, "F_ADD_SEALS", None)
+    get_seals = getattr(fcntl, "F_GET_SEALS", None)
+    seal_values = (
+        getattr(fcntl, "F_SEAL_WRITE", None),
+        getattr(fcntl, "F_SEAL_GROW", None),
+        getattr(fcntl, "F_SEAL_SHRINK", None),
+        getattr(fcntl, "F_SEAL_SEAL", None),
+    )
+    if (
+        not isinstance(add_seals, int)
+        or not isinstance(get_seals, int)
+        or any(not isinstance(value, int) for value in seal_values)
+    ):
+        raise RuntimeError("sealed Linux memfd staging is unavailable")
+    required = 0
+    for value in seal_values:
+        required |= int(value)
+    descriptor = stage["descriptor"]
+    fcntl.fcntl(descriptor, add_seals, required)
+    actual = int(fcntl.fcntl(descriptor, get_seals))
+    if actual & required != required:
+        raise RuntimeError("host staging seals are incomplete")
+    stage["seal_mask"] = required
+    stage["sealed"] = True
+
+
+def _require_linux_stage_sealed(stage):
+    if stage.get("stage_kind") != "linux_memfd" or not stage.get("sealed"):
+        raise RuntimeError("host staging is not sealed")
+    import fcntl
+
+    get_seals = getattr(fcntl, "F_GET_SEALS", None)
+    required = stage.get("seal_mask")
+    if not isinstance(get_seals, int) or not isinstance(required, int):
+        raise RuntimeError("host staging seal proof is missing")
+    actual = int(fcntl.fcntl(stage["descriptor"], get_seals))
+    if actual & required != required:
+        raise RuntimeError("host staging seals changed")
+"""
+
+
+_HOST_IMPORT_HELPERS = r"""
+
+
+def _read_stage_digest(stage):
+    descriptor = stage["descriptor"]
+    offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    try:
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    finally:
+        os.lseek(descriptor, offset, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _claim_import_stage(stage):
+    descriptor_stat = _stage_descriptor_stat(stage)
+    expected_size = int(stage.get("expected_size", -1))
+    expected_digest = str(stage.get("sha256") or "")
+    if (
+        int(descriptor_stat.st_size) != expected_size
+        or _read_stage_digest(stage) != expected_digest
+    ):
+        raise RuntimeError("authorized import staging content changed")
+    link_count = int(getattr(descriptor_stat, "st_nlink", 1))
+    if os.name == "nt":
+        if (
+            stage.get("stage_kind") != "windows_import"
+            or not stage.get("sealed")
+            or not _named_stage_matches(stage)
+            or link_count != 1
+        ):
+            raise RuntimeError("authorized import staging seal changed")
+    elif os.name == "posix" and sys.platform.startswith("linux"):
+        _require_linux_stage_sealed(stage)
+        if link_count != 0:
+            raise RuntimeError("authorized import staging gained a filesystem alias")
+    else:
+        raise RuntimeError("sealed host import staging is unavailable on this platform")
+    return stage["provider_path"]
+
+
+def _seal_windows_import_stage(stage):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    if os.name != "nt" or stage.get("stage_kind") != "windows_import":
+        raise RuntimeError("sealed Windows import staging is unavailable")
+    if stage.get("sealed"):
+        return
+    descriptor = stage["descriptor"]
+    before = os.fstat(descriptor)
+    process = ctypes.WinDLL("kernel32", use_last_error=True).GetCurrentProcess()
+    duplicate_handle = ctypes.WinDLL(
+        "kernel32", use_last_error=True
+    ).DuplicateHandle
+    duplicate_handle.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    )
+    duplicate_handle.restype = wintypes.BOOL
+    read_handle = wintypes.HANDLE()
+    source_handle = wintypes.HANDLE(msvcrt.get_osfhandle(descriptor))
+    if not duplicate_handle(
+        process,
+        source_handle,
+        process,
+        ctypes.byref(read_handle),
+        0x80000000,
+        False,
+        0,
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        read_descriptor = msvcrt.open_osfhandle(
+            int(read_handle.value), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(read_handle)
+        raise
+    after = os.fstat(read_descriptor)
+    if (
+        int(before.st_dev) != int(after.st_dev)
+        or int(before.st_ino) != int(after.st_ino)
+        or int(before.st_size) != int(after.st_size)
+    ):
+        os.close(read_descriptor)
+        raise RuntimeError("Windows import staging identity changed while sealing")
+    os.lseek(read_descriptor, 0, os.SEEK_SET)
+    try:
+        os.chmod(stage["path"], stat.S_IREAD)
+    except OSError:
+        pass
+    stage["descriptor"] = read_descriptor
+    stage["provider_path"] = stage["path"]
+    os.close(descriptor)
+    stage["sealed"] = True
+
+
+def _seal_import_stage(stage):
+    if os.name == "nt":
+        _seal_windows_import_stage(stage)
+        return
+    if os.name == "posix" and sys.platform.startswith("linux"):
+        _seal_linux_stage(stage)
+        return
+    raise RuntimeError("sealed host import staging is unavailable on this platform")
+"""
+
+
+_HOST_OUTPUT_HELPERS = r"""
+
+
+def _claim_output_stage(stage, require_empty=False, require_nonempty=False):
+    descriptor_stat = _stage_descriptor_stat(stage)
+    link_count = int(getattr(descriptor_stat, "st_nlink", 1))
+    if os.name != "posix" or not sys.platform.startswith("linux"):
+        raise RuntimeError("secure path-only output staging is unavailable")
+    if stage.get("stage_kind") != "linux_memfd" or link_count != 0:
+        raise RuntimeError("authorized output staging gained a filesystem alias")
+    if require_empty and int(descriptor_stat.st_size) != 0:
+        raise RuntimeError("authorized output staging was written before dispatch")
+    if require_nonempty and int(descriptor_stat.st_size) <= 0:
+        raise RuntimeError("Fusion output staging is empty")
+    if require_nonempty:
+        _require_linux_stage_sealed(stage)
+    return stage["provider_path"]
+"""
+
+
+_HOST_IO_COMMON_HELPERS += r"""
+
+
+def _close_host_stage(stage):
+    if not isinstance(stage, dict) or stage.get("closed"):
+        return
+    descriptor = stage.get("descriptor")
+    if isinstance(descriptor, int):
+        os.close(descriptor)
+    stage["closed"] = True
+
+
+def _discard_host_stage(stage):
+    if not isinstance(stage, dict):
+        return
+    owned_path = stage.get("path") if _named_stage_matches(stage) else None
+    _close_host_stage(stage)
+    if owned_path and os.path.lexists(owned_path):
+        try:
+            os.chmod(owned_path, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        os.unlink(owned_path)
+"""
+
+
+_HOST_IMPORT_HELPERS += r"""
+
+
+def _stage_bound_import(payload, path):
+    if os.name == "posix" and not sys.platform.startswith("linux"):
+        raise RuntimeError("sealed host import staging is unavailable on this platform")
+    if os.name not in ("nt", "posix"):
+        raise RuntimeError("sealed host import staging is unavailable on this platform")
+    expected = payload.get("host_path_binding") or {}
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source_descriptor = os.open(path, flags)
+    stage = None
+    try:
+        before = os.fstat(source_descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError("authorized import source is not a regular file")
+        stage = _new_host_stage(path, ".fa-import-")
+        stage_descriptor = stage["descriptor"]
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(source_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(stage_descriptor, view)
+                if written <= 0:
+                    raise RuntimeError("authorized import staging write failed")
+                view = view[written:]
+        os.fsync(stage_descriptor)
+        after = os.fstat(source_descriptor)
+        facts = {
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "size": int(before.st_size),
+            "mtime_ns": int(before.st_mtime_ns),
+            "sha256": digest.hexdigest(),
+        }
+        if (
+            int(after.st_dev) != facts["device"]
+            or int(after.st_ino) != facts["inode"]
+            or int(after.st_size) != facts["size"]
+            or int(after.st_mtime_ns) != facts["mtime_ns"]
+            or size != facts["size"]
+            or _hashed_text(json.dumps(facts, sort_keys=True, separators=(",", ":")))
+            != expected.get("resource_fingerprint")
+        ):
+            raise RuntimeError("authorized import source changed during staging")
+        staged_stat = os.fstat(stage_descriptor)
+        if os.name == "nt":
+            root = os.path.realpath(expected.get("canonical_root") or "")
+            stage_path = stage["path"]
+            staged = os.path.realpath(stage_path)
+            if os.path.dirname(staged) != os.path.dirname(path):
+                raise RuntimeError("authorized import staging changed directory")
+            try:
+                contained = os.path.commonpath((root, staged)) == root
+            except ValueError:
+                contained = False
+            if not contained:
+                raise RuntimeError("authorized import staging escaped its approved root")
+            if not _named_stage_matches(stage):
+                raise RuntimeError("authorized import staging identity changed")
+        if (
+            not stat.S_ISREG(staged_stat.st_mode)
+            or int(staged_stat.st_size) != size
+            or (
+                os.name == "nt"
+                and int(getattr(staged_stat, "st_nlink", 1)) != 1
+            )
+            or (
+                os.name == "posix"
+                and int(getattr(staged_stat, "st_nlink", -1)) != 0
+            )
+        ):
+            raise RuntimeError("authorized import staging identity changed")
+        stage["expected_size"] = size
+        stage["sha256"] = digest.hexdigest()
+        os.lseek(stage_descriptor, 0, os.SEEK_SET)
+        _seal_import_stage(stage)
+        _claim_import_stage(stage)
+        return stage
+    except Exception:
+        if stage is not None:
+            _discard_host_stage(stage)
+        raise
+    finally:
+        os.close(source_descriptor)
+"""
+
+
+_HOST_OUTPUT_HELPERS += r"""
+
+
+def _new_promotion_stage(final_path):
+    if os.name != "posix" or not sys.platform.startswith("linux"):
+        raise RuntimeError("secure anonymous output promotion is unavailable")
+    parent = os.path.dirname(final_path)
+    temporary_file = getattr(os, "O_TMPFILE", None)
+    if not isinstance(temporary_file, int):
+        raise RuntimeError("secure anonymous output promotion is unavailable")
+    flags = temporary_file | os.O_RDWR | int(getattr(os, "O_CLOEXEC", 0))
+    descriptor = os.open(parent, flags, stat.S_IRUSR | stat.S_IWUSR)
+    descriptor_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or int(getattr(descriptor_stat, "st_nlink", -1)) != 0
+    ):
+        os.close(descriptor)
+        raise RuntimeError("promotion staging identity is invalid")
+    return {
+        "path": None,
+        "provider_path": _stage_provider_path(descriptor, None),
+        "descriptor": descriptor,
+        "device": int(descriptor_stat.st_dev),
+        "inode": int(descriptor_stat.st_ino),
+        "closed": False,
+        "stage_kind": "linux_promotion",
+    }
+
+
+def _descriptor_digest(descriptor):
+    offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    finally:
+        os.lseek(descriptor, offset, os.SEEK_SET)
+    return digest.hexdigest(), size
+
+
+def _snapshot_output_stage(stage, final_path):
+    before = _stage_descriptor_stat(stage)
+    _claim_output_stage(stage, require_nonempty=True)
+    snapshot = _new_promotion_stage(final_path)
+    source = stage["descriptor"]
+    destination = snapshot["descriptor"]
+    source_offset = os.lseek(source, 0, os.SEEK_CUR)
+    os.lseek(source, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        while True:
+            chunk = os.read(source, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination, view)
+                if written <= 0:
+                    raise RuntimeError("promotion staging write failed")
+                view = view[written:]
+        os.fsync(destination)
+    except BaseException:
+        _discard_host_stage(snapshot)
+        raise
+    finally:
+        os.lseek(source, source_offset, os.SEEK_SET)
+    after = _stage_descriptor_stat(stage)
+    source_digest, source_size = _descriptor_digest(source)
+    snapshot_digest, snapshot_size = _descriptor_digest(destination)
+    if (
+        int(before.st_dev) != int(after.st_dev)
+        or int(before.st_ino) != int(after.st_ino)
+        or int(before.st_size) != int(after.st_size)
+        or int(before.st_mtime_ns) != int(after.st_mtime_ns)
+        or int(after.st_size) != size
+        or source_size != size
+        or snapshot_size != size
+        or source_digest != digest.hexdigest()
+        or snapshot_digest != source_digest
+    ):
+        _discard_host_stage(snapshot)
+        raise RuntimeError("Fusion export changed while promotion was snapshotted")
+    snapshot["expected_size"] = size
+    snapshot["sha256"] = snapshot_digest
+    os.lseek(destination, 0, os.SEEK_SET)
+    return snapshot
+
+
+def _posix_link_open_stage(stage, final_path):
+    import ctypes
+
+    if os.name != "posix":
+        raise RuntimeError("POSIX descriptor promotion used on another platform")
+    descriptor = stage["descriptor"]
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = getattr(libc, "linkat", None)
+    if linkat is not None:
+        linkat.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+        )
+        linkat.restype = ctypes.c_int
+        destination = os.fsencode(final_path)
+        if linkat(descriptor, b"", -100, destination, 0x1000) == 0:
+            return
+        error = ctypes.get_errno()
+        if error in (17,):
+            raise FileExistsError(error, os.strerror(error), final_path)
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        candidate = os.path.join(directory, str(descriptor))
+        try:
+            candidate_stat = os.stat(candidate)
+            descriptor_stat = os.fstat(descriptor)
+            if (
+                int(candidate_stat.st_dev) != int(descriptor_stat.st_dev)
+                or int(candidate_stat.st_ino) != int(descriptor_stat.st_ino)
+            ):
+                continue
+            os.link(candidate, final_path, follow_symlinks=True)
+            return
+        except FileExistsError:
+            raise
+        except OSError:
+            continue
+    raise RuntimeError("secure descriptor-backed output promotion is unavailable")
+
+
+def _prepare_export_stage(payload, final_path):
+    expected = payload.get("host_path_binding") or {}
+    if os.name == "nt":
+        raise RuntimeError(
+            "secure path-only output staging is unavailable on Windows"
+        )
+    if os.name != "posix" or not sys.platform.startswith("linux"):
+        raise RuntimeError("secure path-only output staging is unavailable")
+    if bool(expected.get("overwrite")):
+        raise RuntimeError("secure POSIX overwrite is unavailable")
+    stage = _new_host_stage(final_path, ".fa-export-")
+    _claim_output_stage(stage, require_empty=True)
+    return stage
+
+
+def _promote_written_export(payload, stage, final_path):
+    _seal_linux_stage(stage)
+    _claim_output_stage(stage, require_nonempty=True)
+    staged_stat = os.fstat(stage["descriptor"])
+    if (
+        not stat.S_ISREG(staged_stat.st_mode)
+        or int(getattr(staged_stat, "st_nlink", -1)) != 0
+        or int(staged_stat.st_size) <= 0
+    ):
+        raise RuntimeError("Fusion export staging identity is invalid")
+    snapshot = _snapshot_output_stage(stage, final_path)
+    _discard_host_stage(stage)
+    try:
+        _require_host_path_binding(payload, "export")
+        snapshot_stat = _stage_descriptor_stat(snapshot)
+        if int(snapshot_stat.st_dev) != int(os.stat(os.path.dirname(final_path)).st_dev):
+            raise RuntimeError("promotion staging changed filesystem volume")
+        if int(getattr(snapshot_stat, "st_nlink", -1)) != 0:
+            raise RuntimeError("promotion staging gained a filesystem alias")
+        _posix_link_open_stage(snapshot, final_path)
+        final_stat = os.lstat(final_path)
+        pinned_stat = os.fstat(snapshot["descriptor"])
+        if (
+            not stat.S_ISREG(final_stat.st_mode)
+            or int(final_stat.st_dev) != int(pinned_stat.st_dev)
+            or int(final_stat.st_ino) != int(pinned_stat.st_ino)
+            or int(final_stat.st_size) != int(pinned_stat.st_size)
+            or int(final_stat.st_size) != int(snapshot.get("expected_size", -1))
+        ):
+            raise RuntimeError("Fusion export promotion identity changed")
+        snapshot["promoted"] = True
+        return final_path
+    finally:
+        _discard_host_stage(snapshot)
+"""
+
+
+_TYPED_CRUD_HELPERS += r"""
+
+
 def _cad_target_binding(design, reference, format_name):
     app = adsk.core.Application.get()
     target = _export_target_for_format(design, reference, format_name)
@@ -5892,22 +7282,64 @@ def _rename_feature_bodies(feature, name):
         else:
             for index in range(bodies.count):
                 bodies.item(index).name = f"{name}_{index + 1}"
+
+
+def _produced_body_bindings(design, feature, result_name):
+    bodies = getattr(feature, "bodies", None)
+    if not bodies or bodies.count != 1:
+        return []
+    body = bodies.item(0)
+    if not body or str(getattr(body, "name", "") or "") != result_name:
+        return []
+    produced = []
+    for reference_kind in ("body", "geometry"):
+        binding, _entity = _binding_for_entity(
+            design, reference_kind, result_name, body
+        )
+        produced.append(binding)
+    return produced
 """
 
 
-def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
+def _typed_crud_script(
+    payload: dict[str, Any],
+    body: str,
+    *,
+    require_document_binding: bool = True,
+    include_host_import: bool = False,
+    include_host_output: bool = False,
+) -> str:
     """Build a fixed Autodesk script with strict, unique entity resolvers."""
 
+    if include_host_import and include_host_output:
+        raise ValueError("typed CRUD script cannot combine import and output staging")
+    host_helpers = ""
+    if include_host_import:
+        host_helpers = _HOST_IO_COMMON_HELPERS + _HOST_IMPORT_HELPERS
+    elif include_host_output:
+        host_helpers = _HOST_IO_COMMON_HELPERS + _HOST_OUTPUT_HELPERS
     payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return (
         "import json\n"
         "import hashlib\n"
+        "import math\n"
         "import os\n"
+        "import stat\n"
+        "import sys\n"
+        "import tempfile\n"
         "import adsk.core\n"
         "import adsk.fusion\n\n"
         f"PAYLOAD = json.loads({payload_json!r})\n"
         + _TYPED_CRUD_HELPERS
+        + host_helpers
         + "\n\ndef run(_context: str):\n"
+        + (
+            "    design = _design()\n"
+            "    _require_document_binding(PAYLOAD, design)\n"
+            "    BOUND_TARGETS = _require_target_bindings(PAYLOAD, design)\n"
+            if require_document_binding
+            else ""
+        )
         + body
         + "\n"
     )
@@ -5916,9 +7348,10 @@ def _typed_crud_script(payload: dict[str, Any], body: str) -> str:
 def _typed_sketch_constraint_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    sketch = _sketch(design, PAYLOAD["sketch"])
-    entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
+        r"""    if len(BOUND_TARGETS) != 1 + len(PAYLOAD["entities"]):
+        raise RuntimeError("sketch constraint target bindings are incomplete")
+    sketch = BOUND_TARGETS[0]
+    entities = list(BOUND_TARGETS[1:])
     constraints = sketch.geometricConstraints
     kind = PAYLOAD["constraint"]
     if kind == "coincident":
@@ -5954,9 +7387,10 @@ def _typed_sketch_constraint_script(payload: dict[str, Any]) -> str:
 def _typed_sketch_dimension_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    sketch = _sketch(design, PAYLOAD["sketch"])
-    entities = [_sketch_entity(design, item) for item in PAYLOAD["entities"]]
+        r"""    if len(BOUND_TARGETS) != 1 + len(PAYLOAD["entities"]):
+        raise RuntimeError("sketch dimension target bindings are incomplete")
+    sketch = BOUND_TARGETS[0]
+    entities = list(BOUND_TARGETS[1:])
     dimensions = sketch.sketchDimensions
     kind = PAYLOAD["dimension"]
     expression = PAYLOAD["expression"]
@@ -5995,10 +7429,9 @@ def _typed_sketch_dimension_script(payload: dict[str, Any]) -> str:
 def _typed_revolve_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    component = _component(design, PAYLOAD["component"])
-    profile = _profile(design, PAYLOAD["profile"])
-    axis = _axis(component, PAYLOAD["axis"])
+        r"""    if len(BOUND_TARGETS) != 3:
+        raise RuntimeError("revolve target bindings are incomplete")
+    component, profile, axis = BOUND_TARGETS
     features = component.features.revolveFeatures
     revolve_input = features.createInput(profile, axis, _feature_operation(PAYLOAD["operation"]))
     revolve_input.setAngleExtent(
@@ -6008,10 +7441,12 @@ def _typed_revolve_script(payload: dict[str, Any]) -> str:
     feature = features.add(revolve_input)
     feature.name = PAYLOAD["feature_name"]
     _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    produced = _produced_body_bindings(design, feature, PAYLOAD["result_name"])
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": "revolve"},
         "body": {"name": PAYLOAD["result_name"]},
+        "produced_target_bindings": produced,
     }, sort_keys=True))""",
     )
 
@@ -6019,10 +7454,9 @@ def _typed_revolve_script(payload: dict[str, Any]) -> str:
 def _typed_sweep_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    component = _component(design, PAYLOAD["component"])
-    profile = _profile(design, PAYLOAD["profile"])
-    path = _path(design, PAYLOAD["path"])
+        r"""    if len(BOUND_TARGETS) != 3:
+        raise RuntimeError("sweep target bindings are incomplete")
+    component, profile, path = BOUND_TARGETS
     features = component.features.sweepFeatures
     sweep_input = features.createInput(profile, path, _feature_operation(PAYLOAD["operation"]))
     orientations = adsk.fusion.SweepOrientationTypes
@@ -6033,10 +7467,12 @@ def _typed_sweep_script(payload: dict[str, Any]) -> str:
     feature = features.add(sweep_input)
     feature.name = PAYLOAD["feature_name"]
     _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    produced = _produced_body_bindings(design, feature, PAYLOAD["result_name"])
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": "sweep"},
         "body": {"name": PAYLOAD["result_name"]},
+        "produced_target_bindings": produced,
     }, sort_keys=True))""",
     )
 
@@ -6044,21 +7480,28 @@ def _typed_sweep_script(payload: dict[str, Any]) -> str:
 def _typed_loft_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    component = _component(design, PAYLOAD["component"])
+        r"""    profile_count = len(PAYLOAD["profiles"])
+    guide_count = len(PAYLOAD.get("guides") or [])
+    if len(BOUND_TARGETS) != 1 + profile_count + guide_count:
+        raise RuntimeError("loft target bindings are incomplete")
+    component = BOUND_TARGETS[0]
+    profiles = BOUND_TARGETS[1:1 + profile_count]
+    guides = BOUND_TARGETS[1 + profile_count:]
     features = component.features.loftFeatures
     loft_input = features.createInput(_feature_operation(PAYLOAD["operation"]))
-    for reference in PAYLOAD["profiles"]:
-        loft_input.loftSections.add(_profile(design, reference))
-    for reference in PAYLOAD.get("guides") or []:
-        loft_input.centerLineOrRails.addRail(_path(design, reference))
+    for profile in profiles:
+        loft_input.loftSections.add(profile)
+    for guide in guides:
+        loft_input.centerLineOrRails.addRail(guide)
     feature = features.add(loft_input)
     feature.name = PAYLOAD["feature_name"]
     _rename_feature_bodies(feature, PAYLOAD["result_name"])
+    produced = _produced_body_bindings(design, feature, PAYLOAD["result_name"])
     print(json.dumps({
         "success": True,
         "feature": {"name": feature.name, "type": "loft"},
         "body": {"name": PAYLOAD["result_name"]},
+        "produced_target_bindings": produced,
     }, sort_keys=True))""",
     )
 
@@ -6066,8 +7509,11 @@ def _typed_loft_script(payload: dict[str, Any]) -> str:
 def _typed_pattern_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    bodies = [_body(design, name) for name in PAYLOAD["targets"]]
+        r"""    target_count = len(PAYLOAD["targets"])
+    if len(BOUND_TARGETS) != target_count + 1:
+        raise RuntimeError("pattern target bindings are incomplete")
+    bodies = list(BOUND_TARGETS[:target_count])
+    direction = BOUND_TARGETS[target_count]
     component = bodies[0].parentComponent
     if any(body.parentComponent != component for body in bodies):
         raise RuntimeError("all pattern targets must belong to one component")
@@ -6079,14 +7525,14 @@ def _typed_pattern_script(payload: dict[str, Any]) -> str:
         features = component.features.rectangularPatternFeatures
         pattern_input = features.createInput(
             entities,
-            _axis(component, PAYLOAD["axis"]),
+            direction,
             quantity,
             spacing,
             adsk.fusion.PatternDistanceType.SpacingPatternDistanceType,
         )
     elif pattern_kind == "circular":
         features = component.features.circularPatternFeatures
-        pattern_input = features.createInput(entities, _axis(component, PAYLOAD["axis"]))
+        pattern_input = features.createInput(entities, direction)
         pattern_input.quantity = quantity
         pattern_input.totalAngle = adsk.core.ValueInput.createByString("360 deg")
         pattern_input.isSymmetric = False
@@ -6094,7 +7540,7 @@ def _typed_pattern_script(payload: dict[str, Any]) -> str:
         features = component.features.pathPatternFeatures
         pattern_input = features.createInput(
             entities,
-            _path(design, PAYLOAD["path"]),
+            direction,
             quantity,
             spacing,
             adsk.fusion.PatternDistanceType.SpacingPatternDistanceType,
@@ -6113,15 +7559,18 @@ def _typed_pattern_script(payload: dict[str, Any]) -> str:
 def _typed_mirror_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    bodies = [_body(design, name) for name in PAYLOAD["targets"]]
+        r"""    target_count = len(PAYLOAD["targets"])
+    if len(BOUND_TARGETS) != target_count + 1:
+        raise RuntimeError("mirror target bindings are incomplete")
+    bodies = list(BOUND_TARGETS[:target_count])
+    plane = BOUND_TARGETS[target_count]
     component = bodies[0].parentComponent
     if any(body.parentComponent != component for body in bodies):
         raise RuntimeError("all mirror targets must belong to one component")
     features = component.features.mirrorFeatures
     mirror_input = features.createInput(
         _object_collection(bodies),
-        _plane(component, PAYLOAD["plane"]),
+        plane,
     )
     feature = features.add(mirror_input)
     feature.name = PAYLOAD["feature_name"]
@@ -6138,9 +7587,10 @@ def _typed_mirror_script(payload: dict[str, Any]) -> str:
 def _typed_boolean_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
-    target = _body(design, PAYLOAD["target"])
-    tools = [_body(design, name) for name in PAYLOAD["tools"]]
+        r"""    if len(BOUND_TARGETS) != 1 + len(PAYLOAD["tools"]):
+        raise RuntimeError("boolean target bindings are incomplete")
+    target = BOUND_TARGETS[0]
+    tools = list(BOUND_TARGETS[1:])
     if any(body.parentComponent != target.parentComponent for body in tools):
         raise RuntimeError("boolean target and tools must belong to one component")
     component = target.parentComponent
@@ -6166,9 +7616,10 @@ def _typed_boolean_script(payload: dict[str, Any]) -> str:
 def _typed_rigid_group_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
-        r"""    design = _design()
+        r"""    if len(BOUND_TARGETS) != len(PAYLOAD["occurrences"]):
+        raise RuntimeError("rigid group target bindings are incomplete")
     root = design.rootComponent
-    occurrences = [_occurrence(design, reference) for reference in PAYLOAD["occurrences"]]
+    occurrences = list(BOUND_TARGETS)
     rigid_group = root.rigidGroups.add(_object_collection(occurrences), True)
     rigid_group.name = PAYLOAD["name"]
     print(json.dumps({
@@ -6183,9 +7634,9 @@ def _typed_import_script(payload: dict[str, Any]) -> str:
         payload,
         r"""    app = adsk.core.Application.get()
     design = _design()
-    path = PAYLOAD["path"]
-    if not os.path.isfile(path):
-        raise RuntimeError(f"import file does not exist on the Fusion host: {path}")
+    source_path = _require_host_path_binding(PAYLOAD, "import")
+    stage = _stage_bound_import(PAYLOAD, source_path)
+    path = _claim_import_stage(stage)
     import_manager = app.importManager
     format_name = PAYLOAD["format"]
     if format_name in ("step", "stp"):
@@ -6198,25 +7649,34 @@ def _typed_import_script(payload: dict[str, Any]) -> str:
         options = import_manager.createFusionArchiveImportOptions(path)
     else:
         raise RuntimeError(f"unsupported import format: {format_name}")
-    occurrence = design.rootComponent.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-    component = occurrence.component
-    component.name = PAYLOAD["component_name"]
     try:
-        imported = import_manager.importToTarget2(options, component)
-        if not imported:
-            raise RuntimeError(f"Fusion import returned no entities: {path}")
-    except Exception:
-        occurrence.deleteMe()
-        raise
+        occurrence = design.rootComponent.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        component = occurrence.component
+        component.name = PAYLOAD["component_name"]
+        try:
+            _claim_import_stage(stage)
+            imported = import_manager.importToTarget2(options, component)
+            _claim_import_stage(stage)
+            if not imported:
+                raise RuntimeError("Fusion import returned no entities")
+        except Exception:
+            occurrence.deleteMe()
+            raise
+    finally:
+        _discard_host_stage(stage)
+    binding, _entity = _binding_for_entity(
+        design, "component", PAYLOAD["component_name"], component
+    )
     print(json.dumps({
         "success": True,
         "import": {
             "format": format_name,
-            "path": path,
             "component": component.name,
             "entity_count": imported.count,
         },
+        "produced_target_bindings": [binding],
     }, sort_keys=True))""",
+        include_host_import=True,
     )
 
 
@@ -6224,8 +7684,8 @@ def _typed_export_script(payload: dict[str, Any]) -> str:
     return _typed_crud_script(
         payload,
         r"""    design = _design()
-    path = PAYLOAD["path"]
-    parent = os.path.dirname(path)
+    final_path = _require_host_path_binding(PAYLOAD, "export")
+    parent = os.path.dirname(final_path)
     if parent and not os.path.isdir(parent):
         raise RuntimeError(f"export directory does not exist on the Fusion host: {parent}")
     format_name = PAYLOAD["format"]
@@ -6233,25 +7693,33 @@ def _typed_export_script(payload: dict[str, Any]) -> str:
     expected_binding = PAYLOAD.get("binding")
     if not isinstance(expected_binding, dict) or actual_binding != expected_binding:
         raise RuntimeError("export CAD target binding changed after capability issuance")
-    manager = design.exportManager
-    if format_name in ("step", "stp"):
-        options = manager.createSTEPExportOptions(path, target)
-    elif format_name in ("iges", "igs"):
-        options = manager.createIGESExportOptions(path, target)
-    elif format_name == "stl":
-        options = manager.createSTLExportOptions(target, path)
-    elif format_name == "f3d":
-        options = manager.createFusionArchiveExportOptions(path, target)
-    else:
-        raise RuntimeError(f"unsupported export format: {format_name}")
-    if not manager.execute(options):
-        raise RuntimeError(f"Fusion export failed: {path}")
-    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
-        raise RuntimeError(f"Fusion export did not create a non-empty file: {path}")
+    stage = _prepare_export_stage(PAYLOAD, final_path)
+    try:
+        manager = design.exportManager
+        stage_path = _claim_output_stage(stage, require_empty=True)
+        if format_name in ("step", "stp"):
+            options = manager.createSTEPExportOptions(stage_path, target)
+        elif format_name in ("iges", "igs"):
+            options = manager.createIGESExportOptions(stage_path, target)
+        elif format_name == "stl":
+            options = manager.createSTLExportOptions(target, stage_path)
+        elif format_name == "f3d":
+            options = manager.createFusionArchiveExportOptions(stage_path, target)
+        else:
+            raise RuntimeError(f"unsupported export format: {format_name}")
+        _claim_output_stage(stage, require_empty=True)
+        if not manager.execute(options):
+            raise RuntimeError("Fusion export failed")
+        _require_host_path_binding(PAYLOAD, "export")
+        path = _promote_written_export(PAYLOAD, stage, final_path)
+    finally:
+        _discard_host_stage(stage)
     print(json.dumps({
         "success": True,
-        "export": {"format": format_name, "path": path, "bytes": os.path.getsize(path)},
+        "export": {"format": format_name, "bytes": os.path.getsize(path)},
     }, sort_keys=True))""",
+        require_document_binding=False,
+        include_host_output=True,
     )
 
 
@@ -6263,6 +7731,33 @@ def _typed_export_binding_read_script(payload: dict[str, Any]) -> str:
         design, PAYLOAD["target"], PAYLOAD["format"]
     )
     print(json.dumps({"success": True, "binding": binding}, sort_keys=True))""",
+        require_document_binding=False,
+    )
+
+
+def _typed_document_binding_read_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r"""    design = _design()
+    binding = _active_document_binding(design)
+    print(json.dumps({"success": True, "binding": binding}, sort_keys=True))""",
+        require_document_binding=False,
+    )
+
+
+def _typed_operation_binding_read_script(payload: dict[str, Any]) -> str:
+    return _typed_crud_script(
+        payload,
+        r"""    design = _design()
+    descriptors = PAYLOAD.get("target_binding_descriptors")
+    if not isinstance(descriptors, list) or not descriptors:
+        raise RuntimeError("CAD target binding descriptors are required")
+    bindings = [
+        _cad_operation_target_binding(design, descriptor)[0]
+        for descriptor in descriptors
+    ]
+    print(json.dumps({"success": True, "bindings": bindings}, sort_keys=True))""",
+        require_document_binding=False,
     )
 
 

@@ -6,8 +6,14 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 
 - Vincula host I/O e mutacoes CAD a policies, paths canonicos, identidade de
   documento/entidade, digests e capabilities descartaveis; CadSpec v1 e Faust
-  permanecem por um ciclo fail-closed, e Faust anuncia somente
-  `parameter.set` literal com prova lossless.
+  permanecem por um ciclo fail-closed. O adapter Faust nao anuncia mutacoes
+  enquanto nao puder transportar identidade documental e de target ate o sink.
+  CadSpec v1 permanece parseavel em validacao, mock e dry-run, mas execucao e
+  replay reais exigem normalizacao integral para v2 antes de qualquer provider.
+- Sela imports durante todo o consumo do provider (handle read-only no Windows
+  e `memfd` selado no Linux). Como rollback estrutural da 0.4.1, capture/export
+  real usam `deny_io` em todas as plataformas antes de binding, capability ou
+  dispatch; readiness nao anuncia output/overwrite como habilitados.
 - Introduz contexto request-local, evidencia tipada e decisoes
   `passed|failed|incomplete`; assertions desconhecidas, evidencia parcial e
   numeros nao finitos nunca autorizam sucesso ou reparo.
@@ -16,14 +22,42 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   publicas redigidas.
 - Reforca proveniencia de benchmark, long paths do Windows, allowlist exata do
   wheel/RECORD/source, verificacao preinstall e reproducibilidade cross-platform.
+- Torna resultados publicos scoreable somente com `BenchmarkEvidenceEnvelope`
+  tipado, produtor/fixture vinculados, oracle distinto e proveniencia de
+  preflight nao vazia; resultado `completed` sem essa prova permanece
+  explicitamente nao-scoreable.
+- Recria a venv, executa pip sem hooks de startup, instala sem bytecode/indice a
+  partir de wheelhouse hash-pinned e compara os arquivos instalados aos wheels
+  confiaveis; `RECORD` autoassinado, customizers e reparse points falham fechado.
+- Fixa o runtime MCP na `.venv` lexical e nao-reparse do plugin, preserva
+  `-I -B` em subprocessos e proibe overrides de fonte em bundles de release.
+- Faz o validator restaurar somente o diretorio `scripts/` revisado sob `-I`,
+  mantendo user site e `PYTHONPATH` fora do bootstrap do setup.
+- Vincula a release a um CI de branch concluido com sucesso no SHA candidato
+  exato e pagina a prova remota dentro de um limite explicito.
 - Fixa Actions por SHA, separa build de publish e restringe nightlies a
   fixtures descartaveis, prova vinculada ao run atual e artifacts publicos
   sanitizados.
+- Mantem `doctor` e `tools probe` do nightly exclusivamente em
+  `nightly-private`, sem ecoar stdout/stderr bruto ao log do GitHub.
+- Rejeita modos de execucao nao canonicos antes de construir facade/provider e
+  revalida active command, documento, fingerprint e targets dentro do proprio
+  script sincrono do sink antes de uma mutacao Fast Path. Rejeicoes desse guard
+  retornam um envelope de controle tipado e vinculado ao operation/digest, que
+  sobrevive a sanitizacao downstream sem depender de texto de excecao.
+- Torna o nightly honesto para host output: remove o roundtrip export/import
+  positivo, exige rejeicao `HOST_OUTPUT_DISABLED`, delta zero de dispatch e
+  arquivo ausente; a reference suite coleta somente o artifact v2 randomizado
+  vinculado ao SHA, source-manifest SHA-256 e identidade do run atual.
 - Fecha os 14 findings CAN-010/012/014/018/024/025/026/027/032/033/034/038/039/042
   com regressao reproducer-first, controle positivo, variantes de bypass e
   comprovacao de zero dispatch nas rejeicoes.
 - Materializa CI a partir do lock frozen, compara performance contra o SHA
   revisado e exige tres nightlies checksummed no mesmo candidato antes da tag.
+- Sela `pyproject`, `uv.lock`, METADATA e requirements hash-pinned no wheel,
+  elimina setup editavel dos jobs confiaveis, rejeita arquivos/distribuicoes
+  instalados extras, vincula o runner Fusion ao SHA candidato/environment
+  aprovado e re-peela a tag remota no instante da publicacao.
 
 ## 0.4.0 - 2026-07-15
 

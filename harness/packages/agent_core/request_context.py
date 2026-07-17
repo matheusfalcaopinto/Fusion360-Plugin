@@ -13,6 +13,20 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import Literal, TypeAlias
+
+
+ExecutionMode: TypeAlias = Literal["mock", "real"]
+
+
+def validate_execution_mode(value: object) -> ExecutionMode:
+    """Return a canonical execution mode or fail before provider selection."""
+
+    if value == "mock":
+        return "mock"
+    if value == "real":
+        return "real"
+    raise ValueError("mode must be 'mock' or 'real'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +35,7 @@ class RequestContext:
 
     request_id: str
     profile: str
-    mode: str
+    mode: ExecutionMode
     backend: str
     session_id: str | None = None
     trial_id: str | None = None
@@ -36,6 +50,7 @@ class RequestContext:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
+        object.__setattr__(self, "mode", validate_execution_mode(self.mode))
         normalized_timeouts: dict[str, float] = {}
         for name, value in dict(self.timeouts).items():
             if not isinstance(name, str) or not name.strip():

@@ -17,7 +17,8 @@ Rules:
 - Name objects exactly as specified unless the harness name-collision policy is invoked.
 - Write metadata when component_metadata contracts are present.
 - Create native inspectable joints when joint contracts are present. Attribute-only joint contracts are diagnostics and must not be treated as success.
-- Capture requested screenshots and restore visibility after captures.
+- Reject real capture/export with `HOST_OUTPUT_DISABLED` before provider
+  dispatch; preserve confined receipts only in mock/dry-run compatibility.
 - Run physical property and interference analysis when requested by the spec.
 - Return failures with operation, target, cause, and safe repair hint instead of masking unsupported real Fusion behavior as success.
 ```

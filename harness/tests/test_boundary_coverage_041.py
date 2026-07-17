@@ -138,6 +138,19 @@ def test_filesystem_boundary_lists_reads_replaces_and_removes(tmp_path: Path) ->
     assert not filesystem.path_exists(source)
 
 
+def test_filesystem_unlink_covers_existing_and_missing_file_contract(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "artifact.json"
+    target.write_text("data", encoding="utf-8")
+
+    filesystem.unlink(target)
+    assert not target.exists()
+    filesystem.unlink(target, missing_ok=True)
+    with pytest.raises(FileNotFoundError):
+        filesystem.unlink(target)
+
+
 def test_filesystem_io_path_handles_windows_namespaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,7 +379,7 @@ def _transaction_spec(*, checkpoint: bool) -> CadSpec:
                     "features": [
                         {
                             "name": "fixture_body_feature",
-                            "type": "extrude",
+                            "type": "extrude_rectangle",
                             "inputs": {"distance": "2 mm"},
                         }
                     ],
@@ -392,5 +405,5 @@ def test_transaction_normalization_is_ordered_and_policy_driven(
     feature = next(
         step for step in steps if step.name == "feature_fixture_body_feature"
     )
-    assert feature.operation == "extrude"
+    assert feature.operation == "extrude_rectangle"
     assert feature.payload["component"] == "fixture_component"

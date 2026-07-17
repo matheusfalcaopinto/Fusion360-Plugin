@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from benchmark.provenance import RevisionIdentity
 
 
 CausalLayer = Literal["transport_replay", "planner_isolated", "native_e2e"]
 RiskClass = Literal["read_only", "additive", "scoped_update", "destructive"]
+_PUBLIC_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,119}$")
+_PUBLIC_VALUE = re.compile(r"^[A-Za-z0-9_.:+-]{1,160}$")
 
 
 class _StrictModel(BaseModel):
@@ -120,6 +126,21 @@ class CausalRunConfig(_StrictModel):
     repetitions: int = Field(default=3, ge=1, le=100)
     warmups: int = Field(default=1, ge=0, le=20)
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
+    expected_git_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    expected_source_manifest_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+    @model_validator(mode="after")
+    def _complete_revision_pin(self) -> "CausalRunConfig":
+        if (self.expected_git_commit is None) != (
+            self.expected_source_manifest_sha256 is None
+        ):
+            raise ValueError(
+                "expected_git_commit and expected_source_manifest_sha256 "
+                "must be provided together"
+            )
+        return self
 
 
 class TrialContext(_StrictModel):
@@ -146,7 +167,7 @@ class TrialContext(_StrictModel):
 
 
 class ExecutionObservation(_StrictModel):
-    status: str = Field(min_length=1, max_length=120)
+    status: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,120}$")
     execution_success: bool
     duration_ms: float = Field(ge=0)
     planning_ms: float = Field(default=0, ge=0)
@@ -167,12 +188,51 @@ class ExecutionObservation(_StrictModel):
     consumed_artifacts: dict[str, str] = Field(default_factory=dict)
     trace: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator(
+        "duration_ms",
+        "planning_ms",
+        "execution_ms",
+        "connection_ms",
+        "verification_ms",
+    )
+    @classmethod
+    def _finite_duration(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("numeric evidence must be finite")
+        return value
+
+    @field_validator("trace")
+    @classmethod
+    def _finite_trace(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _require_finite_tree(value)
+        return value
+
 
 class OracleObservation(_StrictModel):
     passed: bool
     checks: dict[str, bool] = Field(default_factory=dict)
     metrics: dict[str, float | int | bool | str | None] = Field(default_factory=dict)
-    message: str = ""
+    message: str = Field(default="", max_length=500)
+
+    @field_validator("metrics")
+    @classmethod
+    def _finite_metrics(
+        cls, value: dict[str, float | int | bool | str | None]
+    ) -> dict[str, float | int | bool | str | None]:
+        _require_finite_tree(value)
+        for key, child in value.items():
+            if not _PUBLIC_KEY.fullmatch(key):
+                raise ValueError("oracle metric key must be a bounded public token")
+            if isinstance(child, str) and not _PUBLIC_VALUE.fullmatch(child):
+                raise ValueError("oracle string metric must be a bounded public token")
+        return value
+
+    @field_validator("checks")
+    @classmethod
+    def _safe_checks(cls, value: dict[str, bool]) -> dict[str, bool]:
+        if any(not _PUBLIC_KEY.fullmatch(key) for key in value):
+            raise ValueError("oracle check key must be a bounded public token")
+        return value
 
 
 class TrialRecord(_StrictModel):
@@ -193,6 +253,20 @@ class TrialRecord(_StrictModel):
     oracle: OracleObservation
     final_success: bool
 
+    @field_validator("wall_duration_ms")
+    @classmethod
+    def _finite_wall_duration(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("wall duration must be finite")
+        return value
+
+
+class PublicBenchmarkError(_StrictModel):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,79}$")
+    generic_message: str = Field(min_length=1, max_length=200)
+    correlation_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    retryable: bool = False
+
 
 class CausalReport(_StrictModel):
     schema_version: Literal["fusion_causal_report.v1"] = "fusion_causal_report.v1"
@@ -203,6 +277,23 @@ class CausalReport(_StrictModel):
     started_at: str
     finished_at: str
     config: CausalRunConfig
+    revision_identity: RevisionIdentity
     summary: dict[str, Any]
     trials: list[TrialRecord]
-    error: dict[str, str] | None = None
+    error: PublicBenchmarkError | None = None
+
+
+def _require_finite_tree(value: Any) -> None:
+    if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("numeric evidence must be finite")
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            _require_finite_tree(child)
+        return
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            _require_finite_tree(child)

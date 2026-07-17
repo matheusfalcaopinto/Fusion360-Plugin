@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_core.authority import HostOutputDisabledError
 from agent_core.capability_executor import CapabilityExecutionResult
 from benchmark.filesystem import read_text
 from benchmark.real_capability_packs import (
@@ -22,6 +23,7 @@ from fusion_tool_facade.autodesk_typed_backend import AutodeskTypedBackend
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PRIVATE_CANARY = "PRIVATE_TOKEN=C:\\Users\\alice\\secret argv=--bearer-secret"
 
 
 def test_builders_cover_every_nonexperimental_promoted_pack(tmp_path: Path) -> None:
@@ -38,7 +40,7 @@ def test_builders_cover_every_nonexperimental_promoted_pack(tmp_path: Path) -> N
         "pattern_mirror_boolean_split",
         "joints_rigid_groups",
         "physical_properties_interference",
-        "import_export",
+        "host_output_deny_io",
     }
     for case in cases:
         assert case.spec.cad_spec_version == "2.0"
@@ -53,17 +55,28 @@ def test_builders_cover_every_nonexperimental_promoted_pack(tmp_path: Path) -> N
         assert case.spec.assertions[0].kind == "custom_oracle"
 
 
-def test_io_pack_is_confined_to_requested_artifact_root(tmp_path: Path) -> None:
-    io_case = next(
+def test_output_denial_pack_is_negative_and_confined(tmp_path: Path) -> None:
+    output_case = next(
         case
         for case in build_capability_pack_cases(tmp_path)
-        if case.id == "io_step_roundtrip"
+        if case.id == "output_deny_io_zero_dispatch"
     )
 
-    paths = [Path(path).resolve() for path in io_case.oracle_expectations["files"]]
+    paths = [
+        Path(path).resolve() for path in output_case.oracle_expectations["absent_files"]
+    ]
     assert paths
     assert all(path.is_relative_to(tmp_path.resolve()) for path in paths)
-    assert {path.suffix for path in paths} == {".step", ".stl"}
+    assert {path.suffix for path in paths} == {".step"}
+    assert output_case.execution_expectation == "host_output_denied_zero_dispatch"
+    assert output_case.target_capabilities == ()
+    assert [operation.kind for operation in output_case.spec.operations] == [
+        "io.export"
+    ]
+    assert "import_step" not in NIGHTLY_PACK_CAPABILITIES
+    assert not any(
+        capability.startswith("export_") for capability in NIGHTLY_PACK_CAPABILITIES
+    )
 
 
 def test_every_pack_completes_autodesk_fixed_script_preflight(tmp_path: Path) -> None:
@@ -86,7 +99,11 @@ def test_every_pack_completes_autodesk_fixed_script_preflight(tmp_path: Path) ->
     backend = AutodeskTypedBackend.from_client(client, manifest)
 
     for case in build_capability_pack_cases(tmp_path):
-        backend.preflight_operations(list(case.spec.operations))
+        if case.execution_expectation == "host_output_denied_zero_dispatch":
+            with pytest.raises(HostOutputDisabledError, match="disabled by deny_io"):
+                backend.preflight_host_io_operations(list(case.spec.operations))
+        else:
+            backend.preflight_operations(list(case.spec.operations))
 
     assert client.calls == []
 
@@ -131,13 +148,15 @@ def test_nightly_workflow_runs_pack_runner_and_uploads_failure_evidence() -> Non
     assert "FUSION_AGENT_BACKEND: autodesk_http" in workflow
     assert 'FUSION_AGENT_REQUIRE_REAL: "1"' in workflow
     assert (
-        "python scripts/run-real-capability-packs.py --artifact-root nightly-private"
+        "python -I -B scripts/run-real-capability-packs.py --artifact-root nightly-private"
         in workflow
     )
     assert "nightly-private/capability-packs.json" in workflow
-    assert "python scripts/prepare-nightly-public.py" in workflow
-    assert "path: nightly-public/**" in workflow
-    assert "if: always()" in workflow
+    assert "python -I -S -B scripts/prepare-nightly-public.py" in workflow
+    assert "path: nightly-public/**" not in workflow
+    for public_name in ("nightly-status.json", "summary.json", "SHA256SUMS"):
+        assert f"nightly-public/{public_name}" in workflow
+    assert "if: always() && steps.prepare_public.outcome == 'success'" in workflow
     for path in (
         "manifests/**",
         "logs/**",
@@ -151,13 +170,21 @@ class _OfflineRuntime:
         self.fail_execution = fail_execution
         self.executed_specs = []
         self.oracle_calls = 0
+        self.call_count = 0
+
+    def diagnostics(self):
+        return {"call_count": self.call_count}
 
     async def execute_cad_spec_v2(self, spec, *, mode: str, dry_run: bool = False):
         assert mode == "real"
         assert dry_run is False
+        if any(operation.kind == "io.export" for operation in spec.operations):
+            raise HostOutputDisabledError(
+                "real Fusion export and capture are disabled by deny_io in 0.4.1"
+            )
         self.executed_specs.append(spec)
         if self.fail_execution:
-            raise RuntimeError("offline injected executor failure")
+            raise RuntimeError(PRIVATE_CANARY)
         return CapabilityExecutionResult(
             success=True,
             provider="autodesk_http",
@@ -190,6 +217,7 @@ class _OfflineRuntime:
         assert semantics == "read_only"
         assert operation_id.endswith(":independent-oracle")
         self.oracle_calls += 1
+        self.call_count += 1
         return ToolResult.success(
             message=json.dumps(
                 {
@@ -283,6 +311,46 @@ async def test_offline_suite_uses_fixture_execute_oracle_cleanup_order(
 
 
 @pytest.mark.asyncio
+async def test_offline_output_denial_is_zero_dispatch_and_never_positive_output(
+    tmp_path: Path,
+) -> None:
+    runtime = _OfflineRuntime()
+    lifecycle = _OfflineLifecycle()
+    case = next(
+        item
+        for item in build_capability_pack_cases(tmp_path)
+        if item.id == "output_deny_io_zero_dispatch"
+    )
+
+    result = await run_capability_pack_suite(
+        runtime=runtime,
+        lifecycle=lifecycle,
+        cases=(case,),
+        artifact_root=tmp_path,
+        environment={"backend": "autodesk_http"},
+    )
+
+    case_result = result["cases"][0]
+    assert result["status"] == "passed"
+    assert case_result["status"] == "passed"
+    assert case_result["target_capabilities"] == []
+    assert case_result["executor_completed"] is False
+    assert case_result["mutation_outcome"] == "not_dispatched"
+    assert case_result["output_denial"] == {
+        "passed": True,
+        "policy": "deny_io",
+        "error_code": "HOST_OUTPUT_DISABLED",
+        "transport_call_count_before": 0,
+        "transport_call_count_after": 0,
+        "transport_dispatch_delta": 0,
+        "checked_absent_file_count": 1,
+        "files_absent": True,
+        "output_executed": False,
+    }
+    assert runtime.executed_specs == []
+
+
+@pytest.mark.asyncio
 async def test_capability_pack_result_is_atomic_beyond_320_characters(
     tmp_path: Path,
 ) -> None:
@@ -333,3 +401,13 @@ async def test_executor_failure_still_closes_without_save_and_restores(
     assert result["restoration"]["passed"] is True
     assert lifecycle.events[-2:] == ["close_without_save", "restore"]
     assert runtime.oracle_calls == 1
+    serialized = (tmp_path / "capability-packs.json").read_text(encoding="utf-8")
+    assert PRIVATE_CANARY not in serialized
+    assert "data:user-document" not in serialized
+    assert "session:" not in serialized
+    assert set(result["cases"][0]["error"]) == {
+        "code",
+        "generic_message",
+        "correlation_id",
+        "retryable",
+    }

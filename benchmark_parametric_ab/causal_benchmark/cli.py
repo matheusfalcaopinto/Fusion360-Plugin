@@ -6,19 +6,24 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Sequence
 
 from .loader import load_causal_suite, suite_fingerprint
-from .models import CausalRunConfig, ExecutionObservation, OracleObservation, TrialContext
-from .runner import CausalBenchmarkRunner, LAYERS, ROUTE_LOCK_ENV
+from .models import (
+    CausalRunConfig,
+    ExecutionObservation,
+    OracleObservation,
+    TrialContext,
+)
+from .runner import CausalBenchmarkRunner, LAYERS, current_trial_context
 
 
 class DeterministicMockExecutor:
     """Contract simulator. It never imports an artifact or calls an external process."""
 
     async def execute(self, context: TrialContext) -> ExecutionObservation:
+        active_context = current_trial_context()
         material = (
             f"{context.seed}|{context.case_id}|{context.layer}|{context.arm_id}|"
             f"{context.repetition}|{int(context.warmup)}"
@@ -34,10 +39,14 @@ class DeterministicMockExecutor:
             verification_ms=duration * 0.10,
             call_count=2 if context.layer == "native_e2e" else 1,
             script_count=1,
-            bytes_transferred=sum(len(path) + len(digest) for path, digest in context.artifacts.items()),
+            bytes_transferred=sum(
+                len(path) + len(digest) for path, digest in context.artifacts.items()
+            ),
             mutation_dispatch_count=1 if context.risk != "read_only" else 0,
             observed_runner_id=context.runner_id,
-            observed_route_lock=os.environ.get(ROUTE_LOCK_ENV),
+            observed_route_lock=(
+                active_context.route_lock if active_context is not None else None
+            ),
             consumed_artifacts=dict(context.artifacts),
             trace={"source": "deterministic_mock", "external_processes": 0},
         )
@@ -54,7 +63,9 @@ class PassingMockOracle:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Validate or mock a Fusion causal benchmark suite")
+    parser = argparse.ArgumentParser(
+        description="Validate or mock a Fusion causal benchmark suite"
+    )
     parser.add_argument("--suite", required=True, type=Path)
     parser.add_argument("--mode", choices=("validate", "mock"), default="validate")
     parser.add_argument("--output", type=Path, default=Path("causal_outputs"))
@@ -62,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-id")
+    parser.add_argument("--expected-git-commit")
+    parser.add_argument("--expected-source-manifest-sha256")
     return parser
 
 
@@ -100,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repetitions=args.repetitions,
                 warmups=args.warmups,
                 seed=args.seed,
+                expected_git_commit=args.expected_git_commit,
+                expected_source_manifest_sha256=(args.expected_source_manifest_sha256),
             ),
             run_id=args.run_id,
         )

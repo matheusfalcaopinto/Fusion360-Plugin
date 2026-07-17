@@ -32,14 +32,14 @@ def selected_backend(configured: str | None = None) -> str:
 
 def create_fusion_client(
     *,
-    backend: str | None = None,
+    backend: str = "autodesk_http",
     endpoint: str | None = None,
     command: str | None = None,
-    transport_mode: str | None = None,
+    transport_mode: str = "legacy",
     faust_command: str | None = None,
     faust_cwd: str | Path | None = None,
-    remote_policy: str | None = None,
-    remote_allowlist: str | None = None,
+    remote_policy: str = "loopback_only",
+    remote_allowlist: str = "",
     bearer_token: str | None = None,
     manifest_store: Any = None,
     trace_logger: Any = None,
@@ -52,6 +52,8 @@ def create_fusion_client(
 ) -> RealMcpClient | StdioMcpClient:
     """Build exactly one configured provider; never try another on failure."""
 
+    # Environment is captured by RuntimeConfiguration at process startup.
+    # This constructor consumes only explicit values and deterministic defaults.
     selected = selected_backend(backend)
     if selected == "autodesk_http":
         return RealMcpClient(
@@ -73,10 +75,6 @@ def create_fusion_client(
 
     raw_command = faust_command
     legacy_command = command
-    if backend is None and faust_command is None:
-        raw_command = os.getenv("FUSION_FAUST_COMMAND")
-    if backend is None and command is None:
-        legacy_command = os.getenv("FUSION_MCP_COMMAND")
     if not raw_command and legacy_command:
         warnings.warn(
             "FUSION_MCP_COMMAND is deprecated for faust_stdio; use FUSION_FAUST_COMMAND",
@@ -89,8 +87,6 @@ def create_fusion_client(
     if not parts:
         raise ValueError("FUSION_FAUST_COMMAND must contain an executable")
     cwd = faust_cwd
-    if backend is None and faust_cwd is None:
-        cwd = os.getenv("FUSION_FAUST_CWD")
     return StdioMcpClient(
         command=parts[0],
         args=parts[1:],

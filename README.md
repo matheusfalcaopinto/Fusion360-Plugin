@@ -67,7 +67,7 @@ Path com lint, baseline e readback programatico.
 | Mudancas seguras | Exige preview, baseline, lotes pequenos e aborta em regressao visivel. |
 | Mock-first | Permite testar sem Autodesk Fusion aberto ou instalado. |
 | Dry-run | Valida intencao antes de qualquer escrita real. |
-| Verificacao | Confere corpos, parametros, bounding boxes, features, exports e screenshots. |
+| Verificacao | Confere corpos, parametros, bounding boxes, features e evidencia tipada/read-only; export e capture ficam somente em mock/dry-run na 0.4.1. |
 | Reparos limitados | Classifica falhas e evita loops abertos. |
 | Memoria de projeto | Schema v2 com origem, proveniencia, confianca, hash, expiracao, citacoes e taint. |
 | Journals e traces | Produz artefatos para auditoria e diagnostico. |
@@ -201,7 +201,14 @@ ficar desconhecido.
 - `FUSION_MCP_ENDPOINT` configurado quando o endpoint for remoto.
 - Documento descartavel ou checkpoint antes de qualquer escrita real.
 
-### Dependencias instaladas pelo wheel
+### Dependencias e locks de instalacao
+
+O contrato publico do wheel continua usando as faixas abaixo, mas os scripts de
+setup nao resolvem essas faixas diretamente. Eles instalam o conjunto transitivo
+exato de `harness/requirements/runtime.lock` com `--require-hashes` e
+`--only-binary=:all:`, e depois instalam o wheel com `--no-deps`. Os locks
+`test.lock`, `quality.lock` e `faust.lock` isolam os outros ambientes; os
+backends PEP 517 ficam em `build.lock` com versao e hash exatos.
 
 | Dependencia | Versao minima |
 | --- | --- |
@@ -231,23 +238,37 @@ cd Fusion360-Plugin
 bash scripts/setup.sh
 ```
 
-O setup cria `.venv`, instala o wheel em `wheels/` e executa uma checagem basica
-do launcher. Ao final, ele substitui o comando portatil de `.mcp.json` pelos
+O setup verifica wheel, metadata e locks antes de criar ou alterar `.venv`,
+descarta qualquer venv anterior e cria uma nova. Pip e carregado somente pelo
+helper isolado com `python -I -S -B`: nenhuma `.pth` ou customizacao de site
+e processada. O setup baixa os wheels hash-pinned do lock para uma wheelhouse
+privada, instala com `--no-compile`/`--no-index`, compara os arquivos instalados
+byte a byte aos wheels confiaveis e entao executa `pip check`. Ao final, ele
+substitui o comando portatil de `.mcp.json` pelos
 caminhos absolutos do interpretador e do launcher desta instalacao. Isso evita
-o alias `WindowsApps` no Windows e torna explicito qual ambiente hospeda o MCP.
+o alias `WindowsApps` no Windows, inicia o MCP com `-I -B` e torna explicito qual
+ambiente hospeda o servidor. `-B` permanece no runtime para que uma execucao
+legitima nao recrie bytecode que uma verificacao de parity posterior teria de
+tratar como entrada nao ancorada.
 
-Faust e opcional e explicitamente pinado:
+O interpretador do preinstall deve existir fora da `.venv` que sera descartada;
+defina `FUSION_AGENT_PYTHON` explicitamente se o `PATH` ativo apontar para essa
+venv. Uma distribuicao com wheel rejeita `FUSION_AGENT_HARNESS_ROOT`: esse
+override continua reservado ao modo de desenvolvimento sem wheel. O runtime
+gravado no `.mcp.json` deve ser o caminho lexical exato da `.venv` do plugin;
+roots symlink/junction/reparse nao sao aceitas.
+
+Faust e opcional e instalado pelo lock dedicado:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install "fusion360-mcp-server==0.1.0"
-.\.venv\Scripts\python.exe scripts\configure_mcp.py --plugin-root . --python .\.venv\Scripts\python.exe --backend faust_stdio
+.\scripts\setup.ps1 -Backend faust_stdio
 ```
 
 Fusion Data nao tem URL presumida no repositorio. Habilite-o somente com uma
 URL HTTPS confirmada pela documentacao/conexao oficial da Autodesk:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\configure_mcp.py --plugin-root . --python .\.venv\Scripts\python.exe --enable-fusion-data --fusion-data-url "<URL-oficial>"
+.\.venv\Scripts\python.exe -I -B scripts\configure_mcp.py --plugin-root . --python .\.venv\Scripts\python.exe --enable-fusion-data --fusion-data-url "<URL-oficial>"
 ```
 
 O Codex gerencia OAuth e approvals; nenhum token Fusion Data entra no ambiente
@@ -291,11 +312,13 @@ wheels/
 harness/
 ```
 
-Em `scripts/`, copie somente `build-distribution.py`, `configure_mcp.py`,
-`fusion_agent_codex_mcp_launcher.py`, `setup.ps1`, `setup.sh` e
-`validate_plugin.py`. Nao leve `.venv`, logs, manifests, outputs, workspace,
-arquivos de teste locais ou outros scripts de projeto para a fonte pessoal; o
-cache do Codex inclui o conteudo da origem do plugin.
+Em `scripts/`, copie somente `build-distribution.py`, `bundle_integrity.py`,
+`check-ci-release-gate.py`, `configure_mcp.py`,
+`fusion_agent_codex_mcp_launcher.py`, `preinstall_verify.py`,
+`run-isolated-pip.py`, `setup.ps1`, `setup.sh`, `validate_plugin.py` e
+`verify_installation_parity.py`. Nao leve `.venv`, logs, manifests, outputs,
+workspace, arquivos de teste locais ou outros scripts de projeto para a fonte
+pessoal; o cache do Codex inclui o conteudo da origem do plugin.
 
 O launcher calcula a raiz do plugin a partir da pasta `scripts/`. Mover apenas o
 launcher ou apenas o wheel quebra a resolucao de caminhos.
@@ -305,13 +328,13 @@ launcher ou apenas o wheel quebra a resolucao de caminhos.
 Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\fusion_agent_codex_mcp_launcher.py --check
+.\.venv\Scripts\python.exe -I -B scripts\fusion_agent_codex_mcp_launcher.py --check
 ```
 
 Linux/macOS:
 
 ```bash
-./.venv/bin/python scripts/fusion_agent_codex_mcp_launcher.py --check
+./.venv/bin/python -I -B scripts/fusion_agent_codex_mcp_launcher.py --check
 ```
 
 Saida esperada:
@@ -375,20 +398,23 @@ Checklist de uso:
   com `fusion_agent_native_read`, delimite alvos com
   `fusion_agent_targeted_inspect` e declare assertions no
   `fusion_agent_fast_execute`;
-- para criacao CAD conhecida, prefira CadSpec v2 estrito; CadSpec v1 continua
-  aceito somente durante a 0.4.1, depreciado, fail-closed e sem host I/O fora
-  de uma root aprovada; sua remocao esta programada para a 0.5.0;
+- para criacao CAD conhecida, use CadSpec v2 estrito. CadSpec v1 continua
+  parseavel durante a 0.4.1 somente para validacao, mock e dry-run; execucao
+  real v1 retorna `AUTHORITY_DENIED` ate que o grafo inteiro seja normalizado
+  para v2. Import real v2 exige root aprovada e output real permanece
+  `deny_io`; a remocao de v1 esta programada para a 0.5.0;
 - para auditoria, inventario de hub, reorg, cleanup ou delete, nao use o
   planner; use `fusion_agent_compact_snapshot`,
   `fusion_agent_safe_change_preview`; inventario cloud pertence ao MCP opcional
   `fusion_data`;
 - use Safe Harness para delete, cleanup, bulk, move, visibilidade,
   componentize, entidades ocultas/importadas/compartilhadas e ambiguidade;
-- use `fusion_agent_dry_run_session` e `fusion_agent_run_session` para receitas
-  CadSpec legadas quando forem a rota recomendada;
+- use `fusion_agent_dry_run_session` para revisar receitas CadSpec v1 legadas;
+  para execucao real, forneca v2 ou um prompt que o planner normalize
+  integralmente para v2 antes do dispatch;
 - valide com `fusion_agent_verify_active_design`;
-- capture evidencia visual com `fusion_agent_capture_viewport` somente como
-  evidencia secundaria e exija `evidence_quality=verified_file`;
+- use receipts de `fusion_agent_capture_viewport` somente em mock/dry-run; em
+  sessao real, colete evidencia tipada/read-only sem criar arquivo de output;
 - leia artefatos e traces quando houver divergencias.
 
 > [!NOTE]
@@ -438,7 +464,7 @@ revalidado antes das chamadas para bloquear rebinding.
 | `FUSION_AGENT_CODEX` | Nao | Definida como `1` pelo plugin para indicar execucao via Codex. |
 | `FUSION_AGENT_PYTHON` | Opcional | Python bootstrap preexistente usado para verificar o bundle e criar `.venv`; o MCP instalado sempre usa o Python contido na `.venv` do plugin. |
 | `FUSION_AGENT_HARNESS_ROOT` | Dev only | Checkout fonte do harness, usado em vez do wheel instalado. |
-| `FUSION_AGENT_AUTHORITY_POLICY_PATH` | Host I/O real | JSON imutavel de startup com roots de import/export, formatos, overwrite e TTL. Sem policy valida, host I/O real e negado. |
+| `FUSION_AGENT_AUTHORITY_POLICY_PATH` | Host I/O real | JSON imutavel de startup. Imports usam roots/formats/TTL; campos de export/overwrite permanecem parseados por compatibilidade, mas output real 0.4.1 e `deny_io`. |
 | `FUSION_AGENT_TOOL_PROFILE` | Opcional | `normal` (padrao), `advanced`, `diagnostic`, `benchmark` ou `all`. |
 | `FUSION_AGENT_BACKEND` | Opcional | `autodesk_http` (padrao) ou `faust_stdio`; nunca ha fallback automatico. |
 | `FUSION_MCP_ENDPOINT` | Real Fusion Autodesk | Endpoint do backend local Autodesk; loopback-only por padrao. |
@@ -468,8 +494,10 @@ revalidado antes das chamadas para bloquear rebinding.
 
 ### Authority policy para host I/O
 
-A 0.4.1 nao trata um path fornecido pelo caller como autorizacao. Import/export
-real exige uma policy local carregada no startup. Exemplo minimo:
+A 0.4.1 nao trata um path fornecido pelo caller como autorizacao. Import real
+exige uma policy local carregada no startup. O schema ainda aceita
+`export_roots` e `allow_overwrite` para compatibilidade de configuracao, mas
+capture/export real ficam estruturalmente em `deny_io`. Exemplo minimo:
 
 ```json
 {
@@ -479,24 +507,27 @@ real exige uma policy local carregada no startup. Exemplo minimo:
   "import_roots": [
     {"id": "incoming", "path": "C:/FusionAgent/incoming", "formats": ["step", "stp", "f3d"], "default": true}
   ],
-  "export_roots": [
-    {"id": "outgoing", "path": "C:/FusionAgent/outgoing", "formats": ["step", "stp", "stl", "png"], "default": true}
-  ]
+  "export_roots": []
 }
 ```
 
 Specs v2 novas devem preferir `HostFileRef` (`root_id` + `relative_path`). O
-campo legado `path` continua aceito na 0.4.1 somente quando resolve, sem
-ambiguidade, dentro de uma root configurada. Roots completas nunca aparecem em
-readiness; somente IDs e o digest da policy sao publicos. Overwrite exige tanto
-pedido explicito no spec quanto `allow_overwrite: true` no nivel superior da
-policy. O campo `default` identifica a unica root que pode resolver um `path`
-legado relativo; ele nao amplia os formatos nem o acesso da root.
-Exports e captures PNG do CadSpec v1 continuam aceitando nomes relativos por
-um ciclo de compatibilidade, mas somente quando `output_dir` esta contido em
-uma export root aprovada. Eles recebem capability single-use, revalidacao no
-sink e a mesma regra de overwrite; sem policy valida, apenas host I/O real e
-bloqueado, enquanto mock e dry-run continuam confinados ao output local.
+campo legado de import `path` continua aceito na 0.4.1 somente quando resolve,
+sem ambiguidade, dentro de uma import root configurada. Roots completas nunca
+aparecem em readiness; somente IDs de import e o digest da policy sao publicos.
+`allow_overwrite` nao habilita output nesta release e nao deve ser tratado como
+promessa de overwrite. Mock e dry-run continuam confinados ao output local.
+
+O boundary path-only do Fusion nao oferece uma primitiva portavel que feche
+todos os aliases e trocas de identidade no sink. Por isso, na 0.4.1, capture e
+export real falham com `HOST_OUTPUT_DISABLED` em Windows, Linux e macOS antes de
+qualquer binding, capability ou chamada ao provider. As 12 ferramentas do
+perfil `normal`, incluindo `fusion_agent_capture_viewport`, permanecem
+anunciadas somente por compatibilidade; readiness publica
+`output_staging=deny_io`, `output_enabled=false` e
+`overwrite_supported=false`. Import real permanece separado: Windows usa um
+handle compartilhado apenas para leitura durante o consumo, Linux usa `memfd`
+selado e plataformas sem primitiva segura falham fechado.
 
 Capabilities sao vinculadas a sessao, documento, operacao, spec digest, path
 canonico ou entidade CAD e sao consumidas uma unica vez. Mismatch, expiry,
@@ -545,7 +576,7 @@ ferramenta escondida falha antes do handler com
 | Perfil | Superficie |
 | --- | --- |
 | `normal` | 12 ferramentas para readiness, leitura direcionada, snapshot, CadSpec, sessao, verificacao, Safe Change, recovery e viewport. |
-| `advanced` | `normal` mais Fast Path, inspecao ampla, dry-run/export, inventario e memoria. |
+| `advanced` | `normal` mais Fast Path, inspecao ampla, dry-run/export de CadSpec JSON local, inventario e memoria. |
 | `diagnostic` | Readiness, doctor, probe, health, discovery, mapping e inspecoes somente leitura. |
 | `benchmark` | Runner, relatorios e leituras/verificacoes de fixtures isoladas; mutacao direta fica oculta. |
 | `all` | As 35 ferramentas legadas da serie 0.x. |
@@ -562,7 +593,7 @@ A skill agrupa a superficie completa de compatibilidade em familias:
 | --- | --- |
 | Sessao e ambiente | `fusion_agent_doctor`, `fusion_agent_readiness_report`, `fusion_agent_probe`, `fusion_agent_session_health`, `fusion_agent_inspect`, `fusion_agent_run_session`, `fusion_agent_dry_run_session`, `fusion_agent_list_sessions` |
 | Native Fast Path | `fusion_agent_native_read`, `fusion_agent_targeted_inspect`, `fusion_agent_fast_execute`, `fusion_agent_recover_change` |
-| Verificacao e evidencia | `fusion_agent_verify_active_design`, `fusion_agent_compact_snapshot`, `fusion_agent_capture_viewport` |
+| Verificacao e evidencia | `fusion_agent_verify_active_design`, `fusion_agent_compact_snapshot`; `fusion_agent_capture_viewport` permanece somente para mock/dry-run na 0.4.1 |
 | Inventario de hub | `fusion_agent_hub_inventory` |
 | Mudancas seguras | `fusion_agent_safe_change_preview`, `fusion_agent_safe_change_apply` |
 | Artefatos e traces | `fusion_agent_read_session_artifact`, `fusion_agent_read_trace` |
@@ -582,10 +613,24 @@ de correcao. Mutacao real exige `confirm_real_benchmark=true`; um documento
 original nao salvo e sem identidade persistente tambem bloqueia antes da
 criacao da fixture.
 
+Um resultado publico so entra no score quando cada trial traz um
+`BenchmarkEvidenceEnvelope` completo e tipado, vinculado ao subject, task,
+fixture, run e oracle independente, alem de revisao observada e proveniencia de
+preflight. `completed` sem esse envelope continua visivel no relatorio, mas nao
+torna o run scoreable.
+
 O Fast Execute mede o payload final, ja com o guard de identidade do documento
 e o preambulo de normalizacao dos streams. Acima do limite configurado, retorna
 `SCRIPT_SIZE_LIMIT_EXCEEDED` antes do dispatch e recomenda decompor a tarefa ou
 usar o Safe Harness. Ele nunca trunca nem reenvia silenciosamente o script.
+Para mutacoes, o payload protegido inclui ainda um probe compacto e
+integrity-bound que recalcula o mesmo fingerprint no sink, dentro da mesma
+chamada sincrona e imediatamente antes de resolver targets e executar o
+`user_run`. Drift ocorrido depois do ultimo probe externo revoga a capability e
+falha antes de qualquer mutacao CAD. A rejeicao retorna por um envelope de
+controle tipado, com token descartavel e digest da operacao; o host valida ambos
+depois da normalizacao MCP e nunca depende de texto bruto de excecao para
+classificar `blocked_before_apply`.
 
 A investigação Claude/Codex usa uma matriz causal separada do benchmark
 safe-vs-fast do produto. Consulte
@@ -679,8 +724,8 @@ targeted_inspect e busque memory_search. Depois crie uma CAD Spec com unidades e
 120 mm x 80 mm x 8 mm, quatro furos M5 a 12 mm das bordas, chanfro externo de
 1 mm e parametros nomeados. Rode dry-run primeiro. Nao execute real ate listar
 riscos, plano, nomes esperados e verificacoes. Depois de aprovado, execute em
-documento descartavel, valide bounding box, furos, nomes, feature health e
-capture viewport.
+  documento descartavel e valide bounding box, furos, nomes e feature health
+  com evidencia tipada/read-only. Nao solicite export ou capture real na 0.4.1.
 ```
 
 </details>
@@ -698,9 +743,16 @@ capture viewport.
 |   `-- PULL_REQUEST_TEMPLATE.md
 |-- scripts/
 |   |-- build-distribution.py
+|   |-- bundle_integrity.py
+|   |-- check-ci-release-gate.py
+|   |-- configure_mcp.py
 |   |-- fusion_agent_codex_mcp_launcher.py
+|   |-- preinstall_verify.py
+|   |-- run-isolated-pip.py
 |   |-- setup.ps1
-|   `-- setup.sh
+|   |-- setup.sh
+|   |-- validate_plugin.py
+|   `-- verify_installation_parity.py
 |-- skills/
 |   `-- fusion-cad-harness/
 |       `-- SKILL.md
@@ -719,6 +771,7 @@ capture viewport.
 |-- CONTRIBUTING.md
 |-- LICENSE
 |-- README.md
+|-- SECURITY_041_CLOSURE.md
 `-- SECURITY.md
 ```
 
@@ -726,29 +779,44 @@ capture viewport.
 
 ### Migracao para 0.4.1
 
-- Converta import/export CadSpec v2 para `HostFileRef` com `root_id` e
-  `relative_path`; mantenha paths legados apenas durante a migracao e somente
-  quando resolvem sem ambiguidade dentro de uma root aprovada.
+- Converta imports CadSpec v2 para `HostFileRef` com `root_id` e
+  `relative_path`. Specs de export podem continuar parseando por compatibilidade,
+  mas execucao real retorna `HOST_OUTPUT_DISABLED` durante toda a 0.4.1.
 - Trate verificacao como `passed`, `failed` ou `incomplete`. O campo legado
   `VerificationResult.passed` e apenas uma projecao e vale `true` somente para
   `status=passed`; `incomplete` nunca autoriza reparo ou nova mutacao.
-- CadSpec v1 e Faust permanecem depreciados e fail-closed na 0.4.1. O adapter
-  Faust anuncia somente `parameter.set` com valor numerico literal, unidade e
-  prova lossless; formulas, referencias, geometria, joints, analises e host I/O
-  nao sao anunciados nem executados. A remocao desses caminhos legados pode
-  ocorrer a partir da 0.5.0.
+- CadSpec v1 permanece parseavel para validacao, mock e dry-run, mas toda
+  execucao ou replay real v1 falha antes da primeira chamada ao provider porque
+  o formato nao transporta identidade documental e de target ate o sink. Migre
+  o grafo inteiro para v2; normalizar apenas uma feature nao concede autoridade.
+  CadSpec v1 e Faust permanecem depreciados e fail-closed na 0.4.1. O adapter
+  Faust nao anuncia nem executa mutacoes enquanto o provider nao puder preservar
+  identidade documental e de target ate o sink; isso inclui `parameter.set`,
+  geometria, joints, analises e host I/O. A selecao explicita do backend e o
+  adapter depreciado permanecem para compatibilidade fail-closed. A remocao
+  desses caminhos legados pode ocorrer a partir da 0.5.0.
 - Antes de instalar, `preinstall_verify.py` valida a bijecao ZIP/`RECORD`,
-  hashes, tamanhos, metadata, versao e paridade fonte-wheel. Uma falha ocorre
-  antes da criacao ou alteracao da venv.
+  hashes, tamanhos, versao, `Requires-Dist`/extras contra o `pyproject.toml` e
+  os digests de `pyproject`, `uv.lock` e todos os requirements locks selados no
+  source manifest. Uma falha ocorre antes da criacao ou alteracao da venv. A
+  instalacao sempre recria a venv, nao processa hooks de startup durante pip,
+  nao gera bytecode e usa somente os wheels hash-pinned baixados para uma
+  wheelhouse privada. A verificacao pos-install ancora cada arquivo ao wheel
+  confiavel e rejeita `RECORD` coordenadamente adulterado, bytecode, reparse
+  point, customizer, distribuicao ou versao fora do lock selecionado.
+- Limpe `FUSION_AGENT_HARNESS_ROOT` ao instalar a release. O launcher ignora
+  `FUSION_AGENT_PYTHON` externo quando existe wheel e preserva `-I -B` mesmo se
+  precisar iniciar o interpretador configurado em subprocesso.
 
 <details>
 <summary>Host I/O retorna <code>AUTHORITY_DENIED</code></summary>
 
-Confirme que `FUSION_AGENT_AUTHORITY_POLICY_PATH` apontava para uma policy
-valida quando o runtime iniciou, que o `root_id`, formato e path relativo estao
-na mesma root aprovada e que overwrite foi autorizado tanto na policy quanto na
-operacao. A policy e imutavel por processo: depois de corrigi-la, reinicie o
-runtime/Codex Desktop em vez de alterar ambiente durante uma sessao.
+Para import, confirme que `FUSION_AGENT_AUTHORITY_POLICY_PATH` apontava para uma
+policy valida quando o runtime iniciou e que `root_id`, formato e path relativo
+estao na mesma import root aprovada. Para capture/export real, o retorno
+`HOST_OUTPUT_DISABLED` e esperado na 0.4.1: `export_roots` e `allow_overwrite`
+nao removem o rollback `deny_io`. A policy e imutavel por processo; reinicie o
+runtime/Codex Desktop depois de alterar a configuracao.
 
 </details>
 
@@ -765,14 +833,32 @@ $env:FUSION_AGENT_PYTHON = "C:\Caminho\Para\python.exe"
 </details>
 
 <details>
+<summary><code>FUSION_AGENT_HARNESS_ROOT is forbidden</code></summary>
+
+Uma release com wheel nao pode herdar fonte de desenvolvimento. Limpe o
+override e rode o setup outra vez:
+
+```powershell
+Remove-Item Env:FUSION_AGENT_HARNESS_ROOT -ErrorAction SilentlyContinue
+$env:FUSION_AGENT_PYTHON = "C:\Caminho\Externo\python.exe"
+.\scripts\setup.ps1
+```
+
+`FUSION_AGENT_PYTHON` deve apontar para um Python confiavel fora da `.venv` do
+plugin antigo; ele verifica o bundle e cria a venv nova, mas nao vira uma rota
+alternativa para o launcher da release.
+
+</details>
+
+<details>
 <summary><code>installed_server_available=False</code></summary>
 
 O wheel pode nao ter sido instalado no Python que o launcher esta usando.
 Confira:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip show fusion-agent-harness
-.\.venv\Scripts\python.exe scripts\fusion_agent_codex_mcp_launcher.py --check
+.\.venv\Scripts\python.exe -I -B -c "from importlib.metadata import version; print(version('fusion-agent-harness'))"
+.\.venv\Scripts\python.exe -I -B scripts\fusion_agent_codex_mcp_launcher.py --check
 ```
 
 Se necessario, rode `.\scripts\setup.ps1` novamente.
@@ -885,8 +971,11 @@ Versao atual: `0.4.1`.
 
 Checklist de release:
 
+A rastreabilidade finding -> reproducer -> controle positivo -> bypass/zero
+effect fica em [SECURITY_041_CLOSURE.md](SECURITY_041_CLOSURE.md).
+
 1. Rode a suite completa contra `harness/`.
-2. Rode `python scripts/build-distribution.py` duas vezes e confirme SHA-256
+2. Rode `python -B scripts/build-distribution.py` duas vezes e confirme SHA-256
    identico.
    Compare evidencia de desempenho no mesmo workload com
    `check-performance-gate.py`; o gate rejeita p95 no-I/O somente quando a
@@ -898,18 +987,28 @@ Checklist de release:
 3. Gere
    `fusion_agent_harness-<versao>-py3-none-any.whl`.
 4. Mantenha exatamente um wheel intencional em `wheels/`.
-5. Rode `python scripts/validate_plugin.py`, o launcher com `--check` e a suite
-   `python -m pytest -q`.
-   O job de qualidade cria seu ambiente com `uv sync --frozen` e executa os
-   gates com `uv run --frozen`; `uv lock --check`, dependency check e
-   `pip-audit` falham a release se o lock ou o ambiente divergir.
+5. Rode `python -I -B scripts/validate_plugin.py`, o launcher com `-I -B --check`
+   e a suite `python -B -m pytest -q`.
+   Os jobs instalam `test.lock` ou `quality.lock` com `--require-hashes`, nunca
+   executam setup editavel do checkout candidato e instalam o wheel com
+   `--no-deps`; `uv lock --check`, `pip check` e `pip-audit` falham a release
+   se o lock ou o ambiente divergir.
    `setup.ps1`/`setup.sh` exigem exatamente um wheel e executam
    `preinstall_verify.py` antes de criar venv ou chamar pip; membro extra,
    inclusive quando registrado no `RECORD`, ou qualquer divergencia entre a
-   allowlist do source manifest, wheel e `RECORD` interrompe a instalacao.
+    allowlist do source manifest, wheel e `RECORD` interrompe a instalacao.
+    O mesmo vale para metadata de dependencia, lock adulterado, pacote instalado
+    extra ou versao diferente da selecionada pelo lock. Cada venv de release e
+    recriada; pip roda sem `site`, instala sem bytecode e sem indice a partir da
+    wheelhouse hash-pinned. No pos-install, cada arquivo precisa corresponder aos
+    bytes do wheel confiavel, nao ao seu proprio `RECORD`; bytecode, startup
+    customizers, symlinks/junctions e wrappers divergentes falham fechado.
 6. Congele o SHA candidato, publique a branch e confirme que os SHAs local e
    remoto sao identicos. Qualquer alteracao posterior cria outro candidato e
    reinicia cobertura, performance, CI, Fusion real e a contagem de nightlies.
+   Antes das nightlies agendadas, faca fast-forward da branch default para esse
+   mesmo SHA, sem merge commit nem alteracao; o CI bem-sucedido da branch
+   `codex/fusion-agent-0.4.1` continua sendo a prova exigida pela tag.
 7. Aplique o cachebuster `0.4.1+codex.<timestamp-UTC>` exclusivamente com o
    helper `update_plugin_cachebuster.py` do `plugin-creator`, somente depois
    desses gates e sem editar a marketplace manualmente.
@@ -928,18 +1027,26 @@ Checklist de release:
    O smoke chama somente readiness e deve provar zero chamadas ao Fusion;
    tasks e processos Desktop existentes podem manter a superficie MCP antiga
    em memoria.
-10. Em etapa separada, valide I/O permitida/negada, overwrite, CadSpec v2,
-    adapters v1/Faust, Safe Delete, recovery e concorrencia somente em
-    documentos e roots descartaveis.
+10. Em etapa separada, valide import permitido/negado e a rejeicao global de
+    capture/export real com zero dispatch; overwrite deve permanecer nao
+    suportado. Use somente documentos e roots descartaveis para CadSpec v2,
+    adapters v1/Faust, Safe Delete, recovery e concorrencia.
 11. Exija tres nightlies agendadas consecutivas, completas e no mesmo SHA. O
     run apaga provas rastreadas anteriores e vincula a nova prova ao SHA,
     `run_id` e `run_attempt`. O gate baixa somente `nightly-public/`, autentica
     `SHA256SUMS`, exige os dois checks publicos como `passed` e rejeita
     `not_run`, prova stale, falha ou SHA diferente.
+    O runner Fusion so inicia quando a ref e a branch default, o SHA coincide
+    com `FUSION_AGENT_RELEASE_CANDIDATE_SHA` e o environment
+    `fusion-real-nightly` foi aprovado.
 12. Nao publique RC. Crie a tag imutavel `v0.4.1` somente depois desses gates.
-    O workflow da tag recompila duas vezes, compara o wheel rastreado e publica
-    exatamente o wheel/ZIP validado, notas e `SHA256SUMS`. A tag nunca e movida;
-    qualquer correcao posterior sera `0.4.2`.
+    O workflow da tag exige primeiro um CI de `push` ja concluido com sucesso na
+    branch candidata `codex/fusion-agent-0.4.1` e no SHA exato; o CI simultaneo
+    da tag nao satisfaz esse gate. Depois recompila duas vezes, compara o wheel
+    rastreado e publica exatamente o wheel/ZIP validado, `CANDIDATE_SHA`, notas
+    e `SHA256SUMS`. O job privilegiado reconsulta e re-peela a tag remota
+    imediatamente antes de `gh release create`; a tag nunca e movida e qualquer
+    correcao posterior sera `0.4.2`.
 
 ## Licenca
 

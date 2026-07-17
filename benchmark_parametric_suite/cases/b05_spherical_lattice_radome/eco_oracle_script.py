@@ -9,7 +9,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -56,17 +70,21 @@ def run(_context: str):
     if document is None or design is None:
         raise RuntimeError("B05 ECO oracle requires an active Fusion design")
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+            }
+        )
 
     check(
         "document.identity_preserved",
@@ -88,29 +106,48 @@ def run(_context: str):
     failures = []
     for name, expected in changed.items():
         observed = parameters.get(name, {})
-        if not _close(observed.get("value"), expected[0], 0.0001) or observed.get("expression") != expected[1]:
+        if (
+            not _close(observed.get("value"), expected[0], 0.0001)
+            or observed.get("expression") != expected[1]
+        ):
             failures.append({"name": name, "expected": expected, "observed": observed})
     derived_failures = []
     if not _close(parameters.get("BaseFlangeID", {}).get("value"), 20.4, 0.0001):
-        derived_failures.append({"name": "BaseFlangeID", "observed": parameters.get("BaseFlangeID")})
+        derived_failures.append(
+            {"name": "BaseFlangeID", "observed": parameters.get("BaseFlangeID")}
+        )
     for index, angle_degrees in enumerate([15.0, 30.0, 45.0, 60.0, 75.0], start=1):
         angle = math.radians(angle_degrees)
         expected_radius = 10.5 * math.cos(angle)
         expected_height = 10.5 * math.sin(angle)
         if not (
-            _close(parameters.get(f"Ring{index}Radius", {}).get("value"), expected_radius, 0.0001)
-            and _close(parameters.get(f"Ring{index}Height", {}).get("value"), expected_height, 0.0001)
+            _close(
+                parameters.get(f"Ring{index}Radius", {}).get("value"),
+                expected_radius,
+                0.0001,
+            )
+            and _close(
+                parameters.get(f"Ring{index}Height", {}).get("value"),
+                expected_height,
+                0.0001,
+            )
         ):
-            derived_failures.append({
-                "ring": index,
-                "radius": parameters.get(f"Ring{index}Radius"),
-                "height": parameters.get(f"Ring{index}Height"),
-            })
+            derived_failures.append(
+                {
+                    "ring": index,
+                    "radius": parameters.get(f"Ring{index}Radius"),
+                    "height": parameters.get(f"Ring{index}Height"),
+                }
+            )
     check(
         "parameters.eco_and_dependencies",
         len(parameters) == 28 and not failures and not derived_failures,
         {"changed": changed, "derived_ring_radius_mm": 105.0, "parameter_count": 28},
-        {"failures": failures, "derived_failures": derived_failures, "count": len(parameters)},
+        {
+            "failures": failures,
+            "derived_failures": derived_failures,
+            "count": len(parameters),
+        },
     )
 
     bodies = _items(root.bRepBodies)
@@ -119,7 +156,9 @@ def run(_context: str):
         "topology.single_connected_solid_after_eco",
         body is not None and body.isValid and body.isSolid and body.lumps.count == 1,
         {"bodies": 1, "solid": True, "lumps": 1},
-        None if body is None else {"bodies": len(bodies), "solid": body.isSolid, "lumps": body.lumps.count},
+        None
+        if body is None
+        else {"bodies": len(bodies), "solid": body.isSolid, "lumps": body.lumps.count},
     )
     if body is not None:
         bbox = _bbox_mm(body)
@@ -145,7 +184,8 @@ def run(_context: str):
         }
         check(
             "geometry.eco_hollow_and_flange",
-            probes == {
+            probes
+            == {
                 "cavity": "outside",
                 "crown_shell": "inside",
                 "above": "outside",
@@ -165,22 +205,33 @@ def run(_context: str):
         bolt_radii = [math.hypot(center[0], center[1]) for center in bolt_centers]
         check(
             "holes.eco_bolt_circle_16x",
-            len(bolt_centers) == 16 and all(_close(radius, 105.0, 0.1) for radius in bolt_radii),
+            len(bolt_centers) == 16
+            and all(_close(radius, 105.0, 0.1) for radius in bolt_radii),
             {"count": 16, "circle_radius_mm": 105.0},
             {"count": len(bolt_centers), "radii_mm": bolt_radii},
         )
     else:
-        for check_id in ("geometry.eco_bbox", "geometry.eco_hollow_and_flange", "holes.eco_bolt_circle_16x"):
+        for check_id in (
+            "geometry.eco_bbox",
+            "geometry.eco_hollow_and_flange",
+            "holes.eco_bolt_circle_16x",
+        ):
             check(check_id, False, "one valid body", None)
 
-    meridian_pattern = root.features.circularPatternFeatures.itemByName("CP01_Meridional_Ribs")
+    meridian_pattern = root.features.circularPatternFeatures.itemByName(
+        "CP01_Meridional_Ribs"
+    )
     bolt_pattern = root.features.circularPatternFeatures.itemByName("CP02_Base_Bolts")
     pattern_data = {
-        "meridians": None if meridian_pattern is None else {
+        "meridians": None
+        if meridian_pattern is None
+        else {
             "quantity": meridian_pattern.quantity.value,
             "elements": meridian_pattern.patternElements.count,
         },
-        "bolts": None if bolt_pattern is None else {
+        "bolts": None
+        if bolt_pattern is None
+        else {
             "quantity": bolt_pattern.quantity.value,
             "elements": bolt_pattern.patternElements.count,
         },
@@ -198,7 +249,11 @@ def run(_context: str):
     )
     features = _items(root.features)
     feature_errors = [
-        {"name": feature.name, "valid": feature.isValid, "message": feature.errorOrWarningMessage}
+        {
+            "name": feature.name,
+            "valid": feature.isValid,
+            "message": feature.errorOrWarningMessage,
+        }
         for feature in features
         if not feature.isValid or feature.errorOrWarningMessage
     ]
@@ -231,6 +286,12 @@ def run(_context: str):
             "faces": None if body is None else body.faces.count,
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

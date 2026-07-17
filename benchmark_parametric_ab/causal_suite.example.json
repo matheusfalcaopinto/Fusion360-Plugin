@@ -22,7 +22,6 @@
       "system": "Codex / Fusion Agent",
       "metadata": {
         "artifact_source": "codex_exec_output_schema",
-        "codex_bin": "C:\\Users\\mathe\\AppData\\Local\\OpenAI\\Codex\\bin\\a7c12ebff69fb123\\codex.exe",
         "codex_cli_version": "0.144.0-alpha.4"
       }
     }

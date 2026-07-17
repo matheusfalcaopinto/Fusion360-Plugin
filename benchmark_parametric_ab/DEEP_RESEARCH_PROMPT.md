@@ -50,7 +50,7 @@ A reconstrução inicial identificou três falhas principais:
 2. O Codex tratou o argumento geométrico do slot como metade do comprimento total externo. Para obter comprimento total `L` e largura `W`, a construção usada exigia distância entre centros `L - W`, ou meia distância `(L - W)/2`, não `L/2`.
 3. O contrato de verificação foi derivado dos nomes e expectativas do próprio script. Ele validou o corpo principal e a existência das features, mas não compilou os requisitos do usuário em invariantes globais independentes, como `body_count == 1`, `lump_count == 1`, bbox global, conectividade dos gussets, comprimento real dos slots e restrição completa dos sketches.
 
-Considere os arquivos anexados `REPORT.md`, `results.json`, `benchmark_prompt.txt`, `benchmark_definition.json`, `codex_build_script.py` e os traces/audits como evidência primária desta execução. Se algum deles não estiver disponível, trabalhe com os dados autocontidos acima e explicite a limitação. “Fable 5 Alto” é apenas o rótulo observado na interface; não presuma que seja o nome público ou canônico de um modelo.
+Considere `REPORT.md` apenas como registro histórico não scoreable. O `results.json` legado e traces/audits raw foram removidos por não estarem vinculados à revisão/documento e por conterem referências privadas. Qualquer nova análise deve usar somente artifacts públicos de um run 0.4.1 com `RevisionIdentity` exata, provenance completa, oracle independente e comparator elegível. “Fable 5 Alto” é apenas o rótulo observado na interface; não presuma que seja o nome público ou canônico de um modelo.
 
 ## Arquitetura atual que deve ser preservada
 

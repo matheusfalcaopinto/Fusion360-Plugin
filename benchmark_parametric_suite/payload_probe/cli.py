@@ -23,16 +23,22 @@ def _production_protector() -> Callable[[str], str]:
     if packages.exists():
         sys.path.insert(0, str(packages))
         loaded = sys.modules.get("fusion_mcp_adapter")
-        loaded_file = Path(str(getattr(loaded, "__file__", ""))).resolve() if loaded else None
+        loaded_file = (
+            Path(str(getattr(loaded, "__file__", ""))).resolve() if loaded else None
+        )
         if loaded_file is not None and packages not in loaded_file.parents:
             for name in tuple(sys.modules):
-                if name == "fusion_mcp_adapter" or name.startswith("fusion_mcp_adapter."):
+                if name == "fusion_mcp_adapter" or name.startswith(
+                    "fusion_mcp_adapter."
+                ):
                     sys.modules.pop(name, None)
         importlib.invalidate_caches()
     try:
         from fusion_mcp_adapter.execute_guard import normalize_execute_script
     except ModuleNotFoundError as exc:
-        raise RuntimeError("canonical fusion_mcp_adapter.execute_guard is unavailable") from exc
+        raise RuntimeError(
+            "canonical fusion_mcp_adapter.execute_guard is unavailable"
+        ) from exc
     return normalize_execute_script
 
 
@@ -61,7 +67,9 @@ def validate(matrix_path: str | Path) -> dict[str, object]:
         "dispatch_count": 0,
         "experiment_id": matrix.experiment_id,
         "target_count": len(scripts),
-        "target_protected_bytes": [script.protected_payload_bytes for script in scripts],
+        "target_protected_bytes": [
+            script.protected_payload_bytes for script in scripts
+        ],
         "ast_topology_sha256": next(iter(topologies)),
         "maximum_target_bytes": matrix.maximum_target_bytes,
         "historical_observations_used_as_expectations": False,

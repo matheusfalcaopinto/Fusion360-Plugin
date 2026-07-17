@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 from jsonschema import ValidationError, validate as json_validate
@@ -16,7 +17,7 @@ from fusion_mcp_adapter.execute_guard import (
 )
 from fusion_mcp_adapter.manifest_store import ManifestStore
 from fusion_mcp_adapter.policy import ToolPolicy
-from fusion_mcp_adapter.semantics import McpCallOptions
+from fusion_mcp_adapter.semantics import CallSemantics, McpCallOptions, ReplayPolicy
 from fusion_mcp_adapter.tool_result import ToolDefinition, ToolManifest, ToolResult
 from telemetry.trace import JsonlTraceLogger
 
@@ -65,9 +66,9 @@ class FusionMcpAdapter:
             original_script = _execute_script(payload)
             try:
                 payload = prepare_execute_arguments(payload)
-            except ValueError as exc:
-                result = ToolResult.failure(
-                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, str(exc)
+            except ValueError:
+                result = ToolResult.public_failure(
+                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR
                 )
                 self._log_tool_call(
                     facade_tool,
@@ -87,10 +88,7 @@ class FusionMcpAdapter:
         tool_def = self._tool_definition(native_tool_name)
         validation_error = self._validate_input(tool_def, payload)
         if validation_error:
-            result = ToolResult.failure(
-                ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR,
-                validation_error,
-            )
+            result = ToolResult.public_failure(ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR)
             self._log_tool_call(
                 facade_tool,
                 native_tool_name,
@@ -102,6 +100,7 @@ class FusionMcpAdapter:
             return result
 
         started = time.perf_counter()
+        options = self._bind_manifest(options, native_tool_name)
         if options is None:
             result = await self.client.call_tool(native_tool_name, payload)
         else:
@@ -113,8 +112,8 @@ class FusionMcpAdapter:
         if result.ok:
             output_error = self._validate_output(tool_def, result.data)
             if output_error:
-                result = ToolResult.failure(
-                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR, output_error
+                result = ToolResult.public_failure(
+                    ErrorCode.TOOL_SCHEMA_VALIDATION_ERROR
                 )
 
         self._log_tool_call(
@@ -148,6 +147,35 @@ class FusionMcpAdapter:
             if tool.name == native_tool_name:
                 return tool
         return None
+
+    def _bind_manifest(
+        self,
+        options: McpCallOptions | None,
+        native_tool_name: str,
+    ) -> McpCallOptions | None:
+        """Bind each call to the manifest this adapter validated.
+
+        The binding is request-local: accepting a newer manifest through a
+        different adapter cannot silently authorize this adapter's call.
+        """
+
+        if self.manifest is None:
+            return options
+        if options is None:
+            if native_tool_name in {
+                "fusion_mcp_read",
+                "fusion_mcp_electronics_read",
+            }:
+                options = McpCallOptions(
+                    CallSemantics.READ_ONLY,
+                    replay_policy=ReplayPolicy.TRANSPORT_RETRY,
+                )
+            else:
+                options = McpCallOptions(CallSemantics.MUTATING)
+        return replace(
+            options,
+            expected_manifest_fingerprint=self.manifest.fingerprint,
+        )
 
     def _log_tool_call(
         self,
@@ -189,7 +217,7 @@ def _validate_json_schema(
     try:
         json_validate(payload, schema)
         return None
-    except ValidationError as exc:  # pragma: no cover - exercised by unit tests
-        return str(exc)
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        return str(exc)
+    except ValidationError:  # pragma: no cover - exercised by unit tests
+        return "schema violation"
+    except Exception:  # pragma: no cover - defensive fallback
+        return "schema violation"

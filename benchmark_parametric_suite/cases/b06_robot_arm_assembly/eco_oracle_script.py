@@ -9,7 +9,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -26,20 +40,34 @@ def _bbox_mm(body):
 
 
 def _bbox_matches(box, minimum, maximum, tolerance=0.3):
-    return all(_close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)) and all(
-        _close(box["max"][axis], maximum[axis], tolerance) for axis in range(3)
-    )
+    return all(
+        _close(box["min"][axis], minimum[axis], tolerance) for axis in range(3)
+    ) and all(_close(box["max"][axis], maximum[axis], tolerance) for axis in range(3))
 
 
 def _identity_transform(occurrence):
     values = list(occurrence.transform2.asArray())
     expected = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ]
-    return len(values) == 16 and all(_close(values[index], expected[index], 0.000001) for index in range(16))
+    return len(values) == 16 and all(
+        _close(values[index], expected[index], 0.000001) for index in range(16)
+    )
 
 
 def run(_context: str):
@@ -49,17 +77,21 @@ def run(_context: str):
     if document is None or design is None:
         raise RuntimeError("B06 ECO oracle requires an active Fusion design")
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+            }
+        )
 
     check(
         "document.identity_preserved",
@@ -85,8 +117,13 @@ def run(_context: str):
         observed = parameters.get(name, {})
         normalized_expression = str(observed.get("expression") or "").replace(" ", "")
         normalized_expected = expected[1].replace(" ", "")
-        if not _close(observed.get("value"), expected[0], 0.0001) or normalized_expression != normalized_expected:
-            parameter_failures.append({"name": name, "expected": expected, "observed": observed})
+        if (
+            not _close(observed.get("value"), expected[0], 0.0001)
+            or normalized_expression != normalized_expected
+        ):
+            parameter_failures.append(
+                {"name": name, "expected": expected, "observed": observed}
+            )
     check(
         "parameters.eco_and_dependencies",
         len(parameters) == 36 and not parameter_failures,
@@ -94,10 +131,32 @@ def run(_context: str):
         {"count": len(parameters), "failures": parameter_failures},
     )
 
-    child_components = [component for component in _items(design.allComponents) if component != root]
+    child_components = [
+        component for component in _items(design.allComponents) if component != root
+    ]
     occurrences = _items(root.allOccurrences)
     bodies = []
     body_by_name = {}
+    body_by_identity = {}
+    expected_body_owners = {
+        "CMP01_Base": "B01_Base",
+        "CMP02_Column": "B02_Column",
+        "CMP03_Shoulder_Motor": "B03_Shoulder_Motor",
+        "CMP04_Upper_Arm": "B04_Upper_Arm",
+        "CMP05_Elbow_Motor": "B05_Elbow_Motor",
+        "CMP06_Forearm": "B06_Forearm",
+        "CMP07_Wrist_Pitch_Motor": "B07_Wrist_Pitch_Motor",
+        "CMP08_Wrist_Link": "B08_Wrist_Link",
+        "CMP09_Wrist_Roll_Motor": "B09_Wrist_Roll_Motor",
+        "CMP10_Tool_Flange": "B10_Tool_Flange",
+        "CMP11_Gripper_Palm": "B11_Gripper_Palm",
+        "CMP12_Gripper_Finger_Upper": "B12_Gripper_Finger_Upper",
+        "CMP13_Gripper_Finger_Lower": "B13_Gripper_Finger_Lower",
+        "CMP14_Cable_Upper": "B14_Cable_Upper",
+        "CMP15_Cable_Forearm": "B15_Cable_Forearm",
+        "CMP16_Cable_Wrist": "B16_Cable_Wrist",
+    }
+    ownership_errors = []
     errors = []
     feature_count = 0
     sketch_count = 0
@@ -106,35 +165,68 @@ def run(_context: str):
         feature_count += component.features.count
         sketch_count += component.sketches.count
         if len(component_bodies) != 1:
-            errors.append({"component": component.name, "body_count": len(component_bodies)})
+            errors.append(
+                {"component": component.name, "body_count": len(component_bodies)}
+            )
             continue
         body = component_bodies[0]
         bodies.append(body)
         body_by_name[body.name] = body
+        body_by_identity[(component.name, body.name)] = body
+        if expected_body_owners.get(component.name) != body.name:
+            ownership_errors.append(
+                {
+                    "component": component.name,
+                    "expected_body": expected_body_owners.get(component.name),
+                    "observed_body": body.name,
+                }
+            )
         if not body.isValid or not body.isSolid or body.lumps.count != 1:
-            errors.append({"component": component.name, "body": body.name, "valid": body.isValid})
+            errors.append(
+                {"component": component.name, "body": body.name, "valid": body.isValid}
+            )
         for feature in _items(component.features):
             if not feature.isValid or feature.errorOrWarningMessage:
-                errors.append({"component": component.name, "feature": feature.name, "message": feature.errorOrWarningMessage})
+                errors.append(
+                    {
+                        "component": component.name,
+                        "feature": feature.name,
+                        "message": feature.errorOrWarningMessage,
+                    }
+                )
     check(
         "assembly.counts_health_and_identity_after_eco",
         len(child_components) == 16
         and len(occurrences) == 16
         and all(_identity_transform(occurrence) for occurrence in occurrences)
         and len(bodies) == 16
+        and len(body_by_identity) == 16
+        and not ownership_errors
         and feature_count == 16
         and sketch_count == 16
         and root.asBuiltJoints.count == 12
         and not errors,
-        {"components": 16, "occurrences": 16, "bodies": 16, "features": 16, "joints": 12, "identity": True},
+        {
+            "components": 16,
+            "occurrences": 16,
+            "bodies": 16,
+            "features": 16,
+            "joints": 12,
+            "identity": True,
+        },
         {
             "components": len(child_components),
             "occurrences": len(occurrences),
             "bodies": len(bodies),
             "features": feature_count,
             "joints": root.asBuiltJoints.count,
-            "non_identity": [occurrence.fullPathName for occurrence in occurrences if not _identity_transform(occurrence)],
+            "non_identity": [
+                occurrence.fullPathName
+                for occurrence in occurrences
+                if not _identity_transform(occurrence)
+            ],
             "errors": errors,
+            "ownership_errors": ownership_errors,
         },
     )
 
@@ -142,7 +234,11 @@ def run(_context: str):
         boxes = [_bbox_mm(body) for body in bodies]
         minimum = [min(box["min"][axis] for box in boxes) for axis in range(3)]
         maximum = [max(box["max"][axis] for box in boxes) for axis in range(3)]
-        global_box = {"min": minimum, "max": maximum, "size": [maximum[axis] - minimum[axis] for axis in range(3)]}
+        global_box = {
+            "min": minimum,
+            "max": maximum,
+            "size": [maximum[axis] - minimum[axis] for axis in range(3)],
+        }
         check(
             "geometry.eco_workspace_bbox",
             _bbox_matches(global_box, [-80.0, -80.0, 0.0], [450.0, 80.0, 315.0], 0.4),
@@ -165,7 +261,15 @@ def run(_context: str):
     chain_failures = []
     chain_boxes = {}
     for name, expected in chain_expected.items():
-        body = body_by_name.get(name)
+        component_name = next(
+            (
+                owner
+                for owner, body_name in expected_body_owners.items()
+                if body_name == name
+            ),
+            None,
+        )
+        body = body_by_identity.get((component_name, name))
         box = None if body is None else _bbox_mm(body)
         chain_boxes[name] = box
         if box is None or not _bbox_matches(box, expected[0], expected[1], 0.3):
@@ -185,7 +289,15 @@ def run(_context: str):
     cable_failures = []
     cable_boxes = {}
     for name, expected in cable_expected.items():
-        body = body_by_name.get(name)
+        component_name = next(
+            (
+                owner
+                for owner, body_name in expected_body_owners.items()
+                if body_name == name
+            ),
+            None,
+        )
+        body = body_by_identity.get((component_name, name))
         box = None if body is None else _bbox_mm(body)
         cable_boxes[name] = box
         if box is None or not _bbox_matches(box, expected[0], expected[1], 0.3):
@@ -197,21 +309,69 @@ def run(_context: str):
         {"failures": cable_failures, "boxes": cable_boxes},
     )
 
-    joint_errors = [
-        {"name": joint.name, "valid": joint.isValid}
-        for joint in _items(root.asBuiltJoints)
-        if not joint.isValid
-    ]
-    revolute_count = sum(
-        1
-        for joint in _items(root.asBuiltJoints)
-        if joint.jointMotion.objectType == adsk.fusion.RevoluteJointMotion.classType()
-    )
+    joints = _items(root.asBuiltJoints)
+    expected_joint_endpoints = {
+        "J01_Base_Column_Rigid": sorted(["CMP01_Base", "CMP02_Column"]),
+        "J02_Shoulder_Revolute": sorted(["CMP02_Column", "CMP03_Shoulder_Motor"]),
+        "J03_Shoulder_Link_Rigid": sorted(["CMP03_Shoulder_Motor", "CMP04_Upper_Arm"]),
+        "J04_Elbow_Revolute": sorted(["CMP04_Upper_Arm", "CMP05_Elbow_Motor"]),
+        "J05_Elbow_Link_Rigid": sorted(["CMP05_Elbow_Motor", "CMP06_Forearm"]),
+        "J06_Wrist_Pitch_Revolute": sorted(
+            ["CMP06_Forearm", "CMP07_Wrist_Pitch_Motor"]
+        ),
+        "J07_Wrist_Link_Rigid": sorted(["CMP07_Wrist_Pitch_Motor", "CMP08_Wrist_Link"]),
+        "J08_Wrist_Roll_Revolute": sorted(
+            ["CMP08_Wrist_Link", "CMP09_Wrist_Roll_Motor"]
+        ),
+        "J09_Tool_Flange_Rigid": sorted(
+            ["CMP09_Wrist_Roll_Motor", "CMP10_Tool_Flange"]
+        ),
+        "J10_Gripper_Palm_Rigid": sorted(["CMP10_Tool_Flange", "CMP11_Gripper_Palm"]),
+        "J11_Upper_Finger_Rigid": sorted(
+            ["CMP11_Gripper_Palm", "CMP12_Gripper_Finger_Upper"]
+        ),
+        "J12_Lower_Finger_Rigid": sorted(
+            ["CMP11_Gripper_Palm", "CMP13_Gripper_Finger_Lower"]
+        ),
+    }
+    joint_data = []
+    joint_errors = []
+    revolute_count = 0
+    for joint in joints:
+        motion_type = joint.jointMotion.objectType
+        if motion_type == adsk.fusion.RevoluteJointMotion.classType():
+            revolute_count += 1
+        occurrence_one = joint.occurrenceOne
+        occurrence_two = joint.occurrenceTwo
+        endpoints = sorted(
+            [
+                occurrence_one.component.name if occurrence_one is not None else "",
+                occurrence_two.component.name if occurrence_two is not None else "",
+            ]
+        )
+        item = {
+            "name": joint.name,
+            "valid": joint.isValid,
+            "motion": motion_type,
+            "endpoints": endpoints,
+        }
+        joint_data.append(item)
+        if not joint.isValid:
+            joint_errors.append(item)
     check(
         "joints.healthy_after_eco",
-        root.asBuiltJoints.count == 12 and revolute_count == 4 and not joint_errors,
-        {"joints": 12, "revolute": 4, "errors": 0},
-        {"joints": root.asBuiltJoints.count, "revolute": revolute_count, "errors": joint_errors},
+        len(joints) == 12
+        and {item["name"]: item["endpoints"] for item in joint_data}
+        == expected_joint_endpoints
+        and revolute_count == 4
+        and not joint_errors,
+        {
+            "joints": 12,
+            "revolute": 4,
+            "endpoints": expected_joint_endpoints,
+            "errors": 0,
+        },
+        {"joints": joint_data, "revolute": revolute_count, "errors": joint_errors},
     )
 
     failed = [item["id"] for item in checks if item["status"] != "pass"]
@@ -235,6 +395,12 @@ def run(_context: str):
             "total_volume_mm3": sum(body.volume * 1000.0 for body in bodies),
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

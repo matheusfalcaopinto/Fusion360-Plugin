@@ -14,6 +14,46 @@ from cad_spec.unit_policy import (
 )
 
 
+LegacyFeatureType = Literal[
+    "extrude_rectangle",
+    "extrude_cylinder",
+    "hole_pattern_cut",
+    "center_hole_cut",
+    "l_bracket_body",
+    "box_shell",
+    "nema17_stepper_motor",
+    "nema17_visual_polish",
+    "nema17_external_assembly",
+    "profile2020_aluminum_extrusion",
+    "mgn12_linear_rail_assembly",
+    "desktop_cnc_assembly",
+    "spacer_plate_assembly",
+    "hinge_assembly",
+    "update_parameter",
+    "apply_fillet",
+    "export",
+    "capture_viewport",
+]
+
+_NONEMPTY_STRING_TARGET_ASSERTIONS = frozenset(
+    {"body_exists", "component_exists", "target_bounding_box"}
+)
+_NONEMPTY_STRING_LIST_TARGET_ASSERTIONS = frozenset(
+    {"named_bodies", "named_parameters", "export_exists"}
+)
+_NONEMPTY_MAPPING_TARGET_ASSERTIONS = frozenset(
+    {
+        "nema17_dimensions",
+        "nema17_polish_details",
+        "nema17_external_assembly",
+        "profile2020_details",
+        "mgn12_linear_rail_assembly",
+        "desktop_cnc_assembly",
+        "occurrence_contract",
+    }
+)
+
+
 class DocumentPolicy(BaseModel):
     """Policy for whether the session may modify an existing document."""
 
@@ -45,7 +85,10 @@ class FeatureSpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str
-    type: str
+    # CadSpec v1 remains available for one compatibility cycle, but its
+    # dispatch registry is closed.  An unknown type must fail while parsing
+    # the complete graph, before an earlier feature can reach Fusion.
+    type: LegacyFeatureType
     operation: str = "new_body"
     inputs: dict[str, Any] = Field(default_factory=dict)
 
@@ -194,6 +237,28 @@ class AcceptanceTestSpec(BaseModel):
         _validate_named_numeric_targets(self.target, path=f"{self.type}.target")
         if _contains_non_finite_number(self.target):
             raise ValueError("acceptance target contains a non-finite number")
+        if self.type in _NONEMPTY_STRING_TARGET_ASSERTIONS and (
+            not isinstance(self.target, str) or not self.target.strip()
+        ):
+            raise ValueError(f"{self.type} requires a non-empty string target")
+        if self.type in _NONEMPTY_STRING_LIST_TARGET_ASSERTIONS and (
+            not isinstance(self.target, list)
+            or not self.target
+            or any(
+                not isinstance(item, str) or not item.strip() for item in self.target
+            )
+        ):
+            raise ValueError(
+                f"{self.type} requires a non-empty list of non-empty string targets"
+            )
+        if self.type in _NONEMPTY_MAPPING_TARGET_ASSERTIONS and (
+            not isinstance(self.target, dict) or not self.target
+        ):
+            raise ValueError(f"{self.type} requires a non-empty mapping target")
+        if self.type in {"bounding_box", "target_bounding_box"} and (
+            self.target_mm is None or len(self.target_mm) != 3
+        ):
+            raise ValueError(f"{self.type} requires exactly three target_mm values")
         return self
 
 
@@ -257,6 +322,18 @@ class CadSpec(BaseModel):
             raise ValueError("CadSpec requires at least one acceptance test")
         if not self.components:
             raise ValueError("CadSpec requires at least one component")
+        assertions = {item.type for item in self.acceptance_tests}
+        if assertions & {"component_metadata", "physical_properties"} and not (
+            self.component_metadata
+        ):
+            raise ValueError(
+                "component_metadata and physical_properties assertions require "
+                "a non-empty component_metadata contract"
+            )
+        if "joint_contract" in assertions and not self.joints:
+            raise ValueError("joint_contract requires a non-empty joints contract")
+        if "screenshots_exist" in assertions and not self.outputs:
+            raise ValueError("screenshots_exist requires a non-empty outputs contract")
         return self
 
     def parameter_map(self) -> dict[str, str]:

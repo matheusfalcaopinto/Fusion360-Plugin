@@ -8,11 +8,14 @@ import copy
 import hashlib
 import json
 import math
+import re
 import time
 import uuid
+import zlib
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeGuard, cast
 
+from agent_core.request_context import current_request_context
 from agent_core.targeted_inspection import (
     build_targeted_inspection_script,
     validate_inspection_payload,
@@ -26,6 +29,8 @@ from fusion_mcp_adapter.execute_guard import (
 
 NativeCall = Callable[..., Awaitable[Any]]
 CHANGE_CLASSES = {"read_only", "additive", "scoped_update"}
+CAPABILITY_TTL_SECONDS = 1800.0
+BENCHMARK_FIXTURE_CAPABILITY_PATTERN = re.compile(r"^benchmark_fixture:[0-9a-f]{64}$")
 ASSERTION_OPERATORS = {
     "eq",
     "ne",
@@ -34,6 +39,38 @@ ASSERTION_OPERATORS = {
     "lte",
     "contains",
     "unchanged",
+    "increased_by",
+    "decreased_by",
+}
+GUARD_CONTROL_SCHEMA = "fusion_agent.fast_path_guard.v1"
+GUARD_REASON_CODES = frozenset(
+    {
+        "ACTIVE_COMMAND_CHANGED",
+        "ACTIVE_DESIGN_UNAVAILABLE",
+        "DOCUMENT_DATA_FILE_CHANGED",
+        "DOCUMENT_MISSING",
+        "DOCUMENT_NAME_CHANGED",
+        "DOCUMENT_RUNTIME_ID_CHANGED",
+        "SINK_INSPECTION_INCOMPLETE",
+        "SINK_PROBE_FAILED",
+        "SINK_PROBE_INTEGRITY_FAILED",
+        "SINK_STATE_FINGERPRINT_CHANGED",
+        "TARGET_BINDING_UNAVAILABLE",
+    }
+)
+SINK_GUARD_REASON_CODES = frozenset(
+    {
+        "ACTIVE_COMMAND_CHANGED",
+        "SINK_INSPECTION_INCOMPLETE",
+        "SINK_PROBE_FAILED",
+        "SINK_PROBE_INTEGRITY_FAILED",
+        "SINK_STATE_FINGERPRINT_CHANGED",
+    }
+)
+NUMERIC_ASSERTION_OPERATORS = {
+    "approx",
+    "gte",
+    "lte",
     "increased_by",
     "decreased_by",
 }
@@ -180,21 +217,27 @@ import json
 def run(_context: str):
     app = adsk.core.Application.get()
     command_id = ""
+    command_read = False
     try:
         command_id = str(app.activeCommand or "")
+        command_read = True
     except BaseException:
         try:
             command_id = str(app.userInterface.activeCommand or "")
+            command_read = True
         except BaseException:
             command_id = ""
+            command_read = False
     default_ids = {"", "SelectCommand", "FusionSelectCommand"}
-    active = None if command_id in default_ids else {
+    active = None if command_read and command_id in default_ids else {
         "id": command_id,
         "isDefaultCommand": False,
     }
     print(json.dumps({
-        "success": True,
+        "success": command_read,
+        "complete": command_read,
         "probe": "fusion_agent_active_command",
+        "activeCommandRead": command_read,
         "activeCommand": active,
     }))
 """
@@ -232,6 +275,175 @@ class ScriptPolicyDecision:
             "mutating_syntax_detected": self.mutating_syntax_detected,
             "detected_change_class": self.detected_change_class,
         }
+
+
+@dataclass(frozen=True)
+class _OperationCapability:
+    """Immutable, request-local proof required immediately before dispatch."""
+
+    capability_id: str
+    operation_id: str
+    document_binding: str
+    target_binding_digest: str
+    baseline_fingerprint: str
+    script_sha256: str
+    issued_at: float
+
+
+@dataclass
+class _CapabilityEntry:
+    capability: _OperationCapability
+    state: str = "issued"
+
+
+class _OperationCapabilityLedger:
+    """Atomic-in-event-loop single-use ledger for Fast Path mutation grants."""
+
+    def __init__(self, *, ttl_seconds: float = CAPABILITY_TTL_SECONDS) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[str, _CapabilityEntry] = {}
+
+    def issue(
+        self,
+        *,
+        operation_id: str,
+        document_binding: str,
+        target_binding_digest: str,
+        baseline_fingerprint: str,
+        script_sha256: str,
+    ) -> _OperationCapability:
+        self._prune()
+        capability = _OperationCapability(
+            capability_id=f"cap_{uuid.uuid4().hex}",
+            operation_id=operation_id,
+            document_binding=document_binding,
+            target_binding_digest=target_binding_digest,
+            baseline_fingerprint=baseline_fingerprint,
+            script_sha256=script_sha256,
+            issued_at=time.monotonic(),
+        )
+        self._entries[capability.capability_id] = _CapabilityEntry(capability)
+        return capability
+
+    def claim(
+        self,
+        capability_id: str,
+        *,
+        operation_id: str,
+        document_binding: str,
+        target_binding_digest: str,
+        baseline_fingerprint: str,
+        script_sha256: str,
+    ) -> tuple[bool, str]:
+        entry = self._entries.get(capability_id)
+        if entry is None:
+            return False, "capability_not_found"
+        if entry.state != "issued":
+            return False, f"capability_{entry.state}"
+        capability = entry.capability
+        if time.monotonic() - capability.issued_at > self._ttl_seconds:
+            entry.state = "expired"
+            return False, "capability_expired"
+        expected = (
+            operation_id,
+            document_binding,
+            target_binding_digest,
+            baseline_fingerprint,
+            script_sha256,
+        )
+        bound = (
+            capability.operation_id,
+            capability.document_binding,
+            capability.target_binding_digest,
+            capability.baseline_fingerprint,
+            capability.script_sha256,
+        )
+        if expected != bound:
+            entry.state = "revoked"
+            return False, "capability_binding_mismatch"
+        entry.state = "claimed"
+        return True, "claimed"
+
+    def finish(self, capability_id: str, state: str) -> None:
+        if state not in {"consumed", "unknown", "revoked"}:
+            raise ValueError("capability terminal state is invalid")
+        entry = self._entries.get(capability_id)
+        if entry is not None and entry.state == "claimed":
+            entry.state = state
+
+    def state(self, capability_id: str) -> str | None:
+        entry = self._entries.get(capability_id)
+        return entry.state if entry is not None else None
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        expired = [
+            capability_id
+            for capability_id, entry in self._entries.items()
+            if now - entry.capability.issued_at > self._ttl_seconds
+        ]
+        for capability_id in expired:
+            self._entries.pop(capability_id, None)
+        if len(self._entries) < 512:
+            return
+        oldest = sorted(
+            self._entries.values(), key=lambda entry: entry.capability.issued_at
+        )[: len(self._entries) - 511]
+        for entry in oldest:
+            self._entries.pop(entry.capability.capability_id, None)
+
+
+@dataclass
+class _RecoveryRecord:
+    operation_id: str
+    document: dict[str, Any]
+    state_fingerprint: str
+    inspection_args: dict[str, Any]
+    after: dict[str, Any]
+    owner: _RecoveryOwner | None = None
+    target_query_ids: tuple[str, ...] = ()
+    target_component_paths: tuple[str, ...] = ()
+    target_binding_digest: str = ""
+    recovery_phase: str = "applied"
+    claim_state: str = "issued"
+    issued_at: float = field(default_factory=time.monotonic)
+    generation: int = 0
+
+
+@dataclass(frozen=True)
+class _RecoveryOwner:
+    """Stable authorization scope shared by one logical request session/trial."""
+
+    session_id: str
+    trial_id: str
+    mode: str
+    backend: str
+    document_identity: str
+    capabilities: tuple[str, ...]
+
+
+def _current_recovery_owner() -> _RecoveryOwner | None:
+    context = current_request_context()
+    if context is None:
+        # Direct package consumers predating RequestContext remain isolated in
+        # the context-free compatibility scope. A bound context can never use
+        # a record issued in this scope (or vice versa).
+        return None
+    capabilities = tuple(
+        sorted(
+            capability
+            for capability in context.capabilities
+            if not capability.startswith(("tool:", "profile:"))
+        )
+    )
+    return _RecoveryOwner(
+        session_id=context.session_id or "",
+        trial_id=context.trial_id or "",
+        mode=context.mode,
+        backend=context.backend,
+        document_identity=context.document_identity or "",
+        capabilities=capabilities,
+    )
 
 
 @dataclass
@@ -401,10 +613,13 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
         for alias in node.names:
             root = alias.name.split(".", 1)[0]
+            bound_name = alias.asname or root
             if root not in ALLOWED_IMPORTS:
                 self.error(node, f"import is not allowlisted: {alias.name}")
-            if (alias.asname or root) in RESERVED_BINDING_NAMES:
+            if bound_name in RESERVED_BINDING_NAMES:
                 self.error(node, "reserved binding names may not be shadowed")
+            if bound_name in PURE_FUNCTIONS:
+                self.error(node, f"approved callable may not be shadowed: {bound_name}")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
@@ -413,8 +628,11 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
         if root not in ALLOWED_IMPORTS:
             self.error(node, f"import is not allowlisted: {module or '<relative>'}")
         for alias in node.names:
-            if (alias.asname or alias.name) in RESERVED_BINDING_NAMES:
+            bound_name = alias.asname or alias.name
+            if bound_name in RESERVED_BINDING_NAMES:
                 self.error(node, "reserved binding names may not be shadowed")
+            if bound_name in PURE_FUNCTIONS:
+                self.error(node, f"approved callable may not be shadowed: {bound_name}")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
@@ -424,6 +642,8 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
             node.ctx, (ast.Store, ast.Del)
         ):
             self.error(node, f"reserved binding may not be shadowed: {node.id}")
+        if node.id in PURE_FUNCTIONS and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.error(node, f"approved callable may not be shadowed: {node.id}")
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
@@ -709,8 +929,13 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         if node.name in RESERVED_BINDING_NAMES:
             self.error(node, f"reserved internal function name is blocked: {node.name}")
-        if any(argument.arg in RESERVED_BINDING_NAMES for argument in node.args.args):
+        if node.name in PURE_FUNCTIONS:
+            self.error(node, f"approved callable may not be shadowed: {node.name}")
+        argument_names = _argument_names(node.args)
+        if any(name in RESERVED_BINDING_NAMES for name in argument_names):
             self.error(node, "reserved binding names may not be function parameters")
+        for name in sorted(argument_names.intersection(PURE_FUNCTIONS)):
+            self.error(node, f"approved callable may not be shadowed: {name}")
         scope: dict[str, str] = {}
         summary = self.helper_summaries.get(node.name)
         if summary:
@@ -725,6 +950,16 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
         self.error(node, "async functions are blocked")
+        for name in sorted(_argument_names(node.args).intersection(PURE_FUNCTIONS)):
+            self.error(node, f"approved callable may not be shadowed: {name}")
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        self.error(node, "lambda callables are blocked")
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self.error(node, "class definitions are blocked")
         self.generic_visit(node)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:  # noqa: N802
@@ -734,7 +969,27 @@ class _ScriptPolicyVisitor(ast.NodeVisitor):
             self.error(node, "broad exception handler is blocked")
         if node.name in RESERVED_BINDING_NAMES:
             self.error(node, f"reserved binding may not be shadowed: {node.name}")
+        if node.name in PURE_FUNCTIONS:
+            self.error(node, f"approved callable may not be shadowed: {node.name}")
         self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:  # noqa: N802
+        self._check_symbolic_binding(node, node.name)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:  # noqa: N802
+        self._check_symbolic_binding(node, node.name)
+        self.generic_visit(node)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:  # noqa: N802
+        self._check_symbolic_binding(node, node.rest)
+        self.generic_visit(node)
+
+    def _check_symbolic_binding(self, node: ast.AST, name: str | None) -> None:
+        if name in RESERVED_BINDING_NAMES:
+            self.error(node, f"reserved binding may not be shadowed: {name}")
+        if name in PURE_FUNCTIONS:
+            self.error(node, f"approved callable may not be shadowed: {name}")
 
 
 def _call_name(node: ast.AST) -> str:
@@ -758,6 +1013,22 @@ def _contains_broad_exception(node: ast.AST) -> bool:
     if isinstance(node, ast.Tuple):
         return any(_contains_broad_exception(item) for item in node.elts)
     return False
+
+
+def _argument_names(arguments: ast.arguments) -> set[str]:
+    names = {
+        argument.arg
+        for argument in [
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ]
+    }
+    if arguments.vararg is not None:
+        names.add(arguments.vararg.arg)
+    if arguments.kwarg is not None:
+        names.add(arguments.kwarg.arg)
+    return names
 
 
 def _safe_module_statement(node: ast.stmt) -> bool:
@@ -1002,6 +1273,43 @@ def validate_fast_execute_request(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _finite_number(value: Any) -> TypeGuard[int | float]:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _numeric_tree_is_finite(value: Any) -> bool:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return True
+    if isinstance(value, (int, float)):
+        return _finite_number(value)
+    if isinstance(value, dict):
+        return all(_numeric_tree_is_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_numeric_tree_is_finite(item) for item in value)
+    return True
+
+
+def _validate_assertion_numeric_contract(
+    raw: dict[str, Any], operator: str, index: int
+) -> None:
+    expected = raw.get("expected")
+    if not _numeric_tree_is_finite(expected):
+        raise ValueError(f"assertions[{index}].expected must contain finite numbers")
+    if operator in NUMERIC_ASSERTION_OPERATORS and not _finite_number(expected):
+        raise ValueError(f"assertions[{index}].expected must be a finite numeric value")
+    if operator == "approx":
+        tolerance = raw.get("tolerance")
+        if not _finite_number(tolerance) or float(tolerance) < 0.0:
+            raise ValueError(
+                f"assertions[{index}].tolerance must be a finite non-negative numeric value"
+            )
+
+
 def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str, Any]]:
     if not isinstance(assertions, list) or len(assertions) > 100:
         raise ValueError("assertions must be an array with at most 100 entries")
@@ -1027,6 +1335,7 @@ def _normalize_assertions(assertions: Any, query_ids: set[str]) -> list[dict[str
             raise ValueError(f"assertions[{index}] approx requires tolerance")
         if operator != "unchanged" and "expected" not in raw:
             raise ValueError(f"assertions[{index}] {operator} requires expected")
+        _validate_assertion_numeric_contract(raw, operator, index)
         requirement_ids = raw.get("requirement_ids") or []
         if not isinstance(requirement_ids, list) or not all(
             isinstance(value, str) and value for value in requirement_ids
@@ -1177,7 +1486,25 @@ class FastPathService:
         self._call_native = call_native
         self._trusted_read_native = trusted_read_native or call_native
         self._manifest_fingerprint = manifest_fingerprint or (lambda: "")
-        self._last_operation: dict[str, Any] | None = None
+        self._execution_capabilities = _OperationCapabilityLedger()
+        self._recovery_records: dict[str, _RecoveryRecord] = {}
+
+    def _prune_recovery_records(self) -> None:
+        now = time.monotonic()
+        expired = [
+            operation_id
+            for operation_id, record in self._recovery_records.items()
+            if now - record.issued_at > CAPABILITY_TTL_SECONDS
+        ]
+        for operation_id in expired:
+            self._recovery_records.pop(operation_id, None)
+        if len(self._recovery_records) < 256:
+            return
+        oldest = sorted(
+            self._recovery_records.values(), key=lambda record: record.issued_at
+        )[: len(self._recovery_records) - 255]
+        for record in oldest:
+            self._recovery_records.pop(record.operation_id, None)
 
     async def native_read(self, arguments: dict[str, Any]) -> FastPathResponse:
         query_type, payload = build_native_read_arguments(arguments)
@@ -1213,6 +1540,23 @@ class FastPathService:
         data = copy.deepcopy(_result_data(result))
         if query_type == "active_command":
             data = _parse_script_payload(data)
+            if (
+                data.get("success") is not True
+                or data.get("complete") is not True
+                or data.get("activeCommandRead") is not True
+                or not _valid_active_command_evidence(data)
+            ):
+                return FastPathResponse(
+                    {
+                        "query_type": query_type,
+                        "status": "read_failed",
+                        "error_code": "ACTIVE_COMMAND_CHECK_INCOMPLETE",
+                        "error": "The active Fusion command state could not be verified.",
+                        "manifest_fingerprint": self._manifest_fingerprint(),
+                        "duration_ms": duration_ms,
+                    },
+                    is_error=True,
+                )
         content = copy.deepcopy(_result_content(result))
         if query_type == "screenshot":
             data, extracted = _extract_image(data)
@@ -1351,7 +1695,7 @@ class FastPathService:
                 }
             )
         baseline = baseline_response.payload
-        baseline_issue = _mutation_baseline_issue(request, baseline)
+        baseline_issue = _mutation_preview_issue(request, baseline)
         if baseline_issue:
             return FastPathResponse(
                 {
@@ -1367,6 +1711,23 @@ class FastPathService:
                     "recovery_instruction": "No mutation was dispatched. Repeat a bounded targeted inspection with sufficient budget or use the Safe Harness.",
                 }
             )
+        request_binding_issue = _request_document_binding_issue(
+            baseline.get("document")
+        )
+        if request_binding_issue:
+            return FastPathResponse(
+                {
+                    "operation_id": operation_id,
+                    "execution_path": "native_fast",
+                    "status": "blocked_before_apply",
+                    "policy": policy.as_dict(),
+                    "reason": request_binding_issue,
+                    "baseline": baseline,
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
+                    "recovery_instruction": "No mutation was dispatched. Rebind the request to the active document before retrying.",
+                }
+            )
         target_error, bindings = _validate_targets(request, baseline)
         if target_error:
             return FastPathResponse(
@@ -1380,10 +1741,37 @@ class FastPathService:
                 }
             )
 
+        capability: _OperationCapability | None = None
+        document_binding = _stable_document_binding(baseline.get("document"))
+        baseline_fingerprint = (
+            str((baseline.get("summary") or {}).get("state_fingerprint") or "")
+            if request["change_class"] != "read_only"
+            else ""
+        )
+        target_binding_digest = _canonical_digest(bindings)
+        guard_token = uuid.uuid4().hex
+        guard_binding_digest = _canonical_digest(
+            {
+                "operation_id": operation_id,
+                "document_binding": document_binding,
+                "target_binding_digest": target_binding_digest,
+                "baseline_fingerprint": baseline_fingerprint,
+                "script_sha256": policy.script_sha256,
+            }
+        )
+        sink_probe_script = (
+            build_targeted_inspection_script(inspection_args)
+            if request["change_class"] != "read_only"
+            else None
+        )
         guarded_script = _guard_script(
             request["script"],
             baseline.get("document") or {},
             bindings=bindings,
+            sink_probe_script=sink_probe_script,
+            expected_state_fingerprint=baseline_fingerprint,
+            guard_token=guard_token,
+            guard_binding_digest=guard_binding_digest,
         )
         protected_script = normalize_execute_script(guarded_script)
         executor_guard = protected_script_descriptor(protected_script)
@@ -1412,18 +1800,116 @@ class FastPathService:
                     "recovery_instruction": "No mutation was dispatched. Reduce or split the script before retrying.",
                 }
             )
-        execute_result = await self._call_native(
-            "fusion_mcp_execute",
-            {"featureType": "script", "object": {"script": guarded_script}},
-            semantics="mutating",
-            operation_id=operation_id,
-        )
+        if request["change_class"] != "read_only":
+            preview_recheck = await self.targeted_inspect(inspection_args)
+            if preview_recheck.is_error:
+                return FastPathResponse(
+                    {
+                        "operation_id": operation_id,
+                        "execution_path": "native_fast",
+                        "status": "blocked_before_apply",
+                        "reason": "preview_revalidation_failed",
+                        "transport_mutating_dispatch_count": 0,
+                        "mutating_call_count": 0,
+                    }
+                )
+            rechecked = preview_recheck.payload
+            recheck_issue = _mutation_preview_issue(request, rechecked)
+            recheck_target_error, rechecked_bindings = _validate_targets(
+                request, rechecked
+            )
+            rechecked_fingerprint = str(
+                (rechecked.get("summary") or {}).get("state_fingerprint") or ""
+            )
+            preview_drift = (
+                recheck_issue
+                or recheck_target_error
+                or not _same_document(
+                    baseline.get("document") or {}, rechecked.get("document") or {}
+                )
+                or baseline_fingerprint != rechecked_fingerprint
+                or bindings != rechecked_bindings
+            )
+            if preview_drift:
+                return FastPathResponse(
+                    {
+                        "operation_id": operation_id,
+                        "execution_path": "native_fast",
+                        "status": "blocked_before_apply",
+                        "reason": "preview_binding_drift",
+                        "preview_issue": recheck_issue
+                        or recheck_target_error
+                        or "document_state_or_target_binding_changed",
+                        "transport_mutating_dispatch_count": 0,
+                        "mutating_call_count": 0,
+                    }
+                )
+            final_active = await self.native_read({"query_type": "active_command"})
+            final_active_command = _active_command(final_active.payload.get("data"))
+            if final_active.is_error or final_active_command:
+                return FastPathResponse(
+                    {
+                        "operation_id": operation_id,
+                        "execution_path": "native_fast",
+                        "status": "blocked_before_apply",
+                        "reason": "active_command_changed_before_dispatch"
+                        if final_active_command
+                        else "active_command_recheck_failed",
+                        "active_command": final_active_command,
+                        "transport_mutating_dispatch_count": 0,
+                        "mutating_call_count": 0,
+                    }
+                )
+            document_binding = _stable_document_binding(rechecked.get("document"))
+            baseline_fingerprint = str(
+                (rechecked.get("summary") or {}).get("state_fingerprint") or ""
+            )
+            target_binding_digest = _canonical_digest(rechecked_bindings)
+
+        if request["change_class"] != "read_only":
+            capability = self._execution_capabilities.issue(
+                operation_id=operation_id,
+                document_binding=document_binding,
+                target_binding_digest=target_binding_digest,
+                baseline_fingerprint=baseline_fingerprint,
+                script_sha256=policy.script_sha256,
+            )
+            claimed, claim_reason = self._execution_capabilities.claim(
+                capability.capability_id,
+                operation_id=operation_id,
+                document_binding=document_binding,
+                target_binding_digest=target_binding_digest,
+                baseline_fingerprint=baseline_fingerprint,
+                script_sha256=policy.script_sha256,
+            )
+            if not claimed:
+                return FastPathResponse(
+                    {
+                        "operation_id": operation_id,
+                        "execution_path": "native_fast",
+                        "status": "blocked_before_apply",
+                        "reason": claim_reason,
+                        "transport_mutating_dispatch_count": 0,
+                        "mutating_call_count": 0,
+                    }
+                )
+        try:
+            execute_result = await self._call_native(
+                "fusion_mcp_execute",
+                {"featureType": "script", "object": {"script": guarded_script}},
+                semantics="mutating",
+                operation_id=operation_id,
+            )
+        except BaseException:
+            if capability is not None:
+                self._execution_capabilities.finish(capability.capability_id, "unknown")
+            raise
         after_response = await self.targeted_inspect(readback_args)
         after = after_response.payload if not after_response.is_error else {}
         readback_issue = (
             "readback_call_failed"
             if after_response.is_error
-            else _mutation_baseline_issue(request, after)
+            else _mutation_readback_issue(request, after)
         )
         verification = evaluate_verification(
             baseline,
@@ -1468,9 +1954,26 @@ class FastPathService:
             transport_meta.get("mutation_outcome")
             or ("unknown" if error_code == "MUTATION_OUTCOME_UNKNOWN" else "known")
         )
+        guard_rejection_reason = _result_guard_rejection_reason(
+            execute_result,
+            expected_token=guard_token,
+            expected_binding_digest=guard_binding_digest,
+        )
+        preapply_guard_error = guard_rejection_reason is not None
+        if preapply_guard_error:
+            execution_error = "The operation was blocked before apply."
         post_dispatch_replay_suppressed = bool(
             transport_meta.get("post_dispatch_replay_suppressed", dispatched)
         )
+        if capability is not None:
+            self._execution_capabilities.finish(
+                capability.capability_id,
+                "unknown"
+                if mutation_outcome == "unknown"
+                else "revoked"
+                if preapply_guard_error
+                else "consumed",
+            )
         if mutation_outcome == "unknown":
             # Positive readback can describe the current state, but it cannot
             # prove whether this uncertain dispatch caused that state.  Keep
@@ -1501,11 +2004,9 @@ class FastPathService:
                     if status == "applied_verified"
                     else "unavailable"
                 )
-        elif (
-            execution_error and "fusion agent document guard" in execution_error.lower()
-        ):
+        elif preapply_guard_error:
             status = "blocked_before_apply"
-            verification_source = "document_identity_guard"
+            verification_source = _guard_verification_source(guard_rejection_reason)
         elif error_code in {
             "MANIFEST_DRIFT",
             "CONNECTION_UNAVAILABLE",
@@ -1548,7 +2049,7 @@ class FastPathService:
         duration_ms = int((time.perf_counter() - started) * 1000)
         evidence_content: list[dict[str, Any]] = []
         screenshot_payload: dict[str, Any] | None = None
-        native_call_count = 4
+        native_call_count = 6 if request["change_class"] != "read_only" else 4
         if request["verification"].get("include_screenshot"):
             screenshot = await self.native_read({"query_type": "screenshot"})
             screenshot_payload = screenshot.payload
@@ -1568,13 +2069,15 @@ class FastPathService:
             "executor_guard": executor_guard,
             "baseline": baseline,
             "execution": {
-                "ok": _result_ok(execute_result),
+                "ok": _result_ok(execute_result) and not preapply_guard_error,
                 "error": execution_error,
                 "error_code": error_code,
                 "dispatched": dispatched,
                 "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
                 "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
                 "mutation_outcome": mutation_outcome,
+                "guard_rejected": preapply_guard_error,
+                "guard_reason_code": guard_rejection_reason,
             },
             "after": after,
             "verification": {**verification, "source": verification_source},
@@ -1588,21 +2091,31 @@ class FastPathService:
                 dispatched and request["change_class"] != "read_only"
             ),
             "mutating_call_count": int(
-                dispatched and request["change_class"] != "read_only"
+                dispatched
+                and not preapply_guard_error
+                and request["change_class"] != "read_only"
             ),
             "dispatched": dispatched,
             "may_have_applied": bool(dispatched and mutation_outcome == "unknown"),
             "post_dispatch_replay_suppressed": post_dispatch_replay_suppressed,
             "mutation_outcome": mutation_outcome,
+            "operation_capability_state": (
+                self._execution_capabilities.state(capability.capability_id)
+                if capability is not None
+                else "not_required"
+            ),
             "mutation_status": (
                 "outcome_unknown"
                 if mutation_outcome == "unknown"
                 else "observed_in_readback"
-                if dispatched and not readback_issue and verification.get("passed")
+                if dispatched
+                and not preapply_guard_error
+                and not readback_issue
+                and verification.get("passed")
                 else "observed_in_readback"
-                if dispatched and not readback_issue
+                if dispatched and not preapply_guard_error and not readback_issue
                 else "not_dispatched"
-                if not dispatched
+                if not dispatched or preapply_guard_error
                 else "unknown"
             ),
             "assertion_status": verification["assertion_status"],
@@ -1613,7 +2126,9 @@ class FastPathService:
                 "target_components": sorted(bindings["target_components"]),
             },
             "recovery_instruction": (
-                "Do not save. Inspect the active design and use fusion_agent_recover_change only if the post-state still matches."
+                "No mutation was applied. Re-inspect and create a new preview before retrying."
+                if preapply_guard_error
+                else "Do not save. Inspect the active design and use fusion_agent_recover_change only if the post-state still matches."
                 if status != "applied_verified"
                 else ""
             ),
@@ -1626,28 +2141,44 @@ class FastPathService:
             "applied_unverified",
             "partial_change_detected",
         }:
-            self._last_operation = {
-                "operation_id": operation_id,
-                "document": after.get("document") or baseline.get("document"),
-                "after_fingerprint": _snapshot_fingerprint(after),
-                "after_state_fingerprint": (after.get("summary") or {}).get(
-                    "state_fingerprint"
-                ),
-                "state_fingerprint_truncated": bool(
-                    (after.get("summary") or {}).get(
-                        "state_fingerprint_truncated", True
-                    )
-                ),
-                "inspection_args": readback_args,
-                "after": after,
-                "recovery_phase": "applied",
-            }
+            recovery_issue = _mutation_preview_issue(request, after)
+            target_query_ids = tuple(request["target_query_ids"])
+            target_component_paths = tuple(request["target_component_paths"])
+            binding_issue, recovery_binding_digest = _recovery_target_binding_digest(
+                after,
+                target_query_ids=target_query_ids,
+                target_component_paths=target_component_paths,
+            )
+            after_state_fingerprint = str(
+                (after.get("summary") or {}).get("state_fingerprint") or ""
+            )
+            if not recovery_issue and not binding_issue and after_state_fingerprint:
+                self._prune_recovery_records()
+                self._recovery_records[operation_id] = _RecoveryRecord(
+                    operation_id=operation_id,
+                    document=copy.deepcopy(
+                        after.get("document") or baseline.get("document") or {}
+                    ),
+                    state_fingerprint=after_state_fingerprint,
+                    inspection_args=copy.deepcopy(readback_args),
+                    after=copy.deepcopy(after),
+                    owner=_current_recovery_owner(),
+                    target_query_ids=target_query_ids,
+                    target_component_paths=target_component_paths,
+                    target_binding_digest=recovery_binding_digest,
+                )
         return FastPathResponse(
             response,
             content=evidence_content,
             is_error=status
-            in {"execution_failed", "outcome_unknown", "mutation_outcome_unknown"},
-            meta=copy.deepcopy(_result_meta(execute_result)),
+            in {
+                "execution_failed",
+                "outcome_unknown",
+                "mutation_outcome_unknown",
+                "partial_change_detected",
+                "applied_unverified",
+                "applied_partially_verified",
+            },
         )
 
     async def recover_change(self, arguments: dict[str, Any]) -> FastPathResponse:
@@ -1657,23 +2188,6 @@ class FastPathService:
             raise ValueError("action must be undo or redo")
         if arguments.get("confirm") is not True:
             raise ValueError("confirm=true is required")
-        if (
-            not self._last_operation
-            or self._last_operation["operation_id"] != operation_id
-        ):
-            return FastPathResponse(
-                {"status": "blocked_before_apply", "reason": "operation_is_not_latest"}
-            )
-        recovery_phase = str(self._last_operation.get("recovery_phase") or "applied")
-        expected_action = "undo" if recovery_phase == "applied" else "redo"
-        if action != expected_action:
-            return FastPathResponse(
-                {
-                    "status": "blocked_before_apply",
-                    "reason": "recovery_action_not_available",
-                    "expected_action": expected_action,
-                }
-            )
         verification = arguments.get("verification") or {}
         normalized = validate_inspection_payload(
             {
@@ -1685,9 +2199,50 @@ class FastPathService:
             verification.get("assertions") or [],
             {query["id"] for query in normalized["queries"]},
         )
+        self._prune_recovery_records()
+        record = self._recovery_records.get(operation_id)
+        if record is None:
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_operation_not_available",
+                }
+            )
+        if record.owner != _current_recovery_owner():
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_owner_mismatch",
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
+                }
+            )
+        expected_action = "undo" if record.recovery_phase == "applied" else "redo"
+        if action != expected_action:
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_action_not_available",
+                    "expected_action": expected_action,
+                }
+            )
+        if time.monotonic() - record.issued_at > CAPABILITY_TTL_SECONDS:
+            record.claim_state = "expired"
+        if record.claim_state != "issued":
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_claim_unavailable",
+                    "claim_state": record.claim_state,
+                }
+            )
+        # No await may occur between checking and claiming.  This is the atomic
+        # single-use transition for concurrent recovery requests.
+        record.claim_state = "claimed"
         active = await self.native_read({"query_type": "active_command"})
         active_command = _active_command(active.payload.get("data"))
         if active.is_error or active_command:
+            record.claim_state = "revoked"
             return FastPathResponse(
                 {
                     "status": "blocked_before_apply",
@@ -1697,52 +2252,92 @@ class FastPathService:
                     "active_command": active_command,
                 }
             )
-        expected_state_fingerprint = self._last_operation.get("after_state_fingerprint")
-        if (
-            self._last_operation.get("state_fingerprint_truncated")
-            or not expected_state_fingerprint
-        ):
+        current = await self.targeted_inspect(record.inspection_args)
+        current_drift = (
+            "readback_call_failed"
+            if current.is_error
+            else _recovery_record_drift(record, current.payload)
+        )
+        if current_drift:
+            record.claim_state = "revoked"
             return FastPathResponse(
                 {
                     "status": "blocked_before_apply",
-                    "reason": "recovery_state_fingerprint_unavailable",
+                    "reason": "document_or_state_drift",
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
                 }
             )
-        current = await self.targeted_inspect(self._last_operation["inspection_args"])
-        current_summary = current.payload.get("summary") or {}
-        if (
-            current.is_error
-            or current_summary.get("state_fingerprint_truncated")
-            or current_summary.get("state_fingerprint") != expected_state_fingerprint
-            or not _same_document(
-                self._last_operation.get("document") or {},
-                current.payload.get("document") or {},
-            )
-        ):
-            return FastPathResponse(
-                {"status": "blocked_before_apply", "reason": "document_or_state_drift"}
-            )
         verification_before = await self.targeted_inspect(normalized)
-        if verification_before.is_error:
+        verification_before_issue = (
+            "readback_call_failed"
+            if verification_before.is_error
+            else _mutation_readback_issue(
+                {"change_class": "scoped_update"}, verification_before.payload
+            )
+        )
+        if verification_before_issue:
+            record.claim_state = "revoked"
             return FastPathResponse(
                 {
                     "status": "blocked_before_apply",
-                    "reason": "recovery_verification_baseline_failed",
+                    "reason": "recovery_verification_baseline_incomplete",
+                    "baseline_issue": verification_before_issue,
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
+                }
+            )
+        final_active = await self.native_read({"query_type": "active_command"})
+        final_active_command = _active_command(final_active.payload.get("data"))
+        if final_active.is_error or final_active_command:
+            record.claim_state = "revoked"
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "active_command_changed_before_dispatch"
+                    if final_active_command
+                    else "active_command_recheck_failed",
+                    "active_command": final_active_command,
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
+                }
+            )
+        final_state = await self.targeted_inspect(record.inspection_args)
+        final_drift = (
+            "readback_call_failed"
+            if final_state.is_error
+            else _recovery_record_drift(record, final_state.payload)
+        )
+        if final_drift:
+            record.claim_state = "revoked"
+            return FastPathResponse(
+                {
+                    "status": "blocked_before_apply",
+                    "reason": "recovery_final_binding_drift",
+                    "transport_mutating_dispatch_count": 0,
+                    "mutating_call_count": 0,
                 }
             )
         recovery_id = _operation_id("recover")
-        result = await self._call_native(
-            "fusion_mcp_update",
-            {"featureType": action},
-            semantics="mutating",
-            operation_id=recovery_id,
-        )
+        try:
+            result = await self._call_native(
+                "fusion_mcp_update",
+                {"featureType": action},
+                semantics="mutating",
+                operation_id=recovery_id,
+            )
+        except BaseException:
+            record.claim_state = "unknown"
+            raise
         after = await self.targeted_inspect(normalized)
         if not _result_ok(result):
             status = (
                 "outcome_unknown"
                 if _result_error_code(result) == "MUTATION_OUTCOME_UNKNOWN"
                 else "execution_failed"
+            )
+            record.claim_state = (
+                "unknown" if status == "outcome_unknown" else "consumed"
             )
             return FastPathResponse(
                 {
@@ -1752,36 +2347,86 @@ class FastPathService:
                 },
                 is_error=True,
             )
+        after_issue = (
+            "readback_call_failed"
+            if after.is_error
+            else _mutation_readback_issue(
+                {"change_class": "scoped_update"}, after.payload
+            )
+        )
         evaluated = evaluate_verification(
             verification_before.payload,
             after.payload,
             assertions,
             "recovery",
+            [
+                {
+                    "id": "recovery_contract",
+                    "required": True,
+                    "assertion_ids": [assertion["id"] for assertion in assertions],
+                }
+            ],
         )
-        status = "recovered_verified" if evaluated["passed"] else "recovery_unverified"
+        if after_issue:
+            evaluated = {
+                **evaluated,
+                "passed": False,
+                "assertions_passed": False,
+                "assertion_status": "incomplete",
+                "contract_verified": False,
+                "reason_code": "INCOMPLETE_INSPECTION",
+                "readback_issue": after_issue,
+            }
+        status = (
+            "recovered_verified"
+            if not after_issue
+            and evaluated["assertion_status"] == "passed"
+            and evaluated["contract_verified"] is True
+            else "recovery_unverified"
+        )
         if status == "recovered_verified":
-            post_state = await self.targeted_inspect(
-                self._last_operation["inspection_args"]
-            )
+            post_state = await self.targeted_inspect(record.inspection_args)
             post_summary = post_state.payload.get("summary") or {}
             post_fingerprint = post_summary.get("state_fingerprint")
+            post_issue = (
+                "readback_call_failed"
+                if post_state.is_error
+                else _mutation_readback_issue(
+                    {"change_class": "scoped_update"}, post_state.payload
+                )
+            )
+            post_binding_issue, post_binding_digest = (
+                _recovery_target_binding_digest(
+                    post_state.payload,
+                    target_query_ids=record.target_query_ids,
+                    target_component_paths=record.target_component_paths,
+                )
+                if not post_issue
+                else (post_issue, "")
+            )
             if (
-                post_state.is_error
+                post_issue
+                or post_binding_issue
                 or post_summary.get("state_fingerprint_truncated")
                 or not post_fingerprint
+                or not _same_document(
+                    record.document, post_state.payload.get("document") or {}
+                )
             ):
                 status = "recovery_unverified"
             else:
-                self._last_operation.update(
-                    {
-                        "document": post_state.payload.get("document") or {},
-                        "after_fingerprint": _snapshot_fingerprint(post_state.payload),
-                        "after_state_fingerprint": post_fingerprint,
-                        "state_fingerprint_truncated": False,
-                        "after": post_state.payload,
-                        "recovery_phase": "undone" if action == "undo" else "applied",
-                    }
+                record.document = copy.deepcopy(
+                    post_state.payload.get("document") or {}
                 )
+                record.state_fingerprint = str(post_fingerprint)
+                record.target_binding_digest = post_binding_digest
+                record.after = copy.deepcopy(post_state.payload)
+                record.recovery_phase = "undone" if action == "undo" else "applied"
+                record.generation += 1
+                record.issued_at = time.monotonic()
+                record.claim_state = "issued"
+        if status != "recovered_verified":
+            record.claim_state = "consumed"
         return FastPathResponse(
             {
                 "operation_id": recovery_id,
@@ -1839,11 +2484,14 @@ def _inspection_args_for_request(
 def _target_record_error(match: Any, query_id: str) -> str | None:
     if not isinstance(match, dict):
         return f"invalid_target_record:{query_id}"
-    if match.get("visible") is False:
+    if match.get("visible") is not True:
         return f"hidden_target_requires_safe_harness:{query_id}"
-    if match.get("is_referenced_component") is True:
+    if match.get("is_referenced_component") is not False:
         return f"referenced_target_requires_safe_harness:{query_id}"
-    if int(match.get("occurrence_count_for_component") or 0) > 1:
+    occurrence_count = match.get("occurrence_count_for_component", 0)
+    if not _valid_count(occurrence_count):
+        return f"invalid_target_occurrence_count:{query_id}"
+    if occurrence_count > 1:
         return f"shared_component_requires_safe_harness:{query_id}"
     return None
 
@@ -1863,13 +2511,148 @@ def _mutation_baseline_issue(
         return "snapshot_truncated"
     if snapshot.get("stop_reason") not in (None, "", "complete"):
         return f"stop_reason:{snapshot.get('stop_reason')}"
-    for index, result in enumerate(snapshot.get("results", [])):
+    results = snapshot.get("results")
+    if not isinstance(results, list):
+        return "results_not_list"
+    seen_query_ids: set[str] = set()
+    for index, result in enumerate(results):
         if not isinstance(result, dict):
             return f"invalid_query_result:{index}"
+        raw_query_id = result.get("query_id")
+        if not isinstance(raw_query_id, str) or not raw_query_id:
+            return f"query_id_invalid:{index}"
+        query_id = raw_query_id
+        if query_id in seen_query_ids:
+            return f"query_id_duplicate:{query_id}"
+        seen_query_ids.add(query_id)
         if result.get("match_count_exact") is not True:
-            query_id = str(result.get("query_id") or index)
             return f"query_match_count_inexact:{query_id}"
+        if result.get("truncated") is True:
+            return f"query_truncated:{query_id}"
+        matches = result.get("matches")
+        if not isinstance(matches, list):
+            return f"query_matches_not_list:{query_id}"
+        match_count = result.get("match_count")
+        if (
+            not isinstance(match_count, int)
+            or isinstance(match_count, bool)
+            or match_count < 0
+        ):
+            return f"invalid_query_match_count:{query_id}"
+        if match_count != len(matches):
+            return f"query_match_count_mismatch:{query_id}"
+    expected_query_ids = _expected_snapshot_query_ids(request)
+    if expected_query_ids:
+        missing = sorted(expected_query_ids - seen_query_ids)
+        if missing:
+            return f"query_result_missing:{missing[0]}"
+        unexpected = sorted(seen_query_ids - expected_query_ids)
+        if unexpected:
+            return f"query_result_unexpected:{unexpected[0]}"
     return None
+
+
+def _expected_snapshot_query_ids(request: dict[str, Any]) -> set[str]:
+    verification = request.get("verification")
+    queries = verification.get("queries") if isinstance(verification, dict) else None
+    if not isinstance(queries, list):
+        return set()
+    expected = {
+        query["id"]
+        for query in queries
+        if isinstance(query, dict) and isinstance(query.get("id"), str) and query["id"]
+    }
+    component_paths = request.get("target_component_paths")
+    if isinstance(component_paths, list):
+        expected.update(
+            _component_query_id(path)
+            for path in component_paths
+            if isinstance(path, str) and path
+        )
+    return expected
+
+
+def _mutation_readback_issue(
+    request: dict[str, Any], snapshot: dict[str, Any]
+) -> str | None:
+    issue = _mutation_baseline_issue(request, snapshot)
+    if issue:
+        return issue
+    for index, result in enumerate(snapshot.get("results") or []):
+        query_id = str(result.get("query_id") or index)
+        if result.get("ambiguous") is True or result.get("ambiguity_unknown") is True:
+            return f"query_ambiguous:{query_id}"
+    return None
+
+
+def _mutation_preview_issue(
+    request: dict[str, Any], snapshot: dict[str, Any]
+) -> str | None:
+    issue = _mutation_baseline_issue(request, snapshot)
+    if issue or request.get("change_class") == "read_only":
+        return issue
+    summary = snapshot.get("summary")
+    if not isinstance(summary, dict):
+        return "summary_not_object"
+    if summary.get("state_fingerprint_truncated") is not False:
+        return "state_fingerprint_truncated"
+    fingerprint = summary.get("state_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        return "state_fingerprint_unavailable"
+    return None
+
+
+def _stable_document_binding(document: Any) -> str:
+    if not isinstance(document, dict):
+        return ""
+    data_id = document.get("id")
+    if isinstance(data_id, str) and data_id.strip():
+        return f"data:{data_id.strip()}"
+    runtime_id = document.get("runtime_id")
+    if isinstance(runtime_id, str) and runtime_id.strip():
+        return f"runtime:{runtime_id.strip()}"
+    return ""
+
+
+def _request_document_binding_issue(document: Any) -> str | None:
+    """Bind a request-local document grant to the completed baseline."""
+
+    context = current_request_context()
+    if context is None:
+        return None
+    fixture_capabilities = [
+        capability
+        for capability in context.capabilities
+        if capability == "benchmark_fixture"
+        or capability.startswith("benchmark_fixture:")
+    ]
+    if fixture_capabilities and (
+        len(fixture_capabilities) != 1
+        or BENCHMARK_FIXTURE_CAPABILITY_PATTERN.fullmatch(fixture_capabilities[0])
+        is None
+    ):
+        return "benchmark_fixture_capability_invalid"
+    expected = context.document_identity
+    if fixture_capabilities and (not isinstance(expected, str) or not expected.strip()):
+        return "benchmark_fixture_document_identity_missing"
+    if expected is None:
+        return None
+    if not isinstance(expected, str) or not expected.strip():
+        return "request_document_identity_unavailable"
+    observed = _stable_document_binding(document)
+    if not observed:
+        return "request_document_identity_unavailable"
+    if expected != observed:
+        return "request_document_identity_mismatch"
+    return None
+
+
+def _canonical_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _validate_targets(
@@ -1879,8 +2662,8 @@ def _validate_targets(
     by_id = {result.get("query_id"): result for result in snapshot.get("results", [])}
     document = snapshot.get("document") or {}
     bindings: dict[str, dict[str, str]] = {"targets": {}, "target_components": {}}
-    if request["change_class"] != "read_only" and not (
-        document.get("id") or document.get("runtime_id")
+    if request["change_class"] != "read_only" and not _stable_document_binding(
+        document
     ):
         return "document_stable_identity_unavailable", bindings
     for query_id in request["target_query_ids"]:
@@ -1899,7 +2682,8 @@ def _validate_targets(
             if error:
                 return error, bindings
         if request["change_class"] == "scoped_update":
-            token = str(matches[0].get("entity_token") or "")
+            raw_token = matches[0].get("entity_token")
+            token = raw_token.strip() if isinstance(raw_token, str) else ""
             if not token:
                 return f"target_entity_token_missing:{query_id}", bindings
             bindings["targets"][query_id] = token
@@ -1919,17 +2703,125 @@ def _validate_targets(
             if error:
                 return error, bindings
             paths = match.get("paths") or []
+            if not isinstance(paths, list) or not all(
+                isinstance(path, str) and path for path in paths
+            ):
+                return f"target_component_paths_invalid:{component_path}", bindings
             if component_path not in paths:
                 return f"target_component_path_mismatch:{component_path}", bindings
+            raw_token = match.get("entity_token")
             token = (
                 _ROOT_COMPONENT_BINDING
                 if component_path == "root"
-                else str(match.get("entity_token") or "")
+                else (raw_token.strip() if isinstance(raw_token, str) else "")
             )
             if not token:
                 return f"target_component_token_missing:{component_path}", bindings
             bindings["target_components"][component_path] = token
     return None, bindings
+
+
+def _recovery_target_binding_digest(
+    snapshot: dict[str, Any],
+    *,
+    target_query_ids: tuple[str, ...],
+    target_component_paths: tuple[str, ...],
+) -> tuple[str | None, str]:
+    """Bind recovery to exact target identities, including expected absence."""
+
+    results = snapshot.get("results")
+    if not isinstance(results, list):
+        return "results_not_list", ""
+    by_id = {
+        result.get("query_id"): result for result in results if isinstance(result, dict)
+    }
+    bindings: dict[str, dict[str, Any]] = {
+        "targets": {},
+        "target_components": {},
+    }
+    for query_id in target_query_ids:
+        result = by_id.get(query_id)
+        if not isinstance(result, dict):
+            return f"target_query_missing:{query_id}", ""
+        matches = result.get("matches")
+        if (
+            result.get("match_count_exact") is not True
+            or result.get("truncated") is True
+            or result.get("ambiguous") is True
+            or result.get("ambiguity_unknown") is True
+            or not isinstance(matches, list)
+            or result.get("match_count") != len(matches)
+            or len(matches) > 1
+        ):
+            return f"target_query_inexact:{query_id}", ""
+        tokens: list[str] = []
+        for match in matches:
+            if not isinstance(match, dict):
+                return f"invalid_target_record:{query_id}", ""
+            raw_token = match.get("entity_token")
+            token = raw_token.strip() if isinstance(raw_token, str) else ""
+            if not token:
+                return f"target_entity_token_missing:{query_id}", ""
+            tokens.append(token)
+        bindings["targets"][query_id] = sorted(tokens)
+
+    for component_path in target_component_paths:
+        query_id = _component_query_id(component_path)
+        result = by_id.get(query_id)
+        matches = result.get("matches") if isinstance(result, dict) else None
+        if (
+            not isinstance(result, dict)
+            or result.get("match_count_exact") is not True
+            or result.get("truncated") is True
+            or result.get("ambiguous") is True
+            or result.get("ambiguity_unknown") is True
+            or not isinstance(matches, list)
+            or result.get("match_count") != len(matches)
+            or len(matches) != 1
+        ):
+            return f"target_component_inexact:{component_path}", ""
+        match = matches[0]
+        error = _target_record_error(match, f"component:{component_path}")
+        if error:
+            return error, ""
+        paths = match.get("paths")
+        if not isinstance(paths, list) or component_path not in paths:
+            return f"target_component_path_mismatch:{component_path}", ""
+        raw_token = match.get("entity_token")
+        token = (
+            _ROOT_COMPONENT_BINDING
+            if component_path == "root"
+            else (raw_token.strip() if isinstance(raw_token, str) else "")
+        )
+        if not token:
+            return f"target_component_token_missing:{component_path}", ""
+        bindings["target_components"][component_path] = token
+    return None, _canonical_digest(bindings)
+
+
+def _recovery_record_drift(
+    record: _RecoveryRecord, snapshot: dict[str, Any]
+) -> str | None:
+    issue = _mutation_readback_issue({"change_class": "scoped_update"}, snapshot)
+    if issue:
+        return issue
+    summary = snapshot.get("summary") or {}
+    if summary.get("state_fingerprint_truncated") is not False:
+        return "state_fingerprint_truncated"
+    if summary.get("state_fingerprint") != record.state_fingerprint:
+        return "state_fingerprint_changed"
+    if not _same_document(record.document, snapshot.get("document") or {}):
+        return "document_changed"
+    binding_error, binding_digest = _recovery_target_binding_digest(
+        snapshot,
+        target_query_ids=record.target_query_ids,
+        target_component_paths=record.target_component_paths,
+    )
+    if binding_error:
+        return binding_error
+    if binding_digest != record.target_binding_digest:
+        return "target_binding_changed"
+    return None
 
 
 def evaluate_verification(
@@ -1941,34 +2833,67 @@ def evaluate_verification(
 ) -> dict[str, Any]:
     """Evaluate the declared contract plus automatic document/count invariants."""
 
-    details = []
+    envelope_issue = _mutation_readback_issue(
+        {"change_class": "scoped_update"}, baseline
+    ) or _mutation_readback_issue({"change_class": "scoped_update"}, after)
+    details: list[dict[str, Any]] = []
+    baseline_items = baseline.get("results")
+    after_items = after.get("results")
+    if not isinstance(baseline_items, list):
+        baseline_items = []
+    if not isinstance(after_items, list):
+        after_items = []
     baseline_results = {
-        item.get("query_id"): item for item in baseline.get("results", [])
+        item.get("query_id"): item for item in baseline_items if isinstance(item, dict)
     }
-    after_results = {item.get("query_id"): item for item in after.get("results", [])}
+    after_results = {
+        item.get("query_id"): item for item in after_items if isinstance(item, dict)
+    }
     for assertion in assertions:
-        before_value = _query_value(
+        before_value, before_issue = _query_value(
             baseline_results.get(assertion["query_id"], {}), assertion["field"]
         )
-        after_value = _query_value(
+        after_value, after_issue = _query_value(
             after_results.get(assertion["query_id"], {}), assertion["field"]
         )
-        passed, message = _compare(assertion, before_value, after_value)
+        requires_before = assertion["operator"] in {
+            "unchanged",
+            "increased_by",
+            "decreased_by",
+        }
+        evidence_issue = after_issue or (before_issue if requires_before else None)
+        detail_reason_code: str | None
+        if envelope_issue or evidence_issue:
+            status = "incomplete"
+            detail_reason_code = "INCOMPLETE_INSPECTION"
+            message = envelope_issue or evidence_issue or "inspection is incomplete"
+        else:
+            status, message, detail_reason_code = _compare(
+                assertion, before_value, after_value
+            )
         details.append(
             {
                 **assertion,
                 "before": before_value,
                 "actual": after_value,
-                "passed": passed,
+                "status": status,
+                "passed": status == "passed",
                 "message": message,
+                **({"reason_code": detail_reason_code} if detail_reason_code else {}),
             }
         )
 
-    invariants = []
+    invariants: list[dict[str, Any]] = []
     same_document = _same_document(
         baseline.get("document") or {}, after.get("document") or {}
     )
-    invariants.append({"name": "document_identity_unchanged", "passed": same_document})
+    invariants.append(
+        {
+            "name": "document_identity_unchanged",
+            "status": "passed" if same_document else "failed",
+            "passed": same_document,
+        }
+    )
     before_summary = baseline.get("summary") or {}
     after_summary = after.get("summary") or {}
     count_keys = {
@@ -1980,31 +2905,78 @@ def evaluate_verification(
         "parameters",
         "visible_body_count",
     }
-    comparable_counts = [key for key in count_keys if key in before_summary]
-    if change_class == "additive":
-        counts_ok = all(
-            after_summary.get(key, 0) >= before_summary.get(key, 0)
+    comparable_counts = sorted(
+        key for key in count_keys if key in before_summary or key in after_summary
+    )
+    invalid_count_key = next(
+        (
+            key
             for key in comparable_counts
+            if not _valid_count(before_summary.get(key))
+            or not _valid_count(after_summary.get(key))
+        ),
+        None,
+    )
+    if invalid_count_key is not None:
+        invariants.append(
+            {
+                "name": "summary_counts_valid",
+                "status": "incomplete",
+                "passed": False,
+                "reason_code": "INVALID_NUMERIC_EVIDENCE",
+                "field": invalid_count_key,
+            }
+        )
+    elif change_class == "additive":
+        counts_ok = all(
+            after_summary[key] >= before_summary[key] for key in comparable_counts
         )
         invariants.append(
-            {"name": "additive_counts_do_not_decrease", "passed": counts_ok}
+            {
+                "name": "additive_counts_do_not_decrease",
+                "status": "passed" if counts_ok else "failed",
+                "passed": counts_ok,
+            }
         )
     elif change_class in {"read_only", "scoped_update"}:
         counts_ok = all(
-            after_summary.get(key) == before_summary.get(key)
-            for key in comparable_counts
+            after_summary[key] == before_summary[key] for key in comparable_counts
         )
         invariants.append(
-            {"name": f"{change_class}_counts_unchanged", "passed": counts_ok}
+            {
+                "name": f"{change_class}_counts_unchanged",
+                "status": "passed" if counts_ok else "failed",
+                "passed": counts_ok,
+            }
         )
     visible_bbox = after_summary.get("visible_body_bbox_mm")
     if visible_bbox is not None:
+        bbox_numeric_valid = _numeric_tree_is_finite(
+            visible_bbox
+        ) and not _tree_has_bool(visible_bbox)
+        bbox_valid = bbox_numeric_valid and _valid_bbox(visible_bbox)
         invariants.append(
-            {"name": "visible_body_bbox_valid", "passed": _valid_bbox(visible_bbox)}
+            {
+                "name": "visible_body_bbox_valid",
+                "status": (
+                    "passed"
+                    if bbox_valid
+                    else "incomplete"
+                    if not bbox_numeric_valid
+                    else "failed"
+                ),
+                "passed": bbox_valid,
+                **(
+                    {"reason_code": "INVALID_NUMERIC_EVIDENCE"}
+                    if not bbox_numeric_valid
+                    else {}
+                ),
+            }
         )
     target_matches = [
         match
-        for result in after.get("results", [])
+        for result in after_items
+        if isinstance(result, dict)
         for match in result.get("matches", [])
         if isinstance(match, dict)
     ]
@@ -2017,6 +2989,9 @@ def evaluate_verification(
         invariants.append(
             {
                 "name": "target_feature_health",
+                "status": "passed"
+                if all(_healthy_feature_value(value) for value in feature_health)
+                else "failed",
                 "passed": all(
                     _healthy_feature_value(value) for value in feature_health
                 ),
@@ -2029,13 +3004,40 @@ def evaluate_verification(
         if match.get("bounding_box_mm") is not None
     ]
     if bounding_boxes:
-        bbox_ok = all(_valid_bbox(bbox) for bbox in bounding_boxes)
-        invariants.append({"name": "target_bounding_boxes_valid", "passed": bbox_ok})
+        bbox_numeric_valid = all(
+            _numeric_tree_is_finite(bbox) and not _tree_has_bool(bbox)
+            for bbox in bounding_boxes
+        )
+        bbox_ok = bbox_numeric_valid and all(
+            _valid_bbox(bbox) for bbox in bounding_boxes
+        )
+        invariants.append(
+            {
+                "name": "target_bounding_boxes_valid",
+                "status": (
+                    "passed"
+                    if bbox_ok
+                    else "incomplete"
+                    if not bbox_numeric_valid
+                    else "failed"
+                ),
+                "passed": bbox_ok,
+                **(
+                    {"reason_code": "INVALID_NUMERIC_EVIDENCE"}
+                    if not bbox_numeric_valid
+                    else {}
+                ),
+            }
+        )
     assertions_required = change_class != "read_only"
+    incomplete = bool(envelope_issue) or any(
+        item.get("status") == "incomplete" for item in [*details, *invariants]
+    )
     passed = (
-        (bool(details) or not assertions_required)
-        and all(item["passed"] for item in details)
-        and all(item["passed"] for item in invariants)
+        not incomplete
+        and (bool(details) or not assertions_required)
+        and all(item.get("status") == "passed" for item in details)
+        and all(item.get("status") == "passed" for item in invariants)
     )
     requirements = requirements or []
     assertion_results = {item["id"]: item for item in details}
@@ -2046,7 +3048,8 @@ def evaluate_verification(
             assertion_id in assertion_results for assertion_id in assertion_ids
         )
         requirement_passed = covered and all(
-            assertion_results[assertion_id]["passed"] for assertion_id in assertion_ids
+            assertion_results[assertion_id].get("status") == "passed"
+            for assertion_id in assertion_ids
         )
         independent = requirement.get("oracle") == "independent_oracle"
         requirement_results.append(
@@ -2072,6 +3075,7 @@ def evaluate_verification(
         required_results
         and intent_coverage == "complete"
         and passed
+        and not incomplete
         and all(item["passed"] for item in required_results)
     )
     independent_declared = any(
@@ -2086,10 +3090,23 @@ def evaluate_verification(
         verification_level = "contract"
     else:
         verification_level = "assertions_only"
+    decision_reason_code: str | None = next(
+        (
+            str(item["reason_code"])
+            for item in [*details, *invariants]
+            if item.get("reason_code") == "INVALID_NUMERIC_EVIDENCE"
+        ),
+        "INCOMPLETE_INSPECTION" if incomplete else None,
+    )
     return {
         "passed": passed,
         "assertions_passed": passed,
-        "assertion_status": "passed" if passed else "failed",
+        "assertion_status": "incomplete"
+        if incomplete
+        else "passed"
+        if passed
+        else "failed",
+        **({"reason_code": decision_reason_code} if decision_reason_code else {}),
         "assertions": details,
         "invariants": invariants,
         "requirements": requirement_results,
@@ -2099,6 +3116,20 @@ def evaluate_verification(
     }
 
 
+def _valid_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _tree_has_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, dict):
+        return any(_tree_has_bool(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_tree_has_bool(item) for item in value)
+    return False
+
+
 def _valid_bbox(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
@@ -2106,7 +3137,7 @@ def _valid_bbox(value: Any) -> bool:
     if not isinstance(size, list) or len(size) != 3:
         return False
     try:
-        return all(math.isfinite(float(item)) and float(item) >= 0.0 for item in size)
+        return all(_finite_number(item) and float(item) >= 0.0 for item in size)
     except (TypeError, ValueError):
         return False
 
@@ -2120,9 +3151,45 @@ def _healthy_feature_value(value: str) -> bool:
     )
 
 
-def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool, str]:
+def _compare(
+    assertion: dict[str, Any], before: Any, actual: Any
+) -> tuple[str, str, str | None]:
     operator = assertion["operator"]
     expected = assertion.get("expected")
+    numeric_values = [expected, actual]
+    if operator in {"increased_by", "decreased_by"}:
+        numeric_values.append(before)
+    if (
+        not _numeric_tree_is_finite(expected)
+        or not _numeric_tree_is_finite(actual)
+        or (
+            operator in {"unchanged", "increased_by", "decreased_by"}
+            and not _numeric_tree_is_finite(before)
+        )
+    ):
+        return (
+            "incomplete",
+            "numeric evidence must be finite",
+            "INVALID_NUMERIC_EVIDENCE",
+        )
+    if operator in NUMERIC_ASSERTION_OPERATORS and not all(
+        _finite_number(value) for value in numeric_values
+    ):
+        return (
+            "incomplete",
+            "numeric evidence must be typed and finite",
+            "INVALID_NUMERIC_EVIDENCE",
+        )
+    if operator == "approx":
+        tolerance = assertion.get("tolerance")
+        if not _finite_number(tolerance) or float(tolerance) < 0.0:
+            return (
+                "incomplete",
+                "numeric tolerance must be finite and non-negative",
+                "INVALID_NUMERIC_EVIDENCE",
+            )
+        assert _finite_number(actual)
+        assert _finite_number(expected)
     try:
         if operator == "eq":
             passed = actual == expected
@@ -2130,9 +3197,9 @@ def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool,
             passed = actual != expected
         elif operator == "approx":
             passed = math.isclose(
-                float(actual),
-                float(expected),
-                abs_tol=float(assertion["tolerance"]),
+                float(cast(int | float, actual)),
+                float(cast(int | float, expected)),
+                abs_tol=float(cast(int | float, assertion["tolerance"])),
                 rel_tol=0.0,
             )
         elif operator == "gte":
@@ -2149,30 +3216,51 @@ def _compare(assertion: dict[str, Any], before: Any, actual: Any) -> tuple[bool,
             passed = actual == before - expected
         else:
             passed = False
-    except (TypeError, ValueError, KeyError):
+    except (ArithmeticError, TypeError, ValueError, KeyError):
         passed = False
     return (
-        passed,
+        "passed" if passed else "failed",
         "ok" if passed else f"expected {operator} {expected!r}, got {actual!r}",
+        None,
     )
 
 
-def _query_value(result: dict[str, Any], field_name: str) -> Any:
+def _query_value(result: dict[str, Any], field_name: str) -> tuple[Any, str | None]:
+    if not isinstance(result, dict) or not result:
+        return None, "query_result_missing"
+    query_id = str(result.get("query_id") or "unknown")
+    if result.get("match_count_exact") is not True:
+        return None, f"query_match_count_inexact:{query_id}"
+    if result.get("truncated") is True:
+        return None, f"query_truncated:{query_id}"
+    if result.get("ambiguous") is True or result.get("ambiguity_unknown") is True:
+        return None, f"query_ambiguous:{query_id}"
+    matches = result.get("matches")
+    if not isinstance(matches, list):
+        return None, f"query_matches_not_list:{query_id}"
+    match_count = result.get("match_count")
+    if not _valid_count(match_count) or match_count != len(matches):
+        return None, f"query_match_count_invalid:{query_id}"
+    if len(matches) > 1:
+        return None, f"query_target_not_unique:{query_id}"
     if field_name == "exists":
-        return bool(result.get("matches"))
-    matches = result.get("matches") or []
-    if not matches:
-        return None
+        return bool(matches), None
+    if len(matches) != 1:
+        return None, f"query_target_not_unique:{query_id}"
     value: Any = matches[0]
     for part in field_name.split("."):
         if isinstance(value, list) and part.isdigit():
             index = int(part)
-            value = value[index] if index < len(value) else None
+            if index >= len(value):
+                return None, f"query_field_missing:{query_id}:{field_name}"
+            value = value[index]
         elif isinstance(value, dict):
-            value = value.get(part)
+            if part not in value:
+                return None, f"query_field_missing:{query_id}:{field_name}"
+            value = value[part]
         else:
-            return None
-    return value
+            return None, f"query_field_missing:{query_id}:{field_name}"
+    return value, None
 
 
 def _guard_script(
@@ -2180,7 +3268,21 @@ def _guard_script(
     document: dict[str, Any],
     *,
     bindings: dict[str, dict[str, str]] | None = None,
+    sink_probe_script: str | None = None,
+    expected_state_fingerprint: str = "",
+    guard_token: str,
+    guard_binding_digest: str,
 ) -> str:
+    if bool(sink_probe_script) != bool(expected_state_fingerprint):
+        raise ValueError(
+            "sink probe and expected state fingerprint must be supplied together"
+        )
+    if len(expected_state_fingerprint) > 256:
+        raise ValueError("expected state fingerprint is too long")
+    if not re.fullmatch(r"[0-9a-f]{32}", guard_token):
+        raise ValueError("guard token must be 32 lowercase hexadecimal characters")
+    if not re.fullmatch(r"[0-9a-f]{64}", guard_binding_digest):
+        raise ValueError("guard binding digest must be a SHA-256 hex digest")
     expected_name = json.dumps(document.get("name") or "")
     expected_id = json.dumps(document.get("id") or "")
     expected_runtime_id = json.dumps(document.get("runtime_id") or "")
@@ -2189,6 +3291,19 @@ def _guard_script(
     expected_components = json.dumps(
         binding_payload.get("target_components") or {}, sort_keys=True
     )
+    sink_probe_bytes = (sink_probe_script or "").encode("utf-8")
+    encoded_sink_probe = json.dumps(
+        base64.b85encode(zlib.compress(sink_probe_bytes, level=9)).decode("ascii")
+        if sink_probe_bytes
+        else ""
+    )
+    sink_probe_sha256 = json.dumps(
+        hashlib.sha256(sink_probe_bytes).hexdigest() if sink_probe_bytes else ""
+    )
+    expected_sink_fingerprint = json.dumps(expected_state_fingerprint)
+    encoded_guard_token = json.dumps(guard_token)
+    encoded_guard_binding_digest = json.dumps(guard_binding_digest)
+    encoded_guard_schema = json.dumps(GUARD_CONTROL_SCHEMA)
     root_component_binding = json.dumps(_ROOT_COMPONENT_BINDING)
     parsed = ast.parse(script)
     entrypoints = [
@@ -2206,16 +3321,40 @@ def _guard_script(
         + "def run(_context: str):\n"
         + "    import adsk.core\n"
         + "    import adsk.fusion\n"
+        + "    import json as _fusion_agent_guard_json\n"
+        + f"    _fusion_agent_guard_schema = {encoded_guard_schema}\n"
+        + f"    _fusion_agent_guard_token = {encoded_guard_token}\n"
+        + f"    _fusion_agent_guard_binding_digest = {encoded_guard_binding_digest}\n"
+        + "    def _fusion_agent_reject_guard(_reason_code):\n"
+        + "        _control = {'fusion_agent_guard': {'schema': _fusion_agent_guard_schema, 'token': _fusion_agent_guard_token, 'binding_digest': _fusion_agent_guard_binding_digest, 'status': 'rejected_before_apply', 'reason_code': _reason_code}}\n"
+        + "        print(_fusion_agent_guard_json.dumps(_control, sort_keys=True, separators=(',', ':')))\n"
+        + "        return _control\n"
         + "    _app = adsk.core.Application.get()\n"
         + "    _doc = _app.activeDocument\n"
         + "    if _doc is None:\n"
-        + "        raise RuntimeError('Fusion Agent document guard: no active document')\n"
+        + "        return _fusion_agent_reject_guard('DOCUMENT_MISSING')\n"
         + f"    _expected_name = {expected_name}\n"
         + f"    _expected_id = {expected_id}\n"
         + f"    _expected_runtime_id = {expected_runtime_id}\n"
         + f"    _expected_targets = {expected_targets}\n"
         + f"    _expected_components = {expected_components}\n"
         + f"    _root_component_binding = {root_component_binding}\n"
+        + f"    _sink_probe_b85 = {encoded_sink_probe}\n"
+        + f"    _sink_probe_sha256 = {sink_probe_sha256}\n"
+        + f"    _expected_state_fingerprint = {expected_sink_fingerprint}\n"
+        + "    _command_id = ''\n"
+        + "    _command_read = False\n"
+        + "    try:\n"
+        + "        _command_id = str(_app.activeCommand or '')\n"
+        + "        _command_read = True\n"
+        + "    except BaseException:\n"
+        + "        try:\n"
+        + "            _command_id = str(_app.userInterface.activeCommand or '')\n"
+        + "            _command_read = True\n"
+        + "        except BaseException:\n"
+        + "            _command_read = False\n"
+        + "    if not _command_read or _command_id not in {'', 'SelectCommand', 'FusionSelectCommand'}:\n"
+        + "        return _fusion_agent_reject_guard('ACTIVE_COMMAND_CHANGED')\n"
         + "    _actual_id = ''\n"
         + "    _actual_runtime_id = ''\n"
         + "    try:\n"
@@ -2233,49 +3372,90 @@ def _guard_script(
         + "        except BaseException:\n"
         + "            _actual_runtime_id = ''\n"
         + "    if _expected_name and _doc.name != _expected_name:\n"
-        + "        raise RuntimeError('Fusion Agent document guard: active document changed')\n"
+        + "        return _fusion_agent_reject_guard('DOCUMENT_NAME_CHANGED')\n"
         + "    if _expected_id and _actual_id and _actual_id != _expected_id:\n"
-        + "        raise RuntimeError('Fusion Agent document guard: data file changed')\n"
+        + "        return _fusion_agent_reject_guard('DOCUMENT_DATA_FILE_CHANGED')\n"
         + "    if _expected_runtime_id and _actual_runtime_id != _expected_runtime_id:\n"
-        + "        raise RuntimeError('Fusion Agent document guard: runtime document changed')\n"
-        + "    _design = _app.activeProduct\n"
+        + "        return _fusion_agent_reject_guard('DOCUMENT_RUNTIME_ID_CHANGED')\n"
+        + "    if _expected_state_fingerprint:\n"
+        + "        try:\n"
+        + "            import base64 as _fusion_agent_base64\n"
+        + "            import hashlib as _fusion_agent_hashlib\n"
+        + "            import zlib as _fusion_agent_zlib\n"
+        + "            _sink_probe_source = _fusion_agent_zlib.decompress(_fusion_agent_base64.b85decode(_sink_probe_b85.encode('ascii'))).decode('utf-8')\n"
+        + "            if _fusion_agent_hashlib.sha256(_sink_probe_source.encode('utf-8')).hexdigest() != _sink_probe_sha256:\n"
+        + "                return _fusion_agent_reject_guard('SINK_PROBE_INTEGRITY_FAILED')\n"
+        + "            _sink_probe_namespace = {}\n"
+        + "            exec(compile(_sink_probe_source, '<fusion_agent_sink_guard>', 'exec'), _sink_probe_namespace)\n"
+        + "            _sink_probe_output = []\n"
+        + "            def _fusion_agent_sink_print(*_values, **_options):\n"
+        + "                if _options:\n"
+        + "                    raise RuntimeError('unexpected probe output options')\n"
+        + "                _sink_probe_output.append(' '.join(str(_value) for _value in _values))\n"
+        + "            _sink_probe_namespace['print'] = _fusion_agent_sink_print\n"
+        + "            _sink_probe_namespace['run'](_context)\n"
+        + "            if len(_sink_probe_output) != 1:\n"
+        + "                return _fusion_agent_reject_guard('SINK_INSPECTION_INCOMPLETE')\n"
+        + "            _sink_snapshot = _fusion_agent_guard_json.loads(_sink_probe_output[0])\n"
+        + "            _sink_summary = _sink_snapshot.get('summary') if isinstance(_sink_snapshot, dict) else None\n"
+        + "            if not isinstance(_sink_summary, dict) or _sink_snapshot.get('success') is not True or _sink_snapshot.get('complete') is not True or _sink_snapshot.get('counts_exact') is not True or _sink_snapshot.get('truncated') is not False or _sink_snapshot.get('stop_reason') not in (None, '', 'complete'):\n"
+        + "                return _fusion_agent_reject_guard('SINK_INSPECTION_INCOMPLETE')\n"
+        + "            if _sink_summary.get('state_fingerprint_truncated') is not False or _sink_summary.get('state_fingerprint') != _expected_state_fingerprint:\n"
+        + "                return _fusion_agent_reject_guard('SINK_STATE_FINGERPRINT_CHANGED')\n"
+        + "        except BaseException:\n"
+        + "            return _fusion_agent_reject_guard('SINK_PROBE_FAILED')\n"
+        + "    try:\n"
+        + "        _design = _app.activeProduct\n"
+        + "    except BaseException:\n"
+        + "        _design = None\n"
+        + "    if _design is None:\n"
+        + "        return _fusion_agent_reject_guard('ACTIVE_DESIGN_UNAVAILABLE')\n"
         + "    def _resolve_bound_entity(_token):\n"
-        + "        if _token == _root_component_binding:\n"
-        + "            return _design.rootComponent\n"
-        + "        _found = _design.findEntityByToken(_token)\n"
-        + "        if isinstance(_found, tuple) and len(_found) == 2 and isinstance(_found[1], bool):\n"
-        + "            _found = _found[0]\n"
-        + "        if isinstance(_found, (list, tuple)):\n"
-        + "            _items = list(_found)\n"
-        + "        else:\n"
-        + "            try:\n"
-        + "                _items = list(_found) if _found is not None else []\n"
-        + "            except TypeError:\n"
-        + "                _count = int(getattr(_found, 'count', 0) or 0) if _found is not None else 0\n"
-        + "                if _count:\n"
-        + "                    _items = [_found.item(_index) for _index in range(_count)]\n"
-        + "                else:\n"
-        + "                    _items = [_found] if _found is not None else []\n"
-        + "        _items = [_item for _item in _items if _item is not None]\n"
-        + "        if len(_items) != 1:\n"
-        + "            raise RuntimeError('Fusion Agent target binding guard: entity token did not resolve uniquely')\n"
-        + "        return _items[0]\n"
+        + "        try:\n"
+        + "            if _token == _root_component_binding:\n"
+        + "                return _design.rootComponent\n"
+        + "            _found = _design.findEntityByToken(_token)\n"
+        + "            if isinstance(_found, tuple) and len(_found) == 2 and isinstance(_found[1], bool):\n"
+        + "                _found = _found[0]\n"
+        + "            if isinstance(_found, (list, tuple)):\n"
+        + "                _items = list(_found)\n"
+        + "            else:\n"
+        + "                try:\n"
+        + "                    _items = list(_found) if _found is not None else []\n"
+        + "                except TypeError:\n"
+        + "                    _count = int(getattr(_found, 'count', 0) or 0) if _found is not None else 0\n"
+        + "                    if _count:\n"
+        + "                        _items = [_found.item(_index) for _index in range(_count)]\n"
+        + "                    else:\n"
+        + "                        _items = [_found] if _found is not None else []\n"
+        + "            _items = [_item for _item in _items if _item is not None]\n"
+        + "            if len(_items) != 1:\n"
+        + "                return None\n"
+        + "            return _items[0]\n"
+        + "        except BaseException:\n"
+        + "            return None\n"
         + "    global targets, target_components\n"
-        + "    targets = {_key: _resolve_bound_entity(_token) for _key, _token in _expected_targets.items()}\n"
-        + "    target_components = {_key: _resolve_bound_entity(_token) for _key, _token in _expected_components.items()}\n"
+        + "    targets = {}\n"
+        + "    for _key, _token in _expected_targets.items():\n"
+        + "        _entity = _resolve_bound_entity(_token)\n"
+        + "        if _entity is None:\n"
+        + "            return _fusion_agent_reject_guard('TARGET_BINDING_UNAVAILABLE')\n"
+        + "        targets[_key] = _entity\n"
+        + "    target_components = {}\n"
+        + "    for _key, _token in _expected_components.items():\n"
+        + "        _entity = _resolve_bound_entity(_token)\n"
+        + "        if _entity is None:\n"
+        + "            return _fusion_agent_reject_guard('TARGET_BINDING_UNAVAILABLE')\n"
+        + "        target_components[_key] = _entity\n"
         + "    return _fusion_agent_user_run(_context)\n"
     )
     return guarded
 
 
 def _same_document(before: dict[str, Any], after: dict[str, Any]) -> bool:
-    if not before or not after:
-        return False
-    if before.get("id") and after.get("id"):
-        return before["id"] == after["id"]
-    if before.get("runtime_id") and after.get("runtime_id"):
-        return before["runtime_id"] == after["runtime_id"]
-    return before.get("name") == after.get("name")
+    before_binding = _stable_document_binding(before)
+    after_binding = _stable_document_binding(after)
+    return bool(before_binding and before_binding == after_binding)
 
 
 def _snapshot_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
@@ -2333,11 +3513,48 @@ def _result_meta(result: Any) -> dict[str, Any]:
 
 
 def _result_error(result: Any) -> str:
-    if isinstance(result, dict):
-        return str(
-            result.get("error_message") or result.get("error") or "native call failed"
-        )
-    return str(getattr(result, "error_message", None) or "native call failed")
+    del result
+    return "The downstream Fusion operation failed."
+
+
+def _result_guard_rejection_reason(
+    result: Any,
+    *,
+    expected_token: str,
+    expected_binding_digest: str,
+) -> str | None:
+    """Accept only the operation-bound, success-shaped internal guard envelope."""
+
+    if not _result_ok(result):
+        return None
+    payload = _parse_script_payload(_result_data(result))
+    control = payload.get("fusion_agent_guard")
+    if not isinstance(control, dict) or set(control) != {
+        "schema",
+        "token",
+        "binding_digest",
+        "status",
+        "reason_code",
+    }:
+        return None
+    reason_code = control.get("reason_code")
+    if (
+        control.get("schema") != GUARD_CONTROL_SCHEMA
+        or control.get("token") != expected_token
+        or control.get("binding_digest") != expected_binding_digest
+        or control.get("status") != "rejected_before_apply"
+        or reason_code not in GUARD_REASON_CODES
+    ):
+        return None
+    return cast(str, reason_code)
+
+
+def _guard_verification_source(reason_code: str | None) -> str:
+    if reason_code in SINK_GUARD_REASON_CODES:
+        return "sink_state_guard"
+    if reason_code == "TARGET_BINDING_UNAVAILABLE":
+        return "target_binding_guard"
+    return "document_identity_guard"
 
 
 def _result_error_code(result: Any) -> str | None:
@@ -2346,7 +3563,13 @@ def _result_error_code(result: Any) -> str | None:
         if isinstance(result, dict)
         else getattr(result, "error_code", None)
     )
-    return str(value) if value is not None else None
+    if value is None:
+        return None
+    normalized = str(value).strip().upper()
+    try:
+        return ErrorCode(normalized).value
+    except ValueError:
+        return ErrorCode.FUSION_OPERATION_FAILED.value
 
 
 def _parse_script_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -2376,6 +3599,20 @@ def _active_command(data: Any) -> dict[str, Any] | None:
     if candidate not in (None, False, "") and not isinstance(candidate, dict):
         return {"value": candidate, "isDefaultCommand": False}
     return None
+
+
+def _valid_active_command_evidence(data: Any) -> bool:
+    if not isinstance(data, dict) or "activeCommand" not in data:
+        return False
+    candidate = data["activeCommand"]
+    if candidate is None:
+        return True
+    return bool(
+        isinstance(candidate, dict)
+        and isinstance(candidate.get("id"), str)
+        and candidate["id"].strip()
+        and candidate.get("isDefaultCommand") is False
+    )
 
 
 def _extract_image(data: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:

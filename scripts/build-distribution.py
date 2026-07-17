@@ -15,6 +15,7 @@ from pathlib import Path
 try:
     from scripts.bundle_integrity import (
         SOURCE_MANIFEST_NAME,
+        collect_security_inputs,
         collect_source_files,
         record_digest,
         source_manifest_bytes,
@@ -24,6 +25,7 @@ try:
 except ModuleNotFoundError:  # Executed as ``python scripts/build-distribution.py``.
     from bundle_integrity import (  # type: ignore[no-redef]
         SOURCE_MANIFEST_NAME,
+        collect_security_inputs,
         collect_source_files,
         record_digest,
         source_manifest_bytes,
@@ -71,7 +73,9 @@ def _wheel_files(project: dict) -> tuple[dict[str, bytes], str]:
     source_files = _source_files()
     files = dict(source_files)
     files[f"{dist_info}/{SOURCE_MANIFEST_NAME}"] = source_manifest_bytes(
-        source_files, version
+        source_files,
+        version,
+        security_inputs=collect_security_inputs(ROOT),
     )
     files[f"{dist_info}/METADATA"] = _metadata(project)
     files[f"{dist_info}/WHEEL"] = (
@@ -136,7 +140,7 @@ def build() -> Path:
     target = OUTPUT_ROOT / filename
     with tempfile.NamedTemporaryFile(
         dir=OUTPUT_ROOT,
-        prefix=f".{filename}.",
+        prefix=f".fa-{hashlib.sha256(filename.encode('utf-8')).hexdigest()[:12]}-",
         suffix=".tmp",
         delete=False,
     ) as handle:
@@ -213,6 +217,13 @@ def validate(wheel_path: Path, version: str) -> None:
             if any(tool.outputSchema is None for tool in definitions):
                 raise RuntimeError(
                     "installed wheel contains a tool without output schema"
+                )
+            if any(
+                "script" in tool.inputSchema.get("properties", {})
+                for tool in normal_definitions
+            ):
+                raise RuntimeError(
+                    "installed wheel normal profile exposes an arbitrary script input"
                 )
         finally:
             sys.path.remove(temporary)

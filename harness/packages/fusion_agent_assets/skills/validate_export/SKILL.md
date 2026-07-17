@@ -2,21 +2,24 @@
 
 ## Status
 
-v0 stable target
+0.4.1 compatibility-only; real host output is fail-closed
 
 ## Purpose
 
-Export validated model after acceptance tests pass.
+Validate an export request without dispatching real host output. In 0.4.1,
+real export always returns `HOST_OUTPUT_DISABLED`; mock and dry-run may retain a
+confined receipt for compatibility.
 
 ## Inputs
 
 - target component/body/design
 - export_format
-- output_path
+- output_path (validation input only)
 
 ## Preconditions
 
-- Fusion document is active or mock design state is available.
+- Mock design state is available, or the caller accepts a fail-closed real
+  result without provider dispatch.
 - Units have been inspected.
 - CAD Spec has passed schema validation.
 - All dimensions are explicit unit strings or named parameter expressions.
@@ -24,38 +27,36 @@ Export validated model after acceptance tests pass.
 ## Tool facade operations
 
 - validate_feature_health
-- export_step
-- export_stl
-- validate_export
+- validate_named_objects
 
 ## Procedure
 
-1. Run final acceptance tests.
-2. Reject export if validation fails unless user overrides.
-3. Export to output path.
-4. Validate file exists and non-empty.
-5. Record export in session journal.
+1. Run final programmatic acceptance tests.
+2. Validate the requested path and format without dispatch.
+3. In real mode, return `HOST_OUTPUT_DISABLED` before binding, compilation, or
+   provider construction.
+4. In mock or dry-run only, record a confined compatibility receipt.
 
 ## Acceptance tests
 
-- validation passed before export
-- file exists
-- file size > 0
-- export path recorded
+- real output denied with zero provider calls
+- no output file created in real mode
+- mock/dry-run receipt remains confined to the local output root
 
 ## Common failure modes
 
-- EXPORT_FAILED
-- PERMISSION_ERROR
+- HOST_OUTPUT_DISABLED
 - VALIDATION_NOT_PASSED
+- INVALID_OUTPUT_PATH
 
 ## Memory hooks
 
-- On success: record stable recipe if this skill passed verification.
+- On mock/dry-run success: record a stable validation recipe if useful.
 - On failure: classify failure and update project/global memory if reusable.
 
 ## Notes for executor
 
 - Do not rely on active selection unless the CAD Spec explicitly requires it.
 - Name all created objects.
-- Verify after execution before moving to the next transaction.
+- Never treat `export_roots` or `allow_overwrite` as enabling real output in
+  0.4.1.

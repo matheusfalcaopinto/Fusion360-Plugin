@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from benchmark.filesystem import (
     atomic_create_text,
     mkdir,
@@ -29,7 +30,6 @@ from benchmark.filesystem import (
     unlink,
 )
 from benchmark.provenance import RevisionIdentity
-from telemetry.trace import redact_sensitive
 
 
 class _StrictModel(BaseModel):
@@ -124,6 +124,13 @@ class AdapterPreflight(_StrictModel):
             raise ValueError("ready adapter preflight requires observed_revision")
         return self
 
+    @field_validator("observed_revision")
+    @classmethod
+    def _safe_observed_revision(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_.:+-]{1,200}", value):
+            raise ValueError("observed revision must be a bounded public token")
+        return value
+
 
 class PublicBenchmarkTask(_StrictModel):
     task_id: str
@@ -150,12 +157,56 @@ class NormalizedPublicMetrics(_StrictModel):
     payload_bytes: int | None = Field(default=None, ge=0)
     install_status: str | None = None
 
+    @field_validator(
+        "contract_coverage",
+        "latency_ms",
+    )
+    @classmethod
+    def _finite_metric(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("public benchmark metrics must be finite")
+        return value
+
+    @field_validator(
+        "constraint_health",
+        "backend_id",
+        "backend_version",
+        "recovery_status",
+        "install_status",
+    )
+    @classmethod
+    def _safe_text_metric(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_.:+-]{1,160}", value):
+            raise ValueError("public text metric must be a bounded token")
+        return value
+
+
+class BenchmarkEvidenceEnvelope(_StrictModel):
+    """Typed proof required before a completed public result can be scored."""
+
+    schema_version: Literal["public_benchmark_evidence.v1"] = (
+        "public_benchmark_evidence.v1"
+    )
+    producer: str = Field(pattern=r"^[A-Za-z0-9_.:-]{3,160}$")
+    run_identity: str = Field(pattern=r"^[A-Za-z0-9_.:-]{3,200}$")
+    fixture_identity: str = Field(pattern=r"^[A-Za-z0-9_.:-]{3,200}$")
+    oracle_producer: str = Field(pattern=r"^[A-Za-z0-9_.:-]{3,160}$")
+    oracle_independent: Literal[True]
+    complete: Literal[True]
+
+    @model_validator(mode="after")
+    def _oracle_is_independent(self) -> "BenchmarkEvidenceEnvelope":
+        if self.oracle_producer == self.producer:
+            raise ValueError("oracle producer must differ from evidence producer")
+        return self
+
 
 class AdapterExecution(_StrictModel):
     state: Literal["completed", "failed", "not_run"]
     metrics: NormalizedPublicMetrics = Field(default_factory=NormalizedPublicMetrics)
     reason: str | None = Field(default=None, min_length=1, max_length=1_000)
     independent_oracle: bool = False
+    evidence_envelope: BenchmarkEvidenceEnvelope | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -180,8 +231,16 @@ class PublicBenchmarkResult(_StrictModel):
     observed_revision: str | None = None
     revision_identity: RevisionIdentity | None = None
     independent_oracle: bool = False
+    evidence_envelope: BenchmarkEvidenceEnvelope | None = None
     metrics: NormalizedPublicMetrics = Field(default_factory=NormalizedPublicMetrics)
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("observed_revision")
+    @classmethod
+    def _safe_result_revision(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_.:+-]{1,200}", value):
+            raise ValueError("observed revision must be a bounded public token")
+        return value
 
 
 class PublicBenchmarkReport(_StrictModel):
@@ -285,11 +344,8 @@ class PublicBenchmarkRunner:
             try:
                 preflight = await adapter.preflight(subject, run_config)
             except Exception as exc:  # noqa: BLE001 - external adapters normalize at boundary
-                results.extend(
-                    _not_run(
-                        subject, tasks, f"preflight_error:{type(exc).__name__}:{exc}"
-                    )
-                )
+                del exc
+                results.extend(_not_run(subject, tasks, "preflight_failed"))
                 continue
             revision_error = _revision_error(subject.pin, preflight)
             if not preflight.ready or revision_error:
@@ -305,9 +361,10 @@ class PublicBenchmarkRunner:
                 try:
                     execution = await adapter.execute(subject, task, run_config)
                 except Exception as exc:  # noqa: BLE001 - a started external trial is a failure, not not_run
+                    del exc
                     execution = AdapterExecution(
                         state="failed",
-                        reason=f"adapter_error:{type(exc).__name__}:{exc}",
+                        reason="adapter_execution_failed",
                     )
                 results.append(
                     PublicBenchmarkResult(
@@ -318,12 +375,16 @@ class PublicBenchmarkRunner:
                         evidence_mode=run_config.mode
                         if execution.state != "not_run"
                         else "not_run",
-                        reason=execution.reason,
+                        reason=_public_reason(
+                            execution.reason,
+                            fallback="adapter_execution_failed",
+                        ),
                         observed_revision=preflight.observed_revision,
                         revision_identity=preflight.revision_identity,
                         independent_oracle=execution.independent_oracle,
+                        evidence_envelope=execution.evidence_envelope,
                         metrics=execution.metrics,
-                        evidence=redact_sensitive(
+                        evidence=_public_evidence(
                             {
                                 "preflight_environment": preflight.environment,
                                 **execution.evidence,
@@ -343,8 +404,12 @@ class PublicBenchmarkRunner:
             environment={
                 "python": sys.version,
                 "platform": platform.platform(),
-                "git_commit": self.environment_snapshot.get("GIT_COMMIT"),
-                "fusion_version": self.environment_snapshot.get("FUSION_VERSION"),
+                "git_commit": _public_environment_value(
+                    self.environment_snapshot.get("GIT_COMMIT")
+                ),
+                "fusion_version": _public_environment_value(
+                    self.environment_snapshot.get("FUSION_VERSION")
+                ),
             },
             summary=_summary(results),
             results=results,
@@ -419,7 +484,7 @@ def _not_run(
             task=task,
             state="not_run",
             evidence_mode="not_run",
-            reason=reason[:1_000],
+            reason=_public_reason(reason, fallback="benchmark_not_run"),
         )
         for task in tasks
     ]
@@ -430,26 +495,20 @@ def _revision_error(pin: RevisionPin, preflight: AdapterPreflight) -> str | None
         return None
     observed = preflight.observed_revision or ""
     if pin.kind in {"git", "pypi"} and observed != pin.value:
-        return f"revision_mismatch:expected={pin.value}:observed={observed}"
+        return "revision_mismatch"
     if pin.kind == "workspace":
         identity = preflight.revision_identity
         if identity is None:
             return "workspace_revision_identity_missing"
         if identity.scheme != pin.value:
-            return f"revision_mismatch:expected_scheme={pin.value}:observed_scheme={identity.scheme}"
+            return "revision_mismatch"
         if (
             identity.observed_git_commit is None
             or identity.observed_source_manifest_sha256 is None
         ):
             return "workspace_revision_observation_incomplete"
         if identity.explicit_mismatch:
-            return (
-                "revision_mismatch:"
-                f"expected_git={identity.expected_git_commit}:observed_git={identity.observed_git_commit}:"
-                "expected_manifest="
-                f"{identity.expected_source_manifest_sha256}:"
-                f"observed_manifest={identity.observed_source_manifest_sha256}"
-            )
+            return "revision_mismatch"
     if pin.kind in {"runtime", "workspace"} and not observed:
         return "runtime_revision_missing"
     return None
@@ -504,17 +563,107 @@ def _summary(results: list[PublicBenchmarkResult]) -> dict[str, Any]:
             "eligible_comparators": eligible_comparators,
             "requires_independent_oracle": True,
             "requires_exact_workspace_revision": True,
+            "requires_complete_evidence": True,
+            "requires_complete_provenance": True,
         },
     }
 
 
 def _completed_with_independent_oracle(result: PublicBenchmarkResult) -> bool:
+    envelope = result.evidence_envelope
+    preflight_environment = result.evidence.get("preflight_environment")
     return bool(
         result.state == "completed"
         and result.metrics.task_success is not None
         and result.metrics.oracle_passed is not None
         and result.independent_oracle
         and result.observed_revision
+        and envelope is not None
+        and envelope.producer == result.subject_id
+        and envelope.fixture_identity == result.task.task_id
+        and isinstance(preflight_environment, dict)
+        and preflight_environment
+    )
+
+
+def _public_reason(value: str | None, *, fallback: str) -> str:
+    normalized = (value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.:=-]{1,160}", normalized):
+        return normalized
+    return fallback
+
+
+def _public_evidence(value: Any, *, depth: int = 0) -> Any:
+    if depth > 6:
+        return {"truncated": True}
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, child in list(sorted(value.items(), key=lambda item: str(item[0])))[
+            :128
+        ]:
+            normalized = str(key).lower().replace("-", "_")
+            if any(
+                part in normalized
+                for part in (
+                    "error",
+                    "exception",
+                    "message",
+                    "token",
+                    "secret",
+                    "authorization",
+                    "credential",
+                    "document_id",
+                    "entity_token",
+                    "path",
+                    "argv",
+                    "command",
+                    "script",
+                    "content",
+                    "stdout",
+                    "stderr",
+                )
+            ):
+                projected[str(key)] = {"redacted": True}
+            else:
+                projected[str(key)] = _public_evidence(child, depth=depth + 1)
+        return projected
+    if isinstance(value, (list, tuple)):
+        return [_public_evidence(child, depth=depth + 1) for child in list(value)[:256]]
+    if isinstance(value, str):
+        if _looks_sensitive_string(value):
+            return {"redacted": True}
+        return value[:2_048]
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("public benchmark evidence must be finite")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return type(value).__name__
+
+
+def _public_environment_value(value: str | None) -> Any:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if re.fullmatch(r"[A-Za-z0-9_.+-]{1,120}", normalized):
+        return normalized
+    return {"redacted": True}
+
+
+def _looks_sensitive_string(value: str) -> bool:
+    lowered = value.lower()
+    return bool(
+        re.search(r"(?:[a-z]:\\|/users/|/home/|data:urn:adsk|--[a-z])", lowered)
+        or any(
+            marker in lowered
+            for marker in (
+                "bearer ",
+                "token=",
+                "secret=",
+                "password=",
+                "authorization=",
+                "argv=",
+            )
+        )
     )
 
 

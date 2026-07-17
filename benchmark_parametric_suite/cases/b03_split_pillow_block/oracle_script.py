@@ -16,7 +16,21 @@ def _items(collection):
 
 
 def _close(actual, expected, tolerance=0.1):
-    return actual is not None and math.fabs(float(actual) - float(expected)) <= tolerance
+    if (
+        isinstance(actual, bool)
+        or isinstance(expected, bool)
+        or isinstance(tolerance, bool)
+    ):
+        return False
+    try:
+        values = (float(actual), float(expected), float(tolerance))
+    except (TypeError, ValueError):
+        return False
+    return (
+        all(math.isfinite(value) for value in values)
+        and values[2] >= 0
+        and math.fabs(values[0] - values[1]) <= values[2]
+    )
 
 
 def _bbox_mm(body):
@@ -49,25 +63,27 @@ def _cylinders(body):
         if geometry is None or geometry.objectType != adsk.core.Cylinder.classType():
             continue
         box = face.boundingBox
-        result.append({
-            "radius_mm": geometry.radius * 10.0,
-            "origin_mm": [
-                geometry.origin.x * 10.0,
-                geometry.origin.y * 10.0,
-                geometry.origin.z * 10.0,
-            ],
-            "axis": [geometry.axis.x, geometry.axis.y, geometry.axis.z],
-            "bbox_min_mm": [
-                box.minPoint.x * 10.0,
-                box.minPoint.y * 10.0,
-                box.minPoint.z * 10.0,
-            ],
-            "bbox_max_mm": [
-                box.maxPoint.x * 10.0,
-                box.maxPoint.y * 10.0,
-                box.maxPoint.z * 10.0,
-            ],
-        })
+        result.append(
+            {
+                "radius_mm": geometry.radius * 10.0,
+                "origin_mm": [
+                    geometry.origin.x * 10.0,
+                    geometry.origin.y * 10.0,
+                    geometry.origin.z * 10.0,
+                ],
+                "axis": [geometry.axis.x, geometry.axis.y, geometry.axis.z],
+                "bbox_min_mm": [
+                    box.minPoint.x * 10.0,
+                    box.minPoint.y * 10.0,
+                    box.minPoint.z * 10.0,
+                ],
+                "bbox_max_mm": [
+                    box.maxPoint.x * 10.0,
+                    box.maxPoint.y * 10.0,
+                    box.maxPoint.z * 10.0,
+                ],
+            }
+        )
     return result
 
 
@@ -92,18 +108,22 @@ def run(_context: str):
         raise RuntimeError("B03 oracle requires an active Fusion design")
 
     root = design.rootComponent
-    marker_attribute = root.attributes.itemByName("fusion_agent_benchmark", "trial_marker")
+    marker_attribute = root.attributes.itemByName(
+        "fusion_agent_benchmark", "trial_marker"
+    )
     marker = marker_attribute.value if marker_attribute is not None else None
     checks = []
 
     def check(check_id, passed, expected, observed, evidence=None):
-        checks.append({
-            "id": check_id,
-            "status": "pass" if passed else "fail",
-            "expected": expected,
-            "observed": observed,
-            "evidence": evidence or {},
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "status": "pass" if passed else "fail",
+                "expected": expected,
+                "observed": observed,
+                "evidence": evidence or {},
+            }
+        )
 
     check(
         "document.marked_unsaved",
@@ -123,22 +143,36 @@ def run(_context: str):
     for occurrence in occurrences:
         values = list(occurrence.transform2.asArray())
         expected_values = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         ]
         current_identity = len(values) == 16 and all(
             _close(values[index], expected_values[index], 0.000001)
             for index in range(16)
         )
         identity_ok = identity_ok and current_identity
-        occurrence_data.append({
-            "name": occurrence.name,
-            "full_path": occurrence.fullPathName,
-            "component": occurrence.component.name,
-            "identity": current_identity,
-        })
+        occurrence_data.append(
+            {
+                "name": occurrence.name,
+                "full_path": occurrence.fullPathName,
+                "component": occurrence.component.name,
+                "identity": current_identity,
+            }
+        )
     check(
         "assembly.two_named_components",
         len(child_components) == 2
@@ -153,20 +187,29 @@ def run(_context: str):
         {"count": 2, "identity": True},
         occurrence_data,
     )
-    check("topology.root_has_no_bodies", root.bRepBodies.count == 0, 0, root.bRepBodies.count)
+    check(
+        "topology.root_has_no_bodies",
+        root.bRepBodies.count == 0,
+        0,
+        root.bRepBodies.count,
+    )
 
     lower_bodies = [] if lower_component is None else _items(lower_component.bRepBodies)
     upper_bodies = [] if upper_component is None else _items(upper_component.bRepBodies)
     lower_body = lower_bodies[0] if len(lower_bodies) == 1 else None
     upper_body = upper_bodies[0] if len(upper_bodies) == 1 else None
     body_data = {
-        "lower": None if lower_body is None else {
+        "lower": None
+        if lower_body is None
+        else {
             "name": lower_body.name,
             "solid": lower_body.isSolid,
             "lumps": lower_body.lumps.count,
             "visible": lower_body.isVisible,
         },
-        "upper": None if upper_body is None else {
+        "upper": None
+        if upper_body is None
+        else {
             "name": upper_body.name,
             "solid": upper_body.isSolid,
             "lumps": upper_body.lumps.count,
@@ -220,7 +263,9 @@ def run(_context: str):
     for name, expected in expected_parameters.items():
         actual = parameter_values.get(name, {}).get("value")
         if not _close(actual, expected, 0.0001):
-            parameter_failures.append({"name": name, "expected": expected, "actual": actual})
+            parameter_failures.append(
+                {"name": name, "expected": expected, "actual": actual}
+            )
     check(
         "parameters.exact_values",
         len(parameter_values) == 17 and not parameter_failures,
@@ -255,7 +300,8 @@ def run(_context: str):
     )
     check(
         "sketches.consumed_component_sketches_hidden",
-        len(component_sketches) == 8 and all(not sketch.isVisible for sketch in component_sketches),
+        len(component_sketches) == 8
+        and all(not sketch.isVisible for sketch in component_sketches),
         {"hidden": 8},
         {"visible": [sketch.name for sketch in component_sketches if sketch.isVisible]},
     )
@@ -355,14 +401,16 @@ def run(_context: str):
         lower_cylinders = _cylinders(lower_body)
         upper_cylinders = _cylinders(upper_body)
         lower_bore = [
-            item for item in lower_cylinders
+            item
+            for item in lower_cylinders
             if _close(item["radius_mm"], 12.0, 0.05)
             and math.fabs(item["axis"][0]) > 0.99
             and _close(item["origin_mm"][1], 0.0, 0.05)
             and _close(item["origin_mm"][2], 22.0, 0.05)
         ]
         upper_bore = [
-            item for item in upper_cylinders
+            item
+            for item in upper_cylinders
             if _close(item["radius_mm"], 12.0, 0.05)
             and math.fabs(item["axis"][0]) > 0.99
             and _close(item["origin_mm"][1], 0.0, 0.05)
@@ -378,25 +426,39 @@ def run(_context: str):
             "geometry.coaxial_bore",
             len(lower_bore) == 1
             and len(upper_bore) == 1
-            and bore_probes == {
+            and bore_probes
+            == {
                 "lower_center": "outside",
                 "lower_wall": "inside",
                 "upper_center": "outside",
                 "upper_wall": "inside",
             },
             {"diameter_mm": 24.0, "axis": "X", "center": [0.0, 22.0]},
-            {"lower_cylinders": lower_bore, "upper_cylinders": upper_bore, "probes": bore_probes},
+            {
+                "lower_cylinders": lower_bore,
+                "upper_cylinders": upper_bore,
+                "probes": bore_probes,
+            },
         )
 
         lower_clamps = [
-            item for item in lower_cylinders
-            if _close(item["radius_mm"], 2.75, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in lower_cylinders
+            if _close(item["radius_mm"], 2.75, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         upper_clamps = [
-            item for item in upper_cylinders
-            if _close(item["radius_mm"], 2.75, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in upper_cylinders
+            if _close(item["radius_mm"], 2.75, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
-        expected_clamp_centers = {(-28.0, -15.0), (28.0, -15.0), (-28.0, 15.0), (28.0, 15.0)}
+        expected_clamp_centers = {
+            (-28.0, -15.0),
+            (28.0, -15.0),
+            (-28.0, 15.0),
+            (28.0, 15.0),
+        }
         lower_clamp_centers = {
             (round(item["origin_mm"][0], 1), round(item["origin_mm"][1], 1))
             for item in lower_clamps
@@ -412,16 +474,23 @@ def run(_context: str):
             and lower_clamp_centers == expected_clamp_centers
             and upper_clamp_centers == expected_clamp_centers,
             {"per_component": 4, "centers_mm": sorted(expected_clamp_centers)},
-            {"lower": sorted(lower_clamp_centers), "upper": sorted(upper_clamp_centers)},
+            {
+                "lower": sorted(lower_clamp_centers),
+                "upper": sorted(upper_clamp_centers),
+            },
         )
 
         lower_counterbores = [
-            item for item in lower_cylinders
-            if _close(item["radius_mm"], 5.0, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in lower_cylinders
+            if _close(item["radius_mm"], 5.0, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         upper_counterbores = [
-            item for item in upper_cylinders
-            if _close(item["radius_mm"], 5.0, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in upper_cylinders
+            if _close(item["radius_mm"], 5.0, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         counterbore_centers = {
             (round(item["origin_mm"][0], 1), round(item["origin_mm"][1], 1))
@@ -448,12 +517,16 @@ def run(_context: str):
         )
 
         lower_mounting = [
-            item for item in lower_cylinders
-            if _close(item["radius_mm"], 3.5, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in lower_cylinders
+            if _close(item["radius_mm"], 3.5, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         upper_mounting = [
-            item for item in upper_cylinders
-            if _close(item["radius_mm"], 3.5, 0.05) and math.fabs(item["axis"][2]) > 0.99
+            item
+            for item in upper_cylinders
+            if _close(item["radius_mm"], 3.5, 0.05)
+            and math.fabs(item["axis"][2]) > 0.99
         ]
         expected_mounting_centers = {(0.0, -18.0), (0.0, 18.0)}
         mounting_centers = {
@@ -471,13 +544,19 @@ def run(_context: str):
             len(lower_mounting) == 2
             and not upper_mounting
             and mounting_centers == expected_mounting_centers
-            and mounting_probes == {
+            and mounting_probes
+            == {
                 "lower_negative": "outside",
                 "lower_positive": "outside",
                 "upper_negative": "inside",
                 "upper_positive": "inside",
             },
-            {"lower": 2, "upper": 0, "diameter_mm": 7.0, "centers_mm": sorted(expected_mounting_centers)},
+            {
+                "lower": 2,
+                "upper": 0,
+                "diameter_mm": 7.0,
+                "centers_mm": sorted(expected_mounting_centers),
+            },
             {"centers": sorted(mounting_centers), "probes": mounting_probes},
         )
     else:
@@ -512,12 +591,22 @@ def run(_context: str):
             "parameter_expressions": {
                 name: value["expression"] for name, value in parameter_values.items()
             },
-            "lower_volume_mm3": None if lower_body is None else lower_body.volume * 1000.0,
-            "upper_volume_mm3": None if upper_body is None else upper_body.volume * 1000.0,
+            "lower_volume_mm3": None
+            if lower_body is None
+            else lower_body.volume * 1000.0,
+            "upper_volume_mm3": None
+            if upper_body is None
+            else upper_body.volume * 1000.0,
             "lower_faces": None if lower_body is None else lower_body.faces.count,
             "upper_faces": None if upper_body is None else upper_body.faces.count,
         },
     }
-    payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
     print(payload)
     return payload

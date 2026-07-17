@@ -31,6 +31,12 @@ def mkdir(path: Path | str) -> None:
     os.makedirs(io_path(path), exist_ok=True)
 
 
+def mkdir_exclusive(path: Path | str) -> None:
+    """Create a directory tree and fail if its final directory already exists."""
+
+    os.makedirs(io_path(path), exist_ok=False)
+
+
 def path_exists(path: Path | str) -> bool:
     return os.path.exists(io_path(path))
 
@@ -87,6 +93,37 @@ def atomic_write_text(path: Path | str, text: str) -> None:
     """Durably write text beside its destination and atomically publish it."""
 
     _atomic_publish_text(path, text, exclusive=False)
+
+
+def atomic_write_bytes(path: Path | str, payload: bytes) -> None:
+    """Durably write bytes beside their destination and atomically publish them."""
+
+    logical = Path(path)
+    mkdir(logical.parent)
+    parent_path = io_path(logical.parent)
+    parent_identity = _directory_identity(parent_path)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=parent_path,
+        prefix=".tmp-",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if _directory_identity(parent_path) != parent_identity:
+            raise OSError("benchmark artifact parent changed before atomic replace")
+        temporary_stat = os.stat(io_path(temp_name), follow_symlinks=False)
+        if temporary_stat.st_dev != parent_identity[0]:
+            raise OSError("benchmark temporary file changed volume before replace")
+        replace(temp_name, logical)
+    except BaseException:
+        try:
+            os.unlink(io_path(temp_name))
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def atomic_create_text(path: Path | str, text: str) -> None:

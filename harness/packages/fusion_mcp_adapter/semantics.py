@@ -51,6 +51,7 @@ class McpCallOptions:
     operation_id: str = field(default_factory=lambda: uuid4().hex)
     trusted_internal_read: bool = False
     replay_policy: ReplayPolicy = ReplayPolicy.BEFORE_DISPATCH_ONLY
+    expected_manifest_fingerprint: str | None = None
 
     @classmethod
     def for_read(
@@ -58,12 +59,14 @@ class McpCallOptions:
         *,
         timeout_seconds: float = 120.0,
         operation_id: str | None = None,
+        expected_manifest_fingerprint: str | None = None,
     ) -> "McpCallOptions":
         return cls(
             CallSemantics.READ_ONLY,
             timeout_seconds,
             operation_id or uuid4().hex,
             replay_policy=ReplayPolicy.TRANSPORT_RETRY,
+            expected_manifest_fingerprint=expected_manifest_fingerprint,
         )
 
     @classmethod
@@ -72,12 +75,14 @@ class McpCallOptions:
         *,
         timeout_seconds: float = 240.0,
         operation_id: str | None = None,
+        expected_manifest_fingerprint: str | None = None,
     ) -> "McpCallOptions":
         return cls(
             CallSemantics.MUTATING,
             timeout_seconds,
             operation_id or uuid4().hex,
             replay_policy=ReplayPolicy.BEFORE_DISPATCH_ONLY,
+            expected_manifest_fingerprint=expected_manifest_fingerprint,
         )
 
     @classmethod
@@ -86,6 +91,7 @@ class McpCallOptions:
         *,
         timeout_seconds: float = 120.0,
         operation_id: str | None = None,
+        expected_manifest_fingerprint: str | None = None,
     ) -> "McpCallOptions":
         """Mark an audited execute template as read-only but non-replayable."""
 
@@ -95,4 +101,5 @@ class McpCallOptions:
             operation_id or uuid4().hex,
             trusted_internal_read=True,
             replay_policy=ReplayPolicy.BEFORE_DISPATCH_ONLY,
+            expected_manifest_fingerprint=expected_manifest_fingerprint,
         )

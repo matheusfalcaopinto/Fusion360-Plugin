@@ -11,7 +11,9 @@ from .submission import freeze_planner_submission
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate and freeze planner plan/script JSON")
+    parser = argparse.ArgumentParser(
+        description="Validate and freeze planner plan/script JSON"
+    )
     parser.add_argument("--submission", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args(argv)

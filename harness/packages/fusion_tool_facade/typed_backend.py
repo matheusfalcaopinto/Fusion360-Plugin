@@ -1,15 +1,19 @@
-"""Typed CadSpec v2 adapter for the optional Faust MCP surface.
+"""Fail-closed CadSpec v2 adapter for the optional Faust MCP surface.
 
-Only curated tools are mapped.  In particular, ``execute_code`` and
-``delete_all`` are never placed in the adapter policy.
+Faust 0.1.0 cannot carry exact document and target authority into its mutation
+sink, so 0.4.1 advertises no Faust operations.  In particular,
+``execute_code`` and ``delete_all`` are never placed in the adapter policy.
 """
 
 from __future__ import annotations
 
-import re
+from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
+from cad_spec.unit_policy import parse_finite_unit_expression
 from cad_spec.v2 import OperationSpec, ParameterOperation
 from fusion_mcp_adapter.adapter import FusionMcpAdapter
 from fusion_mcp_adapter.client import McpClient
@@ -18,9 +22,7 @@ from fusion_mcp_adapter.semantics import McpCallOptions
 from fusion_mcp_adapter.tool_result import ToolManifest
 
 
-_TOOL_CAPABILITIES: dict[str, set[str]] = {
-    "parameters": {"create_parameter"},
-}
+_TOOL_CAPABILITIES: dict[str, set[str]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,15 +32,7 @@ class FaustCapabilityProof:
     restrictions: tuple[str, ...]
 
 
-FAUST_CAPABILITY_PROOFS = {
-    "parameters": FaustCapabilityProof(
-        operation_kind="parameter.set",
-        preserved_fields=("name", "expression.value", "expression.unit", "comment"),
-        restrictions=(
-            "expression must be one literal numeric value with an explicit unit",
-        ),
-    )
-}
+FAUST_CAPABILITY_PROOFS: dict[str, FaustCapabilityProof] = {}
 
 if set(FAUST_CAPABILITY_PROOFS) != set(_TOOL_CAPABILITIES):
     raise RuntimeError(
@@ -49,6 +43,10 @@ if set(FAUST_CAPABILITY_PROOFS) != set(_TOOL_CAPABILITIES):
 _READ_TOOLS: set[str] = set()
 _BLOCKED_TOOLS = {"execute_code", "delete_all"}
 FAUST_IMPLEMENTED_CAPABILITIES = frozenset(_TOOL_CAPABILITIES)
+
+FaustCall = tuple[str, dict[str, Any]]
+FaustPlanMap = Mapping[str, tuple[FaustCall, ...]]
+_EMPTY_FAUST_PLANS: FaustPlanMap = MappingProxyType({})
 
 
 class FaustOperationDispatchError(RuntimeError):
@@ -63,7 +61,7 @@ class FaustOperationDispatchError(RuntimeError):
 
 
 class FaustTypedBackend:
-    """Map strict operations to Faust 0.1.0's explicit tool schemas."""
+    """Retain Faust selection compatibility without advertising mutations."""
 
     provider = "faust_stdio"
 
@@ -71,13 +69,20 @@ class FaustTypedBackend:
         self.adapter = adapter
         self.manifest = manifest
         self._tool_names = manifest.names()
-        self._plans: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        # One backend instance is shared by concurrent MCP requests.  A plan
+        # therefore belongs to the current task context, not to the service.
+        self._plans: ContextVar[FaustPlanMap] = ContextVar(
+            f"faust_operation_plans_{id(self)}", default=_EMPTY_FAUST_PLANS
+        )
 
     @classmethod
     def from_client(
         cls, client: McpClient, manifest: ToolManifest
     ) -> "FaustTypedBackend":
-        allowed = manifest.names() - _BLOCKED_TOOLS
+        # Faust currently exposes no operation that can carry both a document
+        # identity and an exact target binding into the mutation sink.  Keep
+        # its mutation tools outside policy even for direct backend callers.
+        allowed = manifest.names() & _READ_TOOLS
         adapter = FusionMcpAdapter(
             client=client,
             manifest=manifest,
@@ -96,14 +101,16 @@ class FaustTypedBackend:
     def preflight_operations(self, operations: list[OperationSpec]) -> None:
         """Compile every native call before the first one can be dispatched."""
 
-        self._plans = {}
-        plans: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-        for operation in operations:
-            plans[operation.id] = _faust_calls(operation)
-        self._plans = plans
+        self._plans.set(_EMPTY_FAUST_PLANS)
+        if operations:
+            kinds = ", ".join(sorted({str(operation.kind) for operation in operations}))
+            raise ValueError(
+                "Faust cannot produce lossless document and target authority for: "
+                + kinds
+            )
 
     async def execute_operation(self, operation: OperationSpec) -> dict[str, Any]:
-        calls = self._plans.get(operation.id)
+        calls = self._plans.get().get(operation.id)
         if calls is None:
             raise RuntimeError("Faust operation was not preflighted")
         results: list[dict[str, Any]] = []
@@ -136,7 +143,7 @@ def _faust_calls(
     operation: OperationSpec,
     parameters: dict[str, str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Compile the sole Faust operation with an exhaustive lossless proof."""
+    """Validate a future literal mapping without advertising or dispatching it."""
 
     del parameters
     if not isinstance(operation, ParameterOperation):
@@ -158,16 +165,12 @@ def _faust_calls(
 
 
 def _numeric_unit(expression: str) -> tuple[float, str]:
-    match = re.fullmatch(
-        r"\s*(-?\d+(?:\.\d+)?)\s*(mm|cm|in|deg|rad)\s*",
-        expression,
-        re.IGNORECASE,
-    )
-    if not match:
+    try:
+        return parse_finite_unit_expression(expression, "Faust parameter expression")
+    except ValueError as exc:
         raise ValueError(
-            f"Faust requires a literal numeric unit expression: {expression!r}"
-        )
-    return float(match.group(1)), match.group(2).lower()
+            f"Faust requires a finite literal numeric unit expression: {expression!r}"
+        ) from exc
 
 
 def _transport_evidence(result: Any) -> dict[str, Any]:

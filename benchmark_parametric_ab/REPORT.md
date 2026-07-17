@@ -1,5 +1,11 @@
 # Benchmark paramétrico Fusion A/B — Claude Desktop vs Codex
 
+> **Registro histórico não scoreable na 0.4.1.** O resultado raw legado foi
+> removido: ele não estava vinculado a uma `RevisionIdentity` observada e
+> imutável, não continha provenance suficiente e expunha referências privadas.
+> Uma nova comparação requer o mesmo conjunto de fixtures/cases, subject próprio
+> completo, oracle independente e ao menos um comparator elegível.
+
 ## Resumo executivo
 
 Nesta execução, o Claude Desktop com **Fable 5 Alto** venceu de forma inequívoca na qualidade do artefato CAD. Entregou uma peça completa, conectada e paramétrica: 1 corpo, 1 lump, 17 parâmetros, 5/5 sketches totalmente restritos, 7 features saudáveis e envelope exato de 90 × 70 × 66 mm.
@@ -45,7 +51,7 @@ A comparação é **end-to-end**: modelo, planejamento, integração, transporte
 - SHA-256 do texto submetido: `8d04113c1ae1da2d03c70fd12bf3eb2b7431ea78d1f1cb08cf56ac3f67b1e1d5`.
 - Definição congelada: [`benchmark_definition.json`](benchmark_definition.json).
 - Oracle independente: [`oracle_script.py`](oracle_script.py).
-- Resultado estruturado: [`results.json`](results.json).
+- Resultado estruturado legado: removido; novos runs ficam fora do source tree.
 
 Os critérios geométricos de aceitação e o oracle foram congelados antes da inspeção dos resultados. A ponderação de 100 pontos abaixo foi documentada após a execução; portanto, é uma leitura interpretativa pós-auditoria, não um gate pré-registrado.
 
@@ -203,12 +209,9 @@ Os invariantes automáticos apenas exigiram que as contagens não diminuíssem e
 
 Portanto, `applied_verified` significou “as assertions parciais passaram”, não “o pedido do usuário foi integralmente satisfeito”. Para uma ferramenta de CAD autônomo, essa distinção precisa estar explícita e ser fail-closed.
 
-Audits:
-
-- [preflight bloqueado](../outputs/fast_path/fast_466b0cd749244c6ca23ca4ac6a0c59ca/audit.json)
-- [tentativa inicial](../outputs/fast_path/fast_2ec8fb18f189403684705abe865a11f0/audit.json)
-- [primeiro reparo](../outputs/fast_path/fast_55271369a9b24d68a6151c851e29cd81/audit.json)
-- [segundo reparo e falso positivo](../outputs/fast_path/fast_e90f63785aa44680b5e776d5bb02e7b4/audit.json)
+Audits raw históricos foram removidos do source tree. Novos traces permanecem
+privados e apenas uma projeção allowlisted, limitada e acompanhada de SHA-256
+pode integrar um artifact público.
 
 ## Pontuação
 
@@ -291,8 +294,8 @@ O primeiro reparo resolveu a sobre-restrição. O segundo tentou forçar overlap
 
 - O documento Claude foi fechado sem salvar.
 - O documento Codex foi fechado sem salvar.
-- `main_new v47` foi restaurado como documento ativo, salvo e não modificado.
-- A leitura pública final mostrou exatamente um documento aberto: `main_new v47`.
+- o documento original foi restaurado como ativo e permaneceu não modificado;
+- a leitura pública final confirmou a restauração sem divulgar identidade ou nome.
 - Nenhum arquivo de benchmark foi gravado no hub do Fusion.
 
 ## Conclusão

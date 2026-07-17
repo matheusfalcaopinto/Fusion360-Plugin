@@ -37,9 +37,13 @@ class PayloadScriptCalibrator:
     def __init__(self, protector: ScriptProtector) -> None:
         self._protector = protector
 
-    def calibrate(self, *, target_protected_bytes: int, canaries: CanaryContract) -> CalibratedScript:
+    def calibrate(
+        self, *, target_protected_bytes: int, canaries: CanaryContract
+    ) -> CalibratedScript:
         if type(target_protected_bytes) is not int or target_protected_bytes <= 0:
-            raise PayloadCalibrationError("target_protected_bytes must be a positive integer")
+            raise PayloadCalibrationError(
+                "target_protected_bytes must be a positive integer"
+            )
         padding_bytes = 0
         raw = render_probe_script(canaries=canaries, padding_bytes=padding_bytes)
         invariant = padding_invariant_sha256(raw)
@@ -55,7 +59,9 @@ class PayloadScriptCalibrator:
                 )
             raw = render_probe_script(canaries=canaries, padding_bytes=padding_bytes)
             if padding_invariant_sha256(raw) != invariant:
-                raise PayloadCalibrationError("calibration changed executable AST outside inert padding")
+                raise PayloadCalibrationError(
+                    "calibration changed executable AST outside inert padding"
+                )
             protected = self._protect(raw)
         actual = len(protected.encode("utf-8"))
         if actual != target_protected_bytes:
@@ -79,11 +85,15 @@ class PayloadScriptCalibrator:
     def _protect(self, script: str) -> str:
         protected = self._protector(script)
         if not isinstance(protected, str) or not protected:
-            raise PayloadCalibrationError("script protector must return a non-empty string")
+            raise PayloadCalibrationError(
+                "script protector must return a non-empty string"
+            )
         try:
             ast.parse(protected)
         except SyntaxError as exc:
-            raise PayloadCalibrationError(f"script protector returned invalid Python: {exc}") from exc
+            raise PayloadCalibrationError(
+                "script protector returned invalid Python"
+            ) from exc
         return protected
 
 
@@ -166,11 +176,19 @@ def padding_invariant_sha256(script: str) -> str:
             continue
         target = node.targets[0]
         if isinstance(target, ast.Name) and target.id == "_payload_probe_padding":
-            if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
-                raise PayloadCalibrationError("padding assignment is not a string literal")
-            node.value = ast.copy_location(ast.Constant(value="<INERT_PADDING>"), node.value)
+            if not isinstance(node.value, ast.Constant) or not isinstance(
+                node.value.value, str
+            ):
+                raise PayloadCalibrationError(
+                    "padding assignment is not a string literal"
+                )
+            node.value = ast.copy_location(
+                ast.Constant(value="<INERT_PADDING>"), node.value
+            )
             replacements += 1
     if replacements != 1:
-        raise PayloadCalibrationError("probe script must contain exactly one inert padding assignment")
+        raise PayloadCalibrationError(
+            "probe script must contain exactly one inert padding assignment"
+        )
     value = ast.dump(tree, annotate_fields=True, include_attributes=False)
     return hashlib.sha256(value.encode("utf-8")).hexdigest()

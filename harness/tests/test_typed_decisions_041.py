@@ -8,11 +8,16 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from agent_core.executor import ExecutionContext, Executor
 from agent_core.repair_loop import RepairLoop
 from agent_core.request_context import (
     RequestContext,
     bind_request_context,
     current_request_context,
+)
+from agent_core.session_controller import (
+    _non_verification_receipt,
+    _simulated_verification,
 )
 from benchmark.runner import enforce_route_lock, route_lock
 from cad_spec.models import AcceptanceTestSpec, CadSpec, ComponentSpec
@@ -20,7 +25,6 @@ from verifier.geometry import GeometryVerifier
 from verifier.result_models import (
     DecisionReasonCode,
     DecisionStatus,
-    EvidenceEnvelope,
     FailureCode,
     VerificationIssue,
     VerificationResult,
@@ -70,6 +74,31 @@ def _complete_payload() -> dict:
     }
 
 
+def test_non_verification_receipts_preserve_dry_run_and_capture_semantics() -> None:
+    dry_run = _simulated_verification(
+        _spec(AcceptanceTestSpec(type="component_count", target=1))
+    )
+    assert dry_run.passed is True
+    assert dry_run.status is DecisionStatus.PASSED
+    assert dry_run.evidence is not None
+    assert dry_run.evidence.conclusive
+    assert dry_run.evidence.assertion_count == 0
+    assert dry_run.evidence.provenance["evidence_kind"] == ("non_verification_receipt")
+    assert dry_run.evidence.provenance["scope"] == "dry_run_simulation"
+
+    capture = VerificationResult.pass_result(
+        evidence=_non_verification_receipt(
+            producer="test.capture",
+            receipt_id="capture:test",
+            scope="viewport_capture",
+        )
+    )
+    assert capture.passed is True
+    assert capture.evidence is not None
+    assert capture.evidence.conclusive
+    assert capture.evidence.provenance["scope"] == "viewport_capture"
+
+
 @pytest.mark.asyncio
 async def test_unknown_assertion_fails_closed_before_inspection() -> None:
     facade = _Facade(_complete_payload())
@@ -78,10 +107,34 @@ async def test_unknown_assertion_fails_closed_before_inspection() -> None:
     )
 
     assert facade.inspect_calls == 0
-    assert result.status is DecisionStatus.FAILED
+    assert result.status is DecisionStatus.INCOMPLETE
     assert result.passed is False
-    assert result.reason_codes == [DecisionReasonCode.UNSUPPORTED_ASSERTION]
-    assert result.issues[0].code is FailureCode.UNSUPPORTED_ASSERTION
+    assert result.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert result.issues[0].code is FailureCode.INCOMPLETE_INSPECTION
+    assert any(
+        issue.code is FailureCode.UNSUPPORTED_ASSERTION for issue in result.issues
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_assertion_is_rejected_before_any_executor_dispatch() -> None:
+    class MutationFacade(_Facade):
+        def __init__(self) -> None:
+            super().__init__(_complete_payload())
+            self.mutation_calls = 0
+
+        async def create_component(self, _name: str) -> dict:
+            self.mutation_calls += 1
+            return {}
+
+    facade = MutationFacade()
+    spec = _spec(AcceptanceTestSpec(type="future_assertion_without_handler"))
+
+    with pytest.raises(ValueError, match="unsupported acceptance assertion"):
+        await Executor(facade).execute(spec, ExecutionContext())
+
+    assert facade.inspect_calls == 0
+    assert facade.mutation_calls == 0
 
 
 @pytest.mark.asyncio
@@ -135,25 +188,21 @@ async def test_non_finite_measured_bbox_is_invalid_evidence_not_success() -> Non
 
 
 @pytest.mark.asyncio
-async def test_repair_loop_never_mutates_after_incomplete_verdict() -> None:
-    incomplete = VerificationResult.incomplete_result(
-        evidence=EvidenceEnvelope(
-            producer="test",
-            complete=False,
-            counts_exact=False,
-            truncated=True,
-            stop_reason="deadline_ms",
-            assertion_ids=["component_count"],
-            assertion_count=1,
-            evaluated_count=0,
-        ),
+async def test_repair_loop_never_mutates_after_absent_verification_evidence() -> None:
+    incomplete = VerificationResult(
+        passed=False,
+        status=DecisionStatus.FAILED,
+        reason_codes=[DecisionReasonCode.ASSERTION_FAILED],
         issues=[
             VerificationIssue(
                 code=FailureCode.WRONG_ACTIVE_COMPONENT,
-                message="inconclusive component state",
+                message="failure without supporting evidence",
             )
         ],
     )
+    assert incomplete.status is DecisionStatus.INCOMPLETE
+    assert incomplete.reason_codes == [DecisionReasonCode.INCOMPLETE_INSPECTION]
+    assert incomplete.evidence is None
 
     class _Verifier:
         async def verify(self, _spec: CadSpec) -> VerificationResult:
@@ -162,7 +211,7 @@ async def test_repair_loop_never_mutates_after_incomplete_verdict() -> None:
     class _Executor:
         calls = 0
 
-        async def activate_component(self, _target: str) -> bool:
+        async def activate_component_bound(self, *_args: object) -> bool:
             self.calls += 1
             return True
 
