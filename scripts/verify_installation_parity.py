@@ -292,7 +292,7 @@ def _verify_rewritten_mcp(
     cache_server = cache_servers.get("fusion_agent")
     if not isinstance(source_server, dict) or not isinstance(cache_server, dict):
         raise InstallationParityError(".mcp.json has no fusion_agent server")
-    _normalize_source_launcher(source_server)
+    _normalize_source_launcher(source_server, source, runtime)
     _normalize_cache_launcher(cache_server, source, runtime)
     backend = _verify_environment(cache_server)
     if normalized_source != normalized_cache:
@@ -309,16 +309,51 @@ def _server_map(payload: dict[str, Any], label: str) -> dict[str, Any]:
     return servers
 
 
-def _normalize_source_launcher(server: dict[str, Any]) -> None:
+def _normalize_source_launcher(
+    server: dict[str, Any], source: Path, runtime: Path
+) -> None:
     command = server.get("command")
     arguments = server.get("args")
-    if command not in _PORTABLE_COMMANDS:
+    if command in _PORTABLE_COMMANDS:
+        if arguments != ["-I", "-B", _LAUNCHER_ARGUMENT]:
+            raise InstallationParityError(
+                "personal source .mcp.json launcher argument is invalid"
+            )
+    elif isinstance(command, str) and Path(command).is_absolute():
+        configured_runtime = Path(os.path.abspath(command))
+        if not configured_runtime.is_file() or os.path.normcase(
+            str(configured_runtime)
+        ) != os.path.normcase(str(runtime)):
+            raise InstallationParityError(
+                "personal source .mcp.json runtime Python mismatch"
+            )
+        if (
+            not isinstance(arguments, list)
+            or len(arguments) != 3
+            or arguments[:2] != ["-I", "-B"]
+            or not isinstance(arguments[2], str)
+            or not Path(arguments[2]).is_absolute()
+        ):
+            raise InstallationParityError(
+                "personal source .mcp.json absolute launcher argument is invalid"
+            )
+        configured_launcher = Path(os.path.abspath(arguments[2]))
+        expected_launcher = (
+            source / "scripts" / "fusion_agent_codex_mcp_launcher.py"
+        ).resolve(strict=True)
+        if (
+            not configured_launcher.is_file()
+            or _path_is_reparse(configured_launcher)
+            or os.path.normcase(str(configured_launcher))
+            != os.path.normcase(str(expected_launcher))
+        ):
+            raise InstallationParityError(
+                "personal source .mcp.json launcher does not match personal source"
+            )
+    else:
         raise InstallationParityError(
-            "personal source .mcp.json command is not portable Python"
-        )
-    if arguments != ["-I", "-B", _LAUNCHER_ARGUMENT]:
-        raise InstallationParityError(
-            "personal source .mcp.json launcher argument is invalid"
+            "personal source .mcp.json command must be portable Python or the "
+            "exact personal-source runtime"
         )
     server["command"] = "<runtime-python>"
     server["args"] = ["-I", "-B", "<personal-source-launcher>"]

@@ -1164,6 +1164,82 @@ def test_installation_parity_checks_source_wheel_runtime_and_cache(
         )
 
 
+def test_installation_parity_accepts_setup_rewritten_personal_source_mcp(
+    tmp_path: Path,
+) -> None:
+    source, cache = _parity_fixture(tmp_path)
+    runtime = _parity_runtime(source)
+    source_path = source / ".mcp.json"
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    server = payload["mcpServers"]["fusion_agent"]
+    server["command"] = str(runtime)
+    server["args"] = [
+        "-I",
+        "-B",
+        str(source / "scripts" / "fusion_agent_codex_mcp_launcher.py"),
+    ]
+    source_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    report = verify_installation_parity(
+        source,
+        cache,
+        runtime,
+        verify_installed=False,
+    )
+
+    assert report["ok"] is True
+
+
+def test_installation_parity_rejects_setup_rewritten_source_runtime_mismatch(
+    tmp_path: Path,
+) -> None:
+    source, cache = _parity_fixture(tmp_path)
+    runtime = _parity_runtime(source)
+    outside_runtime = tmp_path / "outside-python"
+    outside_runtime.write_bytes(b"runtime placeholder")
+    source_path = source / ".mcp.json"
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    server = payload["mcpServers"]["fusion_agent"]
+    server["command"] = str(outside_runtime)
+    server["args"] = [
+        "-I",
+        "-B",
+        str(source / "scripts" / "fusion_agent_codex_mcp_launcher.py"),
+    ]
+    source_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(InstallationParityError, match="source.*runtime Python"):
+        verify_installation_parity(
+            source,
+            cache,
+            runtime,
+            verify_installed=False,
+        )
+
+
+def test_installation_parity_rejects_setup_rewritten_source_launcher_mismatch(
+    tmp_path: Path,
+) -> None:
+    source, cache = _parity_fixture(tmp_path)
+    runtime = _parity_runtime(source)
+    outside_launcher = tmp_path / "outside-launcher.py"
+    outside_launcher.write_text("# untrusted\n", encoding="utf-8")
+    source_path = source / ".mcp.json"
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    server = payload["mcpServers"]["fusion_agent"]
+    server["command"] = str(runtime)
+    server["args"] = ["-I", "-B", str(outside_launcher)]
+    source_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(InstallationParityError, match="source.*launcher"):
+        verify_installation_parity(
+            source,
+            cache,
+            runtime,
+            verify_installed=False,
+        )
+
+
 def test_installation_parity_rejects_runtime_outside_personal_venv(
     tmp_path: Path,
 ) -> None:

@@ -31,6 +31,9 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   confiaveis; `RECORD` autoassinado, customizers e reparse points falham fechado.
 - Fixa o runtime MCP na `.venv` lexical e nao-reparse do plugin, preserva
   `-I -B` em subprocessos e proibe overrides de fonte em bundles de release.
+- Alinha o gate de parity ao setup pessoal: a fonte aceita somente a forma
+  portatil revisada ou os paths absolutos exatos para sua propria `.venv` e
+  launcher; o cache continua exigindo paths absolutos vinculados a essa fonte.
 - Faz o validator restaurar somente o diretorio `scripts/` revisado sob `-I`,
   mantendo user site e `PYTHONPATH` fora do bootstrap do setup.
 - Vincula a release a um CI de branch concluido com sucesso no SHA candidato

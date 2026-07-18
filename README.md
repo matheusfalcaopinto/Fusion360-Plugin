@@ -1019,7 +1019,10 @@ effect fica em [SECURITY_041_CLOSURE.md](SECURITY_041_CLOSURE.md).
    o Python do runtime Codex. O gate executa a verificacao instalada nesse
    interpretador exato e compara source manifest, wheel, arquivos instalados,
    fonte copiada, skills e a semantica completa do `.mcp.json`; somente os
-   paths aprovados de `command`/launcher podem ser reescritos.
+   paths aprovados de `command`/launcher podem ser reescritos. A fonte pessoal
+   e aceita somente no estado portatil revisado ou no estado absoluto produzido
+   pelo setup, vinculado ao Python exato de `source/.venv` e ao launcher exato
+   da propria fonte; o cache permanece obrigatoriamente absoluto.
 9. Encerre completamente o Codex Desktop e, em uma task nova, confirme a
    versao exata, o perfil `normal` com 12
    ferramentas, output schemas e somente nomes `fusion_agent_*`; `all` deve
