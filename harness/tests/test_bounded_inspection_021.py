@@ -6,6 +6,7 @@ import io
 import json
 import math
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -367,6 +368,162 @@ def test_compact_snapshot_does_not_reserve_discarded_details(
     assert snapshot["response_bytes"] == len(encoded)
     assert len(encoded) <= 65536
     assert _snapshot_is_complete(snapshot) is False
+
+
+def test_compact_snapshot_response_trimming_stays_within_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Collection:
+        def __init__(self, items):
+            self._items = list(items)
+            self.count = len(self._items)
+
+        def item(self, index):
+            return self._items[index]
+
+    class Point:
+        x = 0.0
+        y = 0.0
+        z = 0.0
+
+    class Box:
+        minPoint = Point()
+        maxPoint = Point()
+
+    class Component:
+        def __init__(self, index):
+            self.name = f"Component{index}"
+            self.entityToken = f"component-{index}"
+            self.isLightBulbOn = True
+            self.isReferencedComponent = False
+            self.attributes = None
+
+    class Occurrence:
+        def __init__(self, index):
+            self.name = ("N" * 240) + f"{index:04d}"
+            self.component = Component(index)
+            self.entityToken = f"occurrence-{index}"
+            self.isLightBulbOn = True
+            self.isVisible = True
+            self.boundingBox = Box()
+            self.childOccurrences = Collection([])
+
+    class Root:
+        entityToken = "root-token"
+        occurrences = Collection(Occurrence(index) for index in range(3000))
+
+    class Design:
+        rootComponent = Root()
+        allComponents = Collection([])
+
+    design = Design()
+
+    class Document:
+        name = "large-visible-design"
+        dataFile = None
+
+    class ApplicationInstance:
+        activeDocument = Document()
+        activeProduct = design
+
+    adsk = types.ModuleType("adsk")
+    adsk.__path__ = []  # type: ignore[attr-defined]
+    core = types.ModuleType("adsk.core")
+    fusion = types.ModuleType("adsk.fusion")
+    core.Application = type(
+        "Application", (), {"get": staticmethod(lambda: ApplicationInstance())}
+    )
+    fusion.Design = type(
+        "FusionDesign", (), {"cast": staticmethod(lambda value: value)}
+    )
+    adsk.core = core
+    adsk.fusion = fusion
+    monkeypatch.setitem(sys.modules, "adsk", adsk)
+    monkeypatch.setitem(sys.modules, "adsk.core", core)
+    monkeypatch.setitem(sys.modules, "adsk.fusion", fusion)
+
+    script = compact_snapshot_script(
+        {
+            "max_occurrences": 1,
+            "max_bodies": 1,
+            "max_entities_visited": 3001,
+            "deadline_ms": 5000,
+            "max_response_bytes": 4096,
+        }
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(script, "<compact-snapshot-trim-deadline>", "exec"), namespace)
+    output = io.StringIO()
+    started = time.perf_counter()
+    with contextlib.redirect_stdout(output):
+        namespace["run"]("")  # type: ignore[index,operator]
+    wall_elapsed_ms = int((time.perf_counter() - started) * 1000.0)
+    encoded = output.getvalue().strip().encode("utf-8")
+    snapshot = json.loads(encoded)["snapshot"]
+
+    assert wall_elapsed_ms < 5000
+    assert len(encoded) <= 4096
+    assert snapshot["counts"]["occurrences_total"] == 3000
+    assert snapshot["payload_capped"] is True
+    assert snapshot["truncated"] is True
+    assert _snapshot_is_complete(snapshot) is False
+
+    class Body:
+        def __init__(self, index):
+            self.name = ("B" * 240) + f"{index // 2:04d}"
+            self.entityToken = f"body-{index}"
+            self.isLightBulbOn = True
+            self.isVisible = True
+            self.boundingBox = Box()
+
+    class BodyRoot:
+        name = "BodyRoot"
+        entityToken = "body-root-token"
+        isLightBulbOn = True
+        isReferencedComponent = False
+        attributes = None
+        occurrences = Collection([])
+        bRepBodies = Collection(Body(index) for index in range(3000))
+
+    body_root = BodyRoot()
+
+    class BodyDesign:
+        rootComponent = body_root
+        allComponents = Collection([body_root])
+
+    body_design = BodyDesign()
+
+    class BodyApplicationInstance:
+        activeDocument = Document()
+        activeProduct = body_design
+
+    core.Application = type(
+        "Application", (), {"get": staticmethod(lambda: BodyApplicationInstance())}
+    )
+    body_script = compact_snapshot_script(
+        {
+            "max_occurrences": 1,
+            "max_bodies": 1,
+            "max_entities_visited": 3001,
+            "deadline_ms": 5000,
+            "max_response_bytes": 4096,
+        }
+    )
+    body_namespace: dict[str, object] = {}
+    exec(compile(body_script, "<compact-snapshot-map-trim>", "exec"), body_namespace)
+    body_output = io.StringIO()
+    body_started = time.perf_counter()
+    with contextlib.redirect_stdout(body_output):
+        body_namespace["run"]("")  # type: ignore[index,operator]
+    body_wall_elapsed_ms = int((time.perf_counter() - body_started) * 1000.0)
+    body_encoded = body_output.getvalue().strip().encode("utf-8")
+    body_snapshot = json.loads(body_encoded)["snapshot"]
+
+    assert body_wall_elapsed_ms < 5000
+    assert len(body_encoded) <= 4096
+    assert body_snapshot["counts"]["bodies_total"] == 3000
+    assert body_snapshot["truncated"] is True
+    assert _snapshot_is_complete(body_snapshot) is False
 
 
 def test_successful_read_scripts_expose_codes_not_raw_exception_text() -> None:

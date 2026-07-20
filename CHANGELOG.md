@@ -38,6 +38,9 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
   descartados por `max_occurrences`/`max_bodies` nao consumam falsamente o
   limite de resposta; a travessia, contagens exatas e limites fail-closed sao
   preservados.
+- Torna o ajuste final de snapshots ao limite de resposta geometricamente
+  limitado, inclui mapas de duplicatas no corte e revalida o deadline durante
+  a serializacao, evitando custo quadratico em designs amplos.
 - Projeta captura real bloqueada como `HOST_OUTPUT_DISABLED`, com erro publico
   sanitizado e zero dispatch, mantendo captura mock como controle positivo.
 - Alinha o output schema do planner aos resultados tipados de roteamento para

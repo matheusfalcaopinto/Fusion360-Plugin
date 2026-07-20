@@ -234,7 +234,23 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
         }
     )
     wrapper = {"success": True, "snapshot": snapshot}
-    while True:
+
+    def encode_wrapper():
+        snapshot["elapsed_ms"] = elapsed_ms()
+        if snapshot["elapsed_ms"] >= deadline_ms and stop_reason is None:
+            stop("deadline_ms")
+        if stop_reason is not None:
+            snapshot["complete"] = False
+            snapshot["truncated"] = True
+            snapshot["counts_exact"] = False
+            snapshot["stop_reason"] = stop_reason
+        snapshot["snapshot_hash"] = _hash_payload(
+            {
+                "visible_occurrence_paths": snapshot.get("visible_occurrence_paths", []),
+                "visible_body_keys": snapshot.get("visible_body_keys", []),
+                "visible_component_keys": snapshot.get("visible_component_keys", []),
+            }
+        )
         for _iteration in range(8):
             encoded = json.dumps(wrapper, sort_keys=True, separators=(",", ":"))
             response_bytes = len(encoded.encode("utf-8"))
@@ -242,42 +258,101 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 break
             snapshot["response_bytes"] = response_bytes
         encoded = json.dumps(wrapper, sort_keys=True, separators=(",", ":"))
-        response_bytes = len(encoded.encode("utf-8"))
+        return encoded, len(encoded.encode("utf-8"))
+
+    def shrink_sequence(values, response_bytes):
+        if not values:
+            return False
+        ratio = min(0.9, (max_response_bytes / float(max(response_bytes, 1))) * 0.9)
+        keep = max(0, min(len(values) - 1, int(len(values) * ratio)))
+        del values[keep:]
+        return True
+
+    def shrink_mapping(values, response_bytes):
+        if not values:
+            return False
+        keys = sorted(values)
+        ratio = min(0.9, (max_response_bytes / float(max(response_bytes, 1))) * 0.9)
+        keep = max(0, min(len(keys) - 1, int(len(keys) * ratio)))
+        for key in keys[keep:]:
+            values.pop(key, None)
+        return True
+
+    for trim_pass in range(64):
+        encoded, response_bytes = encode_wrapper()
         if response_bytes <= max_response_bytes:
             print(encoded)
             break
-        trimmed = True
-        if snapshot["bodies"]:
-            snapshot["bodies"].pop()
-        elif snapshot["occurrences"]:
-            snapshot["occurrences"].pop()
-        elif snapshot["visible_body_keys"]:
-            snapshot["visible_body_keys"].pop()
-        elif snapshot["visible_occurrence_paths"]:
-            snapshot["visible_occurrence_paths"].pop()
-        elif snapshot["visible_component_keys"]:
-            snapshot["visible_component_keys"].pop()
-        elif snapshot["duplicate_name_warnings"]:
-            snapshot["duplicate_name_warnings"].pop()
-        else:
-            trimmed = False
         stop("max_response_bytes")
         snapshot["complete"] = False
         snapshot["truncated"] = True
         snapshot["counts_exact"] = False
-        snapshot["stop_reason"] = "max_response_bytes"
+        snapshot["stop_reason"] = stop_reason
+        trimmed = False
+        for key in (
+            "bodies",
+            "occurrences",
+            "visible_body_keys",
+            "visible_occurrence_paths",
+            "visible_component_keys",
+            "duplicate_name_warnings",
+        ):
+            if shrink_sequence(snapshot[key], response_bytes):
+                trimmed = True
+                break
         if not trimmed:
-            snapshot["document"] = {
-                "name": str((snapshot.get("document") or {}).get("name") or "")[:256],
-                "truncated": True,
-            }
-            for _iteration in range(8):
-                encoded = json.dumps(wrapper, sort_keys=True, separators=(",", ":"))
-                measured = len(encoded.encode("utf-8"))
-                if snapshot["response_bytes"] == measured:
-                    break
-                snapshot["response_bytes"] = measured
-            print(json.dumps(wrapper, sort_keys=True, separators=(",", ":")))
+            trimmed = shrink_mapping(snapshot["duplicate_body_names"], response_bytes)
+        if not trimmed:
+            document = snapshot.get("document") or {}
+            if document.get("truncated") is not True:
+                snapshot["document"] = {
+                    "name": str(document.get("name") or "")[:256],
+                    "truncated": True,
+                }
+            else:
+                snapshot.clear()
+                snapshot.update(
+                    {
+                        "schema_version": "compact_snapshot.v2",
+                        "schema_compatibility": ["compact_snapshot.v1"],
+                        "source": "real",
+                        "document": {"name": "", "truncated": True},
+                        "payload_capped": True,
+                        "counts": {},
+                        "occurrences": [],
+                        "bodies": [],
+                        "visible_occurrence_paths": [],
+                        "visible_body_keys": [],
+                        "visible_component_keys": [],
+                        "complete": False,
+                        "truncated": True,
+                        "visited_entities": visited_entities,
+                        "elapsed_ms": elapsed_ms(),
+                        "response_bytes": 0,
+                        "counts_exact": False,
+                        "stop_reason": stop_reason or "max_response_bytes",
+                        "snapshot_hash": "",
+                    }
+                )
+        if trim_pass == 63:
+            snapshot.clear()
+            snapshot.update(
+                {
+                    "schema_version": "compact_snapshot.v2",
+                    "source": "real",
+                    "payload_capped": True,
+                    "complete": False,
+                    "truncated": True,
+                    "visited_entities": visited_entities,
+                    "elapsed_ms": elapsed_ms(),
+                    "response_bytes": 0,
+                    "counts_exact": False,
+                    "stop_reason": stop_reason or "max_response_bytes",
+                    "snapshot_hash": "",
+                }
+            )
+            encoded, _response_bytes = encode_wrapper()
+            print(encoded)
             break
 """,
     )
