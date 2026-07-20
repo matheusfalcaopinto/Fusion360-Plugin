@@ -41,6 +41,9 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 - Torna o ajuste final de snapshots ao limite de resposta geometricamente
   limitado, inclui mapas de duplicatas no corte e revalida o deadline durante
   a serializacao, evitando custo quadratico em designs amplos.
+- Marca falhas de enumeracao de ocorrencias filhas ou bodies como evidencia
+  `downstream_unavailable`, impedindo que subarvores omitidas sejam aceitas
+  como baseline completo por Safe Change.
 - Projeta captura real bloqueada como `HOST_OUTPUT_DISABLED`, com erro publico
   sanitizado e zero dispatch, mantendo captura mock como controle positivo.
 - Alinha o output schema do planner aos resultados tipados de roteamento para

@@ -254,6 +254,114 @@ def test_compact_snapshot_visibility_read_failure_is_incomplete_not_visible() ->
     assert "except Exception:\n        return True" not in script
 
 
+def test_compact_snapshot_enumeration_failures_are_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Collection:
+        def __init__(self, items):
+            self._items = list(items)
+            self.count = len(self._items)
+
+        def item(self, index):
+            return self._items[index]
+
+    class Point:
+        x = 0.0
+        y = 0.0
+        z = 0.0
+
+    class Box:
+        minPoint = Point()
+        maxPoint = Point()
+
+    class Component:
+        name = "Component"
+        entityToken = "component-token"
+        isLightBulbOn = True
+        isReferencedComponent = False
+        attributes = None
+
+    class ChildEnumerationFailure:
+        name = "BrokenChildTree"
+        component = Component()
+        entityToken = "occurrence-token"
+        isLightBulbOn = True
+        isVisible = True
+        boundingBox = Box()
+
+        @property
+        def childOccurrences(self):
+            raise RuntimeError("child enumeration unavailable")
+
+    class Root:
+        entityToken = "root-token"
+        occurrences = Collection([])
+
+    class BrokenBodiesComponent(Component):
+        @property
+        def bRepBodies(self):
+            raise RuntimeError("body enumeration unavailable")
+
+    class ChildFailureDesign:
+        rootComponent = Root()
+        rootComponent.occurrences = Collection([ChildEnumerationFailure()])
+        allComponents = Collection([])
+
+    class BodyFailureDesign:
+        rootComponent = Root()
+        allComponents = Collection([BrokenBodiesComponent()])
+
+    adsk = types.ModuleType("adsk")
+    adsk.__path__ = []  # type: ignore[attr-defined]
+    core = types.ModuleType("adsk.core")
+    fusion = types.ModuleType("adsk.fusion")
+    fusion.Design = type(
+        "FusionDesign", (), {"cast": staticmethod(lambda value: value)}
+    )
+    adsk.core = core
+    adsk.fusion = fusion
+    monkeypatch.setitem(sys.modules, "adsk", adsk)
+    monkeypatch.setitem(sys.modules, "adsk.core", core)
+    monkeypatch.setitem(sys.modules, "adsk.fusion", fusion)
+
+    def execute(design):
+        class Document:
+            name = "enumeration-failure"
+            dataFile = None
+
+        class ApplicationInstance:
+            activeDocument = Document()
+            activeProduct = design
+
+        core.Application = type(
+            "Application", (), {"get": staticmethod(lambda: ApplicationInstance())}
+        )
+        script = compact_snapshot_script(
+            {
+                "max_occurrences": 10,
+                "max_bodies": 10,
+                "max_entities_visited": 100,
+                "deadline_ms": 5000,
+                "max_response_bytes": 65536,
+            }
+        )
+        namespace: dict[str, object] = {}
+        exec(
+            compile(script, "<compact-snapshot-enumeration-failure>", "exec"), namespace
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            namespace["run"]("")  # type: ignore[index,operator]
+        return json.loads(output.getvalue())["snapshot"]
+
+    for snapshot in (execute(ChildFailureDesign()), execute(BodyFailureDesign())):
+        assert snapshot["complete"] is False
+        assert snapshot["counts_exact"] is False
+        assert snapshot["truncated"] is True
+        assert snapshot["stop_reason"] == "downstream_unavailable"
+        assert _snapshot_is_complete(snapshot) is False
+
+
 def test_compact_snapshot_does_not_reserve_discarded_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

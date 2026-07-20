@@ -131,9 +131,11 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
             else:
                 snapshot["payload_capped"] = True
             try:
-                visit_occurrences(occurrence.childOccurrences, path)
+                child_occurrences = occurrence.childOccurrences
             except Exception:
-                pass
+                stop("downstream_unavailable")
+                return
+            visit_occurrences(child_occurrences, path)
 
     visit_occurrences(design.rootComponent.occurrences, "")
     for item in snapshot["occurrences"]:
@@ -154,7 +156,8 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
         try:
             bodies = component.bRepBodies
         except Exception:
-            continue
+            stop("downstream_unavailable")
+            break
         for body_index in range(bodies.count):
             if not visit():
                 break

@@ -1,6 +1,6 @@
 {
   "name": "fusion-agent-codex",
-  "version": "0.4.1+codex.20260720135740",
+  "version": "0.4.1+codex.20260720143228",
   "description": "Safe Codex plugin for the Fusion Agent CAD harness.",
   "author": {
     "name": "Local developer"
