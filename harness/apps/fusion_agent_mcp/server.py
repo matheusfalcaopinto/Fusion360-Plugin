@@ -24,8 +24,9 @@ from mcp.server.lowlevel import Server
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.shared.exceptions import McpError
 
-from agent_core.guardrails import PlannerUnsupportedError
+from agent_core.authority import HostOutputDisabledError
 from agent_core.fast_path import FastPathResponse
+from agent_core.guardrails import PlannerUnsupportedError
 from agent_core.planner import PlanningRequest, RuleBasedPlanner
 from agent_core.request_context import (
     RequestContext,
@@ -463,6 +464,12 @@ def build_server(
                     "profile": exc.profile,
                     "available_profiles": list(exc.available_profiles),
                 },
+            )
+        except HostOutputDisabledError:
+            return _public_call_tool_error(
+                name,
+                code="HOST_OUTPUT_DISABLED",
+                generic_message=_generic_public_error_message("HOST_OUTPUT_DISABLED"),
             )
         except Exception:  # noqa: BLE001 - raw exception text is private
             return _public_call_tool_error(
@@ -3676,6 +3683,7 @@ _PUBLIC_ERROR_CODES = frozenset(
         "ENDPOINT_SOURCE_NOT_ALLOWED",
         "ENDPOINT_POLICY_BLOCKED",
         "FAST_PATH_UNAVAILABLE_FOR_BACKEND",
+        "HOST_OUTPUT_DISABLED",
         "INTERNAL_ERROR",
         "INCOMPLETE_INSPECTION",
         "INVALID_BENCHMARK_SUITE",
@@ -3775,6 +3783,7 @@ def _generic_public_error_message(code: str) -> str:
         ErrorCode.TIMEOUT.value: "The Fusion operation timed out.",
         ErrorCode.READ_TIMEOUT_MAY_STILL_BE_RUNNING.value: "The Fusion read timed out.",
         ErrorCode.MUTATION_OUTCOME_UNKNOWN.value: "The mutation outcome is unknown; do not replay it.",
+        "HOST_OUTPUT_DISABLED": "Real host output is disabled.",
         "INCOMPLETE_INSPECTION": "The readback inspection was incomplete.",
         "INVALID_BENCHMARK_SUITE": "The benchmark suite is invalid or unavailable.",
         "INVALID_CAD_SPEC": "The CAD specification is invalid.",
@@ -4255,9 +4264,15 @@ def _planning_result_contract(*, include_path: bool) -> JsonDict:
         "supported": {"type": "boolean"},
         "code": {"type": "string"},
         "reason": {"type": "string"},
+        "matched_terms": _ref("stringList"),
+        "categories": _ref("stringList"),
         "recommended_path": {
             "type": "string",
-            "enum": ["safe_harness", "api_documentation_then_native_fast"],
+            "enum": [
+                "safe_harness",
+                "api_documentation_then_native_fast",
+                "native_read_then_targeted_inspect",
+            ],
         },
         "recommended_tools": _ref("stringList"),
     }

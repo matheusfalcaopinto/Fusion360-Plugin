@@ -253,6 +253,122 @@ def test_compact_snapshot_visibility_read_failure_is_incomplete_not_visible() ->
     assert "except Exception:\n        return True" not in script
 
 
+def test_compact_snapshot_does_not_reserve_discarded_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Collection:
+        def __init__(self, items):
+            self._items = list(items)
+            self.count = len(self._items)
+
+        def item(self, index):
+            return self._items[index]
+
+    class Point:
+        x = 0.0
+        y = 0.0
+        z = 0.0
+
+    class Box:
+        minPoint = Point()
+        maxPoint = Point()
+
+    class Component:
+        def __init__(self, index):
+            self.name = f"Component{index}"
+            self.entityToken = f"component-{index}"
+            self.isLightBulbOn = True
+            self.isReferencedComponent = False
+            self.attributes = None
+            self.bRepBodies = Collection([])
+
+    class Occurrence:
+        def __init__(self, index):
+            self.name = f"Occurrence{index}"
+            self.component = Component(index)
+            self.entityToken = f"occurrence-{index}-" + ("x" * 800)
+            self.isLightBulbOn = True
+            self.isVisible = True
+            self.boundingBox = Box()
+            self.childOccurrences = Collection([])
+
+    class Body:
+        def __init__(self, index):
+            self.name = f"Body{index}"
+            suffix = "y" * 70_000 if index == 10 else str(index)
+            self.entityToken = f"body-{suffix}"
+            self.isLightBulbOn = True
+            self.isVisible = True
+            self.boundingBox = Box()
+
+    body_component = Component("bodies")
+    body_component.bRepBodies = Collection(Body(index) for index in range(11))
+
+    class Root:
+        entityToken = "root-token"
+        occurrences = Collection(Occurrence(index) for index in range(89))
+
+    class Design:
+        rootComponent = Root()
+        allComponents = Collection([body_component])
+
+    design = Design()
+
+    class Document:
+        name = "large-design"
+        dataFile = None
+
+    class ApplicationInstance:
+        activeDocument = Document()
+        activeProduct = design
+
+    adsk = types.ModuleType("adsk")
+    adsk.__path__ = []  # type: ignore[attr-defined]
+    core = types.ModuleType("adsk.core")
+    fusion = types.ModuleType("adsk.fusion")
+    core.Application = type(
+        "Application", (), {"get": staticmethod(lambda: ApplicationInstance())}
+    )
+    fusion.Design = type(
+        "FusionDesign", (), {"cast": staticmethod(lambda value: value)}
+    )
+    adsk.core = core
+    adsk.fusion = fusion
+    monkeypatch.setitem(sys.modules, "adsk", adsk)
+    monkeypatch.setitem(sys.modules, "adsk.core", core)
+    monkeypatch.setitem(sys.modules, "adsk.fusion", fusion)
+
+    script = compact_snapshot_script(
+        {
+            "max_occurrences": 10,
+            "max_bodies": 10,
+            "max_entities_visited": 101,
+            "deadline_ms": 5000,
+            "max_response_bytes": 65536,
+        }
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(script, "<compact-snapshot-response-budget>", "exec"), namespace)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        namespace["run"]("")  # type: ignore[index,operator]
+    encoded = output.getvalue().strip().encode("utf-8")
+    snapshot = json.loads(encoded)["snapshot"]
+
+    assert snapshot["visited_entities"] == 101
+    assert snapshot["counts"]["occurrences_total"] == 89
+    assert snapshot["counts"]["bodies_total"] == 11
+    assert len(snapshot["occurrences"]) == 10
+    assert len(snapshot["bodies"]) == 10
+    assert snapshot["payload_capped"] is True
+    assert snapshot["complete"] is True
+    assert snapshot["counts_exact"] is True
+    assert snapshot["stop_reason"] is None
+    assert snapshot["response_bytes"] == len(encoded)
+    assert len(encoded) <= 65536
+    assert _snapshot_is_complete(snapshot) is False
+
+
 def test_successful_read_scripts_expose_codes_not_raw_exception_text() -> None:
     script = hub_inventory_script({"query": "", "max_results": 5})
     compile(script, "<hub-inventory>", "exec")

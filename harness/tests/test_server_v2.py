@@ -524,6 +524,30 @@ async def test_legacy_planner_routes_unknown_and_destructive_requests() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_only_planner_guard_matches_public_output_contract() -> None:
+    payload = await server._plan_spec_tool(
+        {
+            "prompt": "inspect the active design read-only",
+            "project": "routing",
+        }
+    )
+
+    response = server._as_call_tool_result(
+        "fusion_agent_plan_spec",
+        server.FastPathResponse(payload),
+    )
+
+    assert response.isError is False
+    assert response.structuredContent is not None
+    assert response.structuredContent["result"]["supported"] is False
+    assert response.structuredContent["result"]["code"] == "unsupported_for_planner"
+    assert (
+        response.structuredContent["result"]["recommended_path"]
+        == "native_read_then_targeted_inspect"
+    )
+
+
+@pytest.mark.asyncio
 async def test_server_runs_and_pages_strict_mock_benchmark(
     monkeypatch, tmp_path
 ) -> None:

@@ -12,6 +12,7 @@ from mcp.shared.exceptions import McpError
 
 from agent_core.capability_executor import CapabilityExecutionResult, CapabilityExecutor
 from agent_core.fast_path import FastPathResponse
+from agent_core.session_controller import SessionController
 from cad_spec.v2 import CadSpecV2
 from fusion_agent_mcp import mcp_surface, server
 from fusion_agent_mcp.runtime import RuntimeConfiguration
@@ -501,6 +502,101 @@ async def test_mcp_exception_boundary_returns_public_error_without_raw_detail(
     )
     assert SENTINEL not in _serialized(response.root)
     assert original is not None
+
+
+@pytest.mark.asyncio
+async def test_real_capture_disabled_is_typed_public_error_with_zero_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class NeverClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_tools(self) -> None:
+            self.calls += 1
+            raise AssertionError("disabled host output must not reach Fusion discovery")
+
+    client = NeverClient()
+    controller = SessionController(real_client=client)
+    facade_builds = 0
+
+    async def fail_if_built(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal facade_builds
+        facade_builds += 1
+        raise AssertionError("disabled host output must not construct a Fusion facade")
+
+    monkeypatch.setattr(controller, "_build_facade", fail_if_built)
+    monkeypatch.setattr(server, "OUTPUTS_ROOT", tmp_path / "outputs")
+
+    class CaptureRuntime:
+        configuration = RuntimeConfiguration.from_environment()
+
+        def __init__(self) -> None:
+            self.controller = controller
+
+    app = server.build_server(runtime=CaptureRuntime(), profile="normal")
+    handler = app.request_handlers[types.CallToolRequest]
+    request = types.CallToolRequest(
+        method="tools/call",
+        params=types.CallToolRequestParams(
+            name="fusion_agent_capture_viewport",
+            arguments={"mode": "real", "name": "must-not-exist"},
+        ),
+    )
+
+    response = await handler(request)
+    payload = response.root.structuredContent
+    serialized = _serialized(response.root)
+
+    assert response.root.isError is True
+    assert payload["ok"] is False
+    assert payload["error_code"] == "HOST_OUTPUT_DISABLED"
+    assert payload["error"]["code"] == "HOST_OUTPUT_DISABLED"
+    assert payload["error"]["generic_message"] == "Real host output is disabled."
+    assert payload["error"]["retryable"] is False
+    assert payload["error"]["correlation_id"].startswith("diag-")
+    assert "deny_io" not in serialized
+    assert "0.4.1" not in serialized
+    assert client.calls == 0
+    assert facade_builds == 0
+    assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.asyncio
+async def test_mock_capture_remains_available_at_public_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    controller = SessionController(real_client=object())
+    monkeypatch.setattr(server, "WORKSPACE_ROOT", tmp_path / "workspace")
+    monkeypatch.setattr(server, "OUTPUTS_ROOT", tmp_path / "outputs")
+
+    class CaptureRuntime:
+        configuration = RuntimeConfiguration.from_environment()
+
+        def __init__(self) -> None:
+            self.controller = controller
+
+    app = server.build_server(runtime=CaptureRuntime(), profile="normal")
+    handler = app.request_handlers[types.CallToolRequest]
+    request = types.CallToolRequest(
+        method="tools/call",
+        params=types.CallToolRequestParams(
+            name="fusion_agent_capture_viewport",
+            arguments={"mode": "mock", "name": "mock-control"},
+        ),
+    )
+
+    response = await handler(request)
+    payload = response.root.structuredContent
+
+    assert response.root.isError is False
+    assert payload["ok"] is True
+    assert payload["result"]["status"] == "success"
+    assert payload["result"]["evidence_role"] == "supplemental_visual"
+    assert payload["result"]["can_promote_geometry_verification"] is False
+    assert Path(payload["result"]["path"]).is_file()
 
 
 def test_runtime_output_schema_validation_fails_closed_without_payload_echo() -> None:

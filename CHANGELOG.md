@@ -34,6 +34,15 @@ Todas as mudancas notaveis deste repositorio serao documentadas aqui.
 - Alinha o gate de parity ao setup pessoal: a fonte aceita somente a forma
   portatil revisada ou os paths absolutos exatos para sua propria `.venv` e
   launcher; o cache continua exigindo paths absolutos vinculados a essa fonte.
+- Corrige a contabilizacao do budget de snapshots compactos para que detalhes
+  descartados por `max_occurrences`/`max_bodies` nao consumam falsamente o
+  limite de resposta; a travessia, contagens exatas e limites fail-closed sao
+  preservados.
+- Projeta captura real bloqueada como `HOST_OUTPUT_DISABLED`, com erro publico
+  sanitizado e zero dispatch, mantendo captura mock como controle positivo.
+- Alinha o output schema do planner aos resultados tipados de roteamento para
+  que pedidos read-only retornem `unsupported_for_planner` em vez de uma falsa
+  `OUTPUT_SCHEMA_VIOLATION`.
 - Faz o validator restaurar somente o diretorio `scripts/` revisado sob `-I`,
   mantendo user site e `PYTHONPATH` fora do bootstrap do setup.
 - Vincula a release a um CI de branch concluido com sucesso no SHA candidato

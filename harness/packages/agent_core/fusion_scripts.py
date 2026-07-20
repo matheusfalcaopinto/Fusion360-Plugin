@@ -96,36 +96,37 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 stop("visibility_unavailable")
                 return
             snapshot["counts"]["occurrences_total"] += 1
-            item = {
-                "path": path,
-                "name": name,
-                "component": component.name if component else "",
-                "component_key": _component_key(component) if component else "",
-                "entity_token": _entity_token(occurrence),
-                "visible": visible,
-                "is_root": False,
-                "is_referenced": _component_reference_fact(component),
-                "is_imported": _component_imported_fact(component),
-                "shared_definition": None,
-            }
+            component_key = _component_key(component) if component else ""
             if component:
-                component_instance_counts[item["component_key"]] = (
-                    component_instance_counts.get(item["component_key"], 0) + 1
+                component_instance_counts[component_key] = (
+                    component_instance_counts.get(component_key, 0) + 1
                 )
-            if include_transforms:
-                item["transform"] = _transform_payload(occurrence)
-            try:
-                item["bbox_mm"] = _bbox_payload_mm(occurrence.boundingBox)
-            except Exception:
-                item["bbox_error_code"] = "BOUNDING_BOX_UNAVAILABLE"
-            if not reserve(item):
-                return
             if visible:
                 snapshot["counts"]["visible_occurrences"] += 1
                 snapshot["visible_occurrence_paths"].append(path)
                 if component:
-                    visible_components.add(_component_key(component))
+                    visible_components.add(component_key)
             if len(snapshot["occurrences"]) < max_occurrences:
+                item = {
+                    "path": path,
+                    "name": name,
+                    "component": component.name if component else "",
+                    "component_key": component_key,
+                    "entity_token": _entity_token(occurrence),
+                    "visible": visible,
+                    "is_root": False,
+                    "is_referenced": _component_reference_fact(component),
+                    "is_imported": _component_imported_fact(component),
+                    "shared_definition": None,
+                }
+                if include_transforms:
+                    item["transform"] = _transform_payload(occurrence)
+                try:
+                    item["bbox_mm"] = _bbox_payload_mm(occurrence.boundingBox)
+                except Exception:
+                    item["bbox_error_code"] = "BOUNDING_BOX_UNAVAILABLE"
+                if not reserve(item):
+                    return
                 snapshot["occurrences"].append(item)
             else:
                 snapshot["payload_capped"] = True
@@ -175,24 +176,6 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 bbox = _bbox_payload_mm(body.boundingBox)
             except Exception:
                 bbox = {"error_code": "BOUNDING_BOX_UNAVAILABLE"}
-            body_item = {
-                "key": key,
-                "name": name,
-                "component": component.name or "",
-                "component_key": component_key,
-                "entity_token": _entity_token(body),
-                "visible": visible,
-                "is_root": component == design.rootComponent,
-                "is_referenced": _component_reference_fact(component),
-                "is_imported": _component_imported_fact(component),
-                "shared_definition": bool(
-                    component_instance_counts.get(component_key, 0) > 1
-                ),
-                "bbox_mm": bbox,
-            }
-            body_item["binding_fingerprint"] = _binding_fingerprint(body_item)
-            if not reserve(body_item):
-                break
             if visible:
                 snapshot["counts"]["visible_bodies"] += 1
                 snapshot["visible_body_keys"].append(key)
@@ -200,6 +183,24 @@ def compact_snapshot_script(payload: dict[str, Any]) -> str:
                 if isinstance(bbox, dict) and "min_mm" in bbox and "max_mm" in bbox:
                     body_bbox_union = _merge_bbox(body_bbox_union, bbox)
             if len(snapshot["bodies"]) < max_bodies:
+                body_item = {
+                    "key": key,
+                    "name": name,
+                    "component": component.name or "",
+                    "component_key": component_key,
+                    "entity_token": _entity_token(body),
+                    "visible": visible,
+                    "is_root": component == design.rootComponent,
+                    "is_referenced": _component_reference_fact(component),
+                    "is_imported": _component_imported_fact(component),
+                    "shared_definition": bool(
+                        component_instance_counts.get(component_key, 0) > 1
+                    ),
+                    "bbox_mm": bbox,
+                }
+                body_item["binding_fingerprint"] = _binding_fingerprint(body_item)
+                if not reserve(body_item):
+                    break
                 snapshot["bodies"].append(body_item)
             else:
                 snapshot["payload_capped"] = True
